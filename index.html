@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en-US">
+  <head>
+    <meta charset="utf-8" />
+    <title>hello-wasm example</title>
+  </head>
+  <body>
+    <body style="margin: 0; display: flex; justify-content: center; align-items: center; height: 100vh;">
+        <canvas
+            id="rustboy-canvas"
+          style="image-rendering: pixelated; image-rendering: crisp-edges; height: 100%;"
+        >
+        </canvas>
+        <canvas id="vram-canvas" style="image-rendering: pixelated; image-rendering: crisp-edges; height: 100%; display:none"></canvas>
+    </body>
+    <script>
+      function toggleVramCanvas(v) {
+          const vramCanvas = document.getElementById('vram-canvas');
+          if (v) {
+            vramCanvas.style.display = 'block';
+          } else {
+            vramCanvas.style.display = 'none';
+          }
+      }
+
+      let keys = {};
+
+      // Set up event listeners to track key states
+      window.addEventListener('keydown', (e) => {
+          keys[e.key] = true;
+          Module._set_key_state(e.keyCode, true);
+      });
+
+      window.addEventListener('keyup', (e) => {
+          keys[e.key] = false;
+          Module._set_key_state(e.keyCode, false);
+      });
+    </script>
+    <script type="module">
+      
+      import init, {set_key_state} from './out/rustboy.js';
+      init().then(() => {
+        window.Module = {
+          _set_key_state: set_key_state,
+        };
+      }).catch(err => console.error(err));
+
+    </script>
+  </body>
+</html>

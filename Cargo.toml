@@ -1,0 +1,31 @@
+[package]
+name = "rustboy"
+version = "0.1.0"
+edition = "2021"
+description = "A Gameboy emulator written in Rust and compiled to WebAssembly"
+license = "MIT"
+repository = "https://github.com/CedricHermansBIT/rustboy"
+authors = ["Cedric Hermans"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+js-sys = "0.3.69"
+wasm-bindgen = "0.2.92"
+lazy_static = "1.5.0"
+
+[dependencies.web-sys]
+version = "0.3.69"
+features = ["console",
+           "Window",
+           "Document",
+           "HtmlCanvasElement",
+           "CanvasRenderingContext2d",
+           "Element",
+           "KeyboardEvent",
+           "ImageData",
+           "HtmlTextAreaElement"]
+
+[profile.release]
+#debug = true
