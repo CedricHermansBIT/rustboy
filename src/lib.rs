@@ -414,8 +414,15 @@ fn setup_canvas_and_get_context(id: &str) -> web_sys::CanvasRenderingContext2d {
         .unwrap()
         .dyn_into::<web_sys::HtmlCanvasElement>()
         .unwrap();
-    canvas.set_width(160);
-    canvas.set_height(144);
+
+    // VRAM canvas is 128×192 (16×24 tiles), game canvas is 160×144
+    if id == "vram-canvas" {
+        canvas.set_width(128);
+        canvas.set_height(192);
+    } else {
+        canvas.set_width(160);
+        canvas.set_height(144);
+    }
 
     let context = canvas
         .get_context("2d")
