@@ -18,3 +18,21 @@ Once you have Rust and wasm installed, you can build the project by running the 
 ```sh
 wasm-pack build --target web && wasm-bindgen --target web --out-dir ./out ./target/wasm32-unknown-unknown/release/rustboy.wasm
 ```
+
+Finally, you can run the project by opening the `index.html` file in your browser. Note that you will need to run a local server to serve the files. You can do this by running the following command:
+
+```sh
+python -m http.server
+```
+
+# Disclaimer
+
+This project needs ROMs to run. I cannot provide them, but you can find them online. Currently, you need to change the path to the ROM in the `lib.rs` file. I plan to add a file picker in the future.
+
+# Controls
+
+- Arrow keys: D-pad
+- A: A button
+- B: B button
+- Enter: Start button
+- Shift: Select button

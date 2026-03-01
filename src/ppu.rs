@@ -1,51 +1,362 @@
 use crate::cpu::CPU;
 use wasm_bindgen::Clamped;
-use web_sys::console;
 
-static COLORS: [[u8; 4]; 4] = [[255, 255, 255, 255], [0, 255, 0, 255], [0, 128, 0, 255], [0, 0, 0, 255]];
-//static COLORS : [(u8, u8, u8); 4] = [(255, 255, 255), (192, 192, 192), (96, 96, 96), (0, 0, 0)];
+// Default DMG-style green palette (used as fallback)
+pub const DEFAULT_GBC_PALETTES: [[[u8; 4]; 4]; 3] = [
+    // BG
+    [[224, 248, 208, 255], [136, 192, 112, 255], [52, 104, 86, 255], [8, 24, 32, 255]],
+    // OBP0
+    [[224, 248, 208, 255], [136, 192, 112, 255], [52, 104, 86, 255], [8, 24, 32, 255]],
+    // OBP1
+    [[224, 248, 208, 255], [136, 192, 112, 255], [52, 104, 86, 255], [8, 24, 32, 255]],
+];
 
-fn get_palette(cpu: &CPU) -> [[u8; 4]; 4] {
-    let palette = cpu.read_byte(0xff47);
-    [
-        COLORS[((palette >> 0) & 0x03) as usize],
-        COLORS[((palette >> 4) & 0x03) as usize],
-        COLORS[((palette >> 2) & 0x03) as usize],
-        COLORS[((palette >> 6) & 0x03) as usize]
-    ]
+// ─── CGB Boot ROM palette data ──────────────────────────────────────────────
+// 8-bit RGBA palette colors from TCRF (The Cutting Room Floor) documentation.
+// Stored directly as 8-bit RGBA to avoid lossy RGB555 round-trip conversion.
+
+type Pal = [[u8; 4]; 4]; // 4 colors, each RGBA
+
+/// Compute the GBC title checksum: sum of bytes 0x134..=0x143
+fn title_checksum(rom: &[u8]) -> u8 {
+    let mut sum: u8 = 0;
+    for i in 0x134..=0x143 {
+        sum = sum.wrapping_add(*rom.get(i).unwrap_or(&0));
+    }
+    sum
+}
+
+// Helper to build an RGBA color
+const fn c(r: u8, g: u8, b: u8) -> [u8; 4] { [r, g, b, 255] }
+
+const W: [u8; 4] = c(0xFF, 0xFF, 0xFF); // white
+const K: [u8; 4] = c(0x00, 0x00, 0x00); // black
+
+// ─── Direct combo palette data ──────────────────────────────────────────────
+// 45 combos, each with [BG, OBJ0, OBJ1], each palette is 4 RGBA colors.
+// Source: TCRF GBC Boot ROM palette documentation (8-bit RGB values).
+const COMBO_PALETTES: [[[[u8; 4]; 4]; 3]; 45] = [
+    // 0
+    [[W, c(0xAD,0xAD,0x84), c(0x42,0x73,0x7B), K],
+     [W, c(0xFF,0x73,0x00), c(0x94,0x42,0x00), K],
+     [W, c(0xFF,0x73,0x00), c(0x94,0x42,0x00), K]],
+    // 1
+    [[W, c(0xAD,0xAD,0x84), c(0x42,0x73,0x7B), K],
+     [W, c(0xFF,0x73,0x00), c(0x94,0x42,0x00), K],
+     [W, c(0x5A,0xBD,0xFF), c(0xFF,0x00,0x00), c(0x00,0x00,0xFF)]],
+    // 2
+    [[c(0xFF,0xFF,0x9C), c(0x94,0xB5,0xFF), c(0x63,0x94,0x73), c(0x00,0x3A,0x3A)],
+     [c(0xFF,0xFF,0x9C), c(0x94,0xB5,0xFF), c(0x63,0x94,0x73), c(0x00,0x3A,0x3A)],
+     [c(0xFF,0xFF,0x9C), c(0x94,0xB5,0xFF), c(0x63,0x94,0x73), c(0x00,0x3A,0x3A)]],
+    // 3
+    [[c(0xFF,0xFF,0x9C), c(0x94,0xB5,0xFF), c(0x63,0x94,0x73), c(0x00,0x3A,0x3A)],
+     [c(0xFF,0xC5,0x42), c(0xFF,0xD6,0x00), c(0x94,0x3A,0x00), c(0x4A,0x00,0x00)],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K]],
+    // 4
+    [[c(0x6B,0xFF,0x00), W, c(0xFF,0x52,0x4A), K],
+     [W, W, c(0x63,0xA5,0xFF), c(0x00,0x00,0xFF)],
+     [W, c(0xFF,0xAD,0x63), c(0x84,0x31,0x00), K]],
+    // 5
+    [[c(0x52,0xDE,0x00), c(0xFF,0x84,0x00), c(0xFF,0xFF,0x00), W],
+     [W, W, c(0x63,0xA5,0xFF), c(0x00,0x00,0xFF)],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K]],
+    // 6
+    [[W, c(0x7B,0xFF,0x00), c(0xB5,0x73,0x00), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K]],
+    // 7
+    [[W, c(0x52,0xFF,0x00), c(0xFF,0x42,0x00), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K]],
+    // 8
+    [[W, c(0x52,0xFF,0x00), c(0xFF,0x42,0x00), K],
+     [W, c(0x52,0xFF,0x00), c(0xFF,0x42,0x00), K],
+     [W, c(0x5A,0xBD,0xFF), c(0xFF,0x00,0x00), c(0x00,0x00,0xFF)]],
+    // 9
+    [[W, c(0xFF,0x9C,0x00), c(0xFF,0x00,0x00), K],
+     [W, c(0xFF,0x9C,0x00), c(0xFF,0x00,0x00), K],
+     [W, c(0xFF,0x9C,0x00), c(0xFF,0x00,0x00), K]],
+    // 10
+    [[W, c(0xFF,0x9C,0x00), c(0xFF,0x00,0x00), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K]],
+    // 11
+    [[W, c(0xFF,0x9C,0x00), c(0xFF,0x00,0x00), K],
+     [W, c(0xFF,0x9C,0x00), c(0xFF,0x00,0x00), K],
+     [W, c(0x5A,0xBD,0xFF), c(0xFF,0x00,0x00), c(0x00,0x00,0xFF)]],
+    // 12
+    [[W, c(0xFF,0xFF,0x00), c(0xFF,0x00,0x00), K],
+     [W, c(0xFF,0xFF,0x00), c(0xFF,0x00,0x00), K],
+     [W, c(0xFF,0xFF,0x00), c(0xFF,0x00,0x00), K]],
+    // 13
+    [[W, c(0xFF,0xFF,0x00), c(0xFF,0x00,0x00), K],
+     [W, c(0xFF,0xFF,0x00), c(0xFF,0x00,0x00), K],
+     [W, c(0x5A,0xBD,0xFF), c(0xFF,0x00,0x00), c(0x00,0x00,0xFF)]],
+    // 14
+    [[c(0xA5,0x9C,0xFF), c(0xFF,0xFF,0x00), c(0x00,0x63,0x00), K],
+     [c(0xA5,0x9C,0xFF), c(0xFF,0xFF,0x00), c(0x00,0x63,0x00), K],
+     [c(0xA5,0x9C,0xFF), c(0xFF,0xFF,0x00), c(0x00,0x63,0x00), K]],
+    // 15
+    [[c(0xA5,0x9C,0xFF), c(0xFF,0xFF,0x00), c(0x00,0x63,0x00), K],
+     [c(0xFF,0x63,0x52), c(0xD6,0x00,0x00), c(0x63,0x00,0x00), K],
+     [c(0xFF,0x63,0x52), c(0xD6,0x00,0x00), c(0x63,0x00,0x00), K]],
+    // 16
+    [[c(0xA5,0x9C,0xFF), c(0xFF,0xFF,0x00), c(0x00,0x63,0x00), K],
+     [c(0xFF,0x63,0x52), c(0xD6,0x00,0x00), c(0x63,0x00,0x00), K],
+     [c(0x00,0x00,0xFF), W, c(0xFF,0xFF,0x7B), c(0x00,0x84,0xFF)]],
+    // 17
+    [[c(0xFF,0xFF,0xCE), c(0x63,0xEF,0xEF), c(0x9C,0x84,0x31), c(0x5A,0x5A,0x5A)],
+     [W, c(0xFF,0x73,0x00), c(0x94,0x42,0x00), K],
+     [W, c(0x63,0xA5,0xFF), c(0x00,0x00,0xFF), K]],
+    // 18
+    [[c(0xB5,0xB5,0xFF), c(0xFF,0xFF,0x94), c(0xAD,0x5A,0x42), K],
+     [K, W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A)],
+     [K, W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A)]],
+    // 19
+    [[W, c(0x63,0xA5,0xFF), c(0x00,0x00,0xFF), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K],
+     [W, c(0x63,0xA5,0xFF), c(0x00,0x00,0xFF), K]],
+    // 20
+    [[W, c(0x63,0xA5,0xFF), c(0x00,0x00,0xFF), K],
+     [W, c(0x63,0xA5,0xFF), c(0x00,0x00,0xFF), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K]],
+    // 21
+    [[W, c(0x63,0xA5,0xFF), c(0x00,0x00,0xFF), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K],
+     [W, c(0xFF,0xFF,0x7B), c(0x00,0x84,0xFF), c(0xFF,0x00,0x00)]],
+    // 22
+    [[W, c(0x8C,0x8C,0xDE), c(0x52,0x52,0x8C), K],
+     [W, c(0x8C,0x8C,0xDE), c(0x52,0x52,0x8C), K],
+     [c(0xFF,0xC5,0x42), c(0xFF,0xD6,0x00), c(0x94,0x3A,0x00), c(0x4A,0x00,0x00)]],
+    // 23
+    [[W, c(0x8C,0x8C,0xDE), c(0x52,0x52,0x8C), K],
+     [c(0xFF,0xC5,0x42), c(0xFF,0xD6,0x00), c(0x94,0x3A,0x00), c(0x4A,0x00,0x00)],
+     [c(0xFF,0xC5,0x42), c(0xFF,0xD6,0x00), c(0x94,0x3A,0x00), c(0x4A,0x00,0x00)]],
+    // 24
+    [[W, c(0x8C,0x8C,0xDE), c(0x52,0x52,0x8C), K],
+     [c(0xFF,0xC5,0x42), c(0xFF,0xD6,0x00), c(0x94,0x3A,0x00), c(0x4A,0x00,0x00)],
+     [W, c(0x5A,0xBD,0xFF), c(0xFF,0x00,0x00), c(0x00,0x00,0xFF)]],
+    // 25
+    [[W, c(0x8C,0x8C,0xDE), c(0x52,0x52,0x8C), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K],
+     [W, c(0x8C,0x8C,0xDE), c(0x52,0x52,0x8C), K]],
+    // 26
+    [[W, c(0x8C,0x8C,0xDE), c(0x52,0x52,0x8C), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K]],
+    // 27
+    [[W, c(0x8C,0x8C,0xDE), c(0x52,0x52,0x8C), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K],
+     [W, c(0xFF,0xAD,0x63), c(0x84,0x31,0x00), K]],
+    // 28
+    [[W, c(0x7B,0xFF,0x31), c(0x00,0x84,0x00), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K]],
+    // 29
+    [[W, c(0x7B,0xFF,0x31), c(0x00,0x84,0x00), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K],
+     [W, c(0x63,0xA5,0xFF), c(0x00,0x00,0xFF), K]],
+    // 30
+    [[W, c(0xFF,0xAD,0x63), c(0x84,0x31,0x00), K],
+     [W, c(0x63,0xA5,0xFF), c(0x00,0x00,0xFF), K],
+     [W, c(0x63,0xA5,0xFF), c(0x00,0x00,0xFF), K]],
+    // 31
+    [[W, c(0xFF,0xAD,0x63), c(0x84,0x31,0x00), K],
+     [W, c(0x63,0xA5,0xFF), c(0x00,0x00,0xFF), K],
+     [W, c(0x7B,0xFF,0x31), c(0x00,0x84,0x00), K]],
+    // 32: POKEMON RED
+    [[W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K]],
+    // 33
+    [[W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K],
+     [W, c(0x00,0xFF,0x00), c(0x31,0x84,0x00), c(0x00,0x4A,0x00)],
+     [W, c(0x63,0xA5,0xFF), c(0x00,0x00,0xFF), K]],
+    // 34
+    [[W, c(0xFF,0xAD,0x63), c(0x84,0x31,0x00), K],
+     [W, c(0xFF,0xAD,0x63), c(0x84,0x31,0x00), K],
+     [W, c(0xFF,0xAD,0x63), c(0x84,0x31,0x00), K]],
+    // 35
+    [[W, c(0xFF,0xAD,0x63), c(0x84,0x31,0x00), K],
+     [W, c(0x7B,0xFF,0x31), c(0x00,0x84,0x00), K],
+     [W, c(0x7B,0xFF,0x31), c(0x00,0x84,0x00), K]],
+    // 36
+    [[W, c(0xFF,0xAD,0x63), c(0x84,0x31,0x00), K],
+     [W, c(0x7B,0xFF,0x31), c(0x00,0x84,0x00), K],
+     [W, c(0x63,0xA5,0xFF), c(0x00,0x00,0xFF), K]],
+    // 37
+    [[K, c(0x00,0x84,0x84), c(0xFF,0xDE,0x00), W],
+     [K, c(0x00,0x84,0x84), c(0xFF,0xDE,0x00), W],
+     [K, c(0x00,0x84,0x84), c(0xFF,0xDE,0x00), W]],
+    // 38
+    [[W, c(0x63,0xA5,0xFF), c(0x00,0x00,0xFF), K],
+     [c(0xFF,0xFF,0x00), c(0xFF,0x00,0x00), c(0x63,0x00,0x00), K],
+     [W, c(0x7B,0xFF,0x31), c(0x00,0x84,0x00), K]],
+    // 39
+    [[W, c(0xAD,0xAD,0x84), c(0x42,0x73,0x7B), K],
+     [W, c(0xFF,0xAD,0x63), c(0x84,0x31,0x00), K],
+     [W, c(0x63,0xA5,0xFF), c(0x00,0x00,0xFF), K]],
+    // 40
+    [[W, c(0xA5,0xA5,0xA5), c(0x52,0x52,0x52), K],
+     [W, c(0xA5,0xA5,0xA5), c(0x52,0x52,0x52), K],
+     [W, c(0xA5,0xA5,0xA5), c(0x52,0x52,0x52), K]],
+    // 41
+    [[W, c(0xFF,0xCE,0x00), c(0x9C,0x63,0x00), K],
+     [W, c(0xFF,0xCE,0x00), c(0x9C,0x63,0x00), K],
+     [W, c(0xFF,0xCE,0x00), c(0x9C,0x63,0x00), K]],
+    // 42
+    [[W, c(0x7B,0xFF,0x31), c(0x00,0x63,0xC5), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K],
+     [W, c(0x7B,0xFF,0x31), c(0x00,0x63,0xC5), K]],
+    // 43
+    [[W, c(0x7B,0xFF,0x31), c(0x00,0x63,0xC5), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K]],
+    // 44
+    [[W, c(0x7B,0xFF,0x31), c(0x00,0x63,0xC5), K],
+     [W, c(0xFF,0x84,0x84), c(0x94,0x3A,0x3A), K],
+     [W, c(0x63,0xA5,0xFF), c(0x00,0x00,0xFF), K]],
+];
+
+// Checksum → combo index lookup table.
+const CHECKSUM_TABLE: [(u8, u8); 79] = [
+    (0x00, 43), (0x01, 31), (0x0C, 34), (0x0D, 13), (0x10, 31),
+    (0x14, 32), (0x15, 12), (0x16, 34), (0x17, 29), (0x18, 24),
+    (0x19, 10), (0x1D, 15), (0x27, 16), (0x28, 28), (0x29, 31),
+    (0x34, 6),  (0x35, 34), (0x36, 5),  (0x39, 30), (0x3C, 20),
+    (0x3D, 7),  (0x3E, 11), (0x3F, 43), (0x43, 30), (0x46, 18),
+    (0x49, 16), (0x4B, 28), (0x4E, 21), (0x52, 31), (0x58, 40),
+    (0x59, 1),  (0x5C, 16), (0x5D, 31), (0x61, 19), (0x66, 6),
+    (0x67, 34), (0x68, 31), (0x69, 13), (0x6A, 7),  (0x6B, 24),
+    (0x6D, 31), (0x6F, 41), (0x70, 33), (0x71, 9),  (0x75, 34),
+    (0x86, 3),  (0x88, 14), (0x8B, 29), (0x8C, 2),  (0x90, 28),
+    (0x92, 34), (0x95, 8),  (0x97, 30), (0x99, 34), (0x9A, 28),
+    (0x9C, 22), (0x9D, 27), (0xA2, 36), (0xA5, 35), (0xA8, 3),
+    (0xAA, 42), (0xB3, 0),  (0xB7, 34), (0xBD, 28), (0xBF, 4),
+    (0xC6, 1),  (0xC9, 17), (0xCE, 4),  (0xD1, 4),  (0xD3, 25),
+    (0xDB, 12), (0xE0, 11), (0xE8, 37), (0xF0, 4),  (0xF2, 13),
+    (0xF4, 6),  (0xF6, 31), (0xF7, 36), (0xFF, 9),
+];
+
+// Disambiguation table: (checksum, 4th_char, combo_index)
+const DISAMBIG_TABLE: [(u8, u8, u8); 26] = [
+    (0x0D, 0x45, 23),
+    (0x18, 0x42, 43),
+    (0x27, 0x42, 29),
+    (0x28, 0x41, 37),
+    (0x28, 0x42, 37),
+    (0x46, 0x45, 38),
+    (0x61, 0x45, 29),
+    (0x66, 0x45, 43),
+    (0x6A, 0x49, 24),
+    (0xA5, 0x42, 37),
+    (0xB3, 0x42, 8),
+    (0xB3, 0x4E, 16),
+    (0xB3, 0x55, 16),
+    (0xBF, 0x20, 26),
+    (0xBF, 0x43, 26),
+    (0xC6, 0x41, 43),
+    (0xC6, 0x42, 43),
+    (0xD3, 0x49, 39),
+    (0xF4, 0x42, 44),
+    (0x14, 0x4F, 32),
+    (0x3C, 0x4D, 20),
+    (0x46, 0x41, 18),
+    (0x61, 0x41, 19),
+    (0x6A, 0x4B, 7),
+    (0xD3, 0x52, 25),
+    (0xF4, 0x41, 6),
+];
+
+/// Build palette triplet from combo index.
+fn build_combo_palettes(combo_idx: usize) -> [Pal; 3] {
+    let raw = &COMBO_PALETTES[combo_idx];
+    [raw[0], raw[1], raw[2]]
+}
+
+/// Look up the GBC palette for a given ROM.
+/// Returns [bg_palette, obj0_palette, obj1_palette].
+pub fn gbc_palette_for_rom(rom: &[u8]) -> [Pal; 3] {
+    let cs = title_checksum(rom);
+    let ch4 = *rom.get(0x137).unwrap_or(&0);
+
+    // First check disambiguation table
+    for &(dcs, dch, combo_id) in &DISAMBIG_TABLE {
+        if dcs == cs && dch == ch4 {
+            return build_combo_palettes(combo_id as usize);
+        }
+    }
+
+    // Then check main checksum table
+    for &(tcs, combo_id) in &CHECKSUM_TABLE {
+        if tcs == cs {
+            return build_combo_palettes(combo_id as usize);
+        }
+    }
+
+    // Fallback: classic DMG green
+    DEFAULT_GBC_PALETTES
+}
+
+// ─── Pixel buffer entries ────────────────────────────────────────────────────
+// We store: color_index (0-3) in lower 2 bits, palette_type in bits 2-3
+// 0 = BG, 1 = OBJ0, 2 = OBJ1
+const PAL_BG: u8 = 0;
+const PAL_OBJ0: u8 = 1;
+const PAL_OBJ1: u8 = 2;
+
+#[inline]
+fn pack_pixel(color_index: u8, palette_type: u8) -> u8 {
+    (palette_type << 2) | (color_index & 0x03)
+}
+
+#[inline]
+fn unpack_color_index(pixel: u8) -> u8 {
+    pixel & 0x03
+}
+
+#[inline]
+fn unpack_palette_type(pixel: u8) -> u8 {
+    (pixel >> 2) & 0x03
 }
 
 fn get_color_index(b1: u8, b2: u8, x: u8) -> u8 {
     let b1sel = (b1 >> (7 - x)) & 0x01;
     let b2sel = (b2 >> (7 - x)) & 0x01;
-    (b1sel << 1) | b2sel
+    (b2sel << 1) | b1sel
+}
+
+/// Apply a DMG palette register (BGP/OBP0/OBP1) to remap a 2-bit color index.
+/// The palette register maps: bits 1:0 → color 0, bits 3:2 → color 1, etc.
+#[inline]
+fn apply_dmg_palette(color_index: u8, palette_reg: u8) -> u8 {
+    (palette_reg >> (color_index * 2)) & 0x03
 }
 
 pub fn draw_state(context: &web_sys::CanvasRenderingContext2d, cpu: &mut CPU) {
-    //console::log_1(&"Drawing state".into());
-    let mut buffer = [0; 160 * 144];
-    //cpu.write_byte(0xFF44, 0x90);
-    // VBLANK interrupt
-    //cpu.request_interrupt(0);
+    // Buffer stores packed pixel: color_index + palette_type
+    let mut buffer = [0u8; 160 * 144];
 
     context.clear_rect(0.0, 0.0, 160.0, 144.0);
 
-    let lcd_control = cpu.read_byte(0xFF40);
-    let scroll_y = cpu.read_byte(0xFF42);
-    let scroll_x = cpu.read_byte(0xFF43);
+    let lcd_control = cpu.memory_ref()[0xFF40];
+    let scroll_y = cpu.memory_ref()[0xFF42];
+    let scroll_x = cpu.memory_ref()[0xFF43];
 
     if lcd_control & 0x80 == 0x80 {
-        let tile_map_base = if lcd_control & 0x08 == 0x08 { 0x9C00 } else { 0x9800 };
-        let tile_data_base = if lcd_control & 0x10 == 0x10 { 0x8000 } else { 0x8800 };
-        //let palette = cpu.get_palette_data();
-        //console::log_1(&format!("Palette: {:02X} {:02X} {:02X} {:02X}", palette[0], palette[1], palette[2], palette[3]).into());
-        // Draw the background
+        let tile_map_base: usize = if lcd_control & 0x08 == 0x08 { 0x9C00 } else { 0x9800 };
+        let tile_data_base: usize = if lcd_control & 0x10 == 0x10 { 0x8000 } else { 0x8800 };
+
         let tile_data = cpu.get_mem_slice(tile_data_base, tile_data_base + 0x2000);
+        let bgp = cpu.memory_ref()[0xFF47];
+
+        // Draw the background
+        let mem = cpu.memory_ref();
         for y in 0..144u32 {
             for x in 0..160u32 {
-                let dx = ((x as u32 + scroll_x as u32) & 0xFF) as u8;
-                let dy = ((y as u32 + scroll_y as u32) & 0xFF) as u8;
-                let tile_index = cpu.read_byte((tile_map_base + ((dy as u16 / 8) * 32 + (dx as u16 / 8))) as usize);
+                let dx = ((x + scroll_x as u32) & 0xFF) as u8;
+                let dy = ((y + scroll_y as u32) & 0xFF) as u8;
+                let tile_index = mem[tile_map_base + (dy as usize / 8) * 32 + (dx as usize / 8)];
                 let offset: u16 = if tile_data_base == 0x8000 {
                     tile_index as u16 * 16 + ((dy % 8) * 2) as u16
                 } else {
@@ -53,86 +364,97 @@ pub fn draw_state(context: &web_sys::CanvasRenderingContext2d, cpu: &mut CPU) {
                 };
                 let b1 = tile_data[offset as usize];
                 let b2 = tile_data[offset as usize + 1];
-                let color = get_color_index(b1, b2, dx as u8);
-                // set buffer
-                buffer[(y * 160 + x) as usize] = color;
+                let raw = get_color_index(b1, b2, dx);
+                let ci = apply_dmg_palette(raw, bgp);
+                buffer[(y * 160 + x) as usize] = pack_pixel(ci, PAL_BG);
             }
         }
 
         // Draw the window
         if lcd_control & 0x20 == 0x20 {
-            let window_y = cpu.read_byte(0xFF4A);
-            let window_x = cpu.read_byte(0xFF4B) - 7;
-            let window_tile_map_base = if lcd_control & 0x40 == 0x40 { 0x9C00 } else { 0x9800 };
-            //let tile_data = cpu.get_tile_data(tile_data_base);
-            if window_x <= 166 && window_y <= 143 {
-                for y in 0..144-window_y {
-                    for x in 0..160-window_x {
-                        let dx = x + window_x + scroll_x;
-                        let dy = y + window_y + scroll_y;
-                        let tile_index = cpu.read_byte((window_tile_map_base + ((dy / 8) * 32 + (dx / 8)) as u16) as usize);
+            let window_y = cpu.memory_ref()[0xFF4A];
+            let window_x = cpu.memory_ref()[0xFF4B].wrapping_sub(7);
+            let window_tile_map_base: usize = if lcd_control & 0x40 == 0x40 { 0x9C00 } else { 0x9800 };
+            if window_y <= 143 {
+                let mem = cpu.memory_ref();
+                for screen_y in window_y as u32..144 {
+                    for screen_x in window_x as u32..160 {
+                        let wx = (screen_x - window_x as u32) as u8;
+                        let wy = (screen_y - window_y as u32) as u8;
+
+                        let tile_index = mem[window_tile_map_base + (wy as usize / 8) * 32 + (wx as usize / 8)];
 
                         let offset: u16 = if tile_data_base == 0x8000 {
-                            tile_index as u16 * 16 + ((dy % 8) * 2) as u16
+                            tile_index as u16 * 16 + ((wy % 8) * 2) as u16
                         } else {
-                            (tile_index as u16 + 128) * 16 + ((dy % 8) * 2) as u16
+                            ((tile_index as i8 as i16 + 128) as u16) * 16 + ((wy % 8) * 2) as u16
                         };
                         let b1 = tile_data[offset as usize];
                         let b2 = tile_data[offset as usize + 1];
-                        let color = get_color_index(b1, b2, dx as u8);
-                        // set buffer
-                        buffer[(y * 160 + x) as usize] = color;
-
+                        let raw = get_color_index(b1, b2, wx % 8);
+                        let ci = apply_dmg_palette(raw, bgp);
+                        buffer[(screen_y * 160 + screen_x) as usize] = pack_pixel(ci, PAL_BG);
                     }
                 }
             }
         }
 
         // Draw the sprites
-        //if lcd_control & 0x02 == 0x02 {
-            let mode = (lcd_control >> 2) & 0x01;
-            for i in 0..40 {
-                let sprite = cpu.get_sprite(i);
-                //console::log_1(&format!("Sprite {}: {:?}", i, sprite).into());
+        let mode = (lcd_control >> 2) & 0x01;
+        let obp0 = cpu.memory_ref()[0xFF48];
+        let obp1 = cpu.memory_ref()[0xFF49];
 
-                let sprite_y = sprite[0] as i16 - 16;
-                let sprite_x = sprite[1] as i16 - 8;
-                let tile_index = sprite[2];
-                let attributes = sprite[3];
-                // mode 0: 8x8, mode 1: 8x16
-                if mode == 0 {
-                    if sprite_x >= -7 && sprite_x < 160 && sprite_y >= -7 && sprite_y < 144 {
-                        draw_sprite(&mut buffer, sprite_x, sprite_y, tile_index, attributes, &cpu);
-                    }
-                } else {
-                    if sprite_x >= -7 && sprite_x < 160 && sprite_y >= -15 && sprite_y < 144 {
-                        draw_sprite(&mut buffer, sprite_x, sprite_y, tile_index & 0xFE, attributes, &cpu);
-                        draw_sprite(&mut buffer, sprite_x, sprite_y + 8, tile_index | 0x01, attributes, &cpu);
-                    }
+        for i in 0..40 {
+            let sprite = cpu.get_sprite(i);
+
+            let sprite_y = sprite[0] as i16 - 16;
+            let sprite_x = sprite[1] as i16 - 8;
+            let tile_index = sprite[2];
+            let attributes = sprite[3];
+            let obp = if attributes & 0x10 != 0 { obp1 } else { obp0 };
+            let pal_type = if attributes & 0x10 != 0 { PAL_OBJ1 } else { PAL_OBJ0 };
+
+            if mode == 0 {
+                if sprite_x >= -7 && sprite_x < 160 && sprite_y >= -7 && sprite_y < 144 {
+                    draw_sprite(&mut buffer, sprite_x, sprite_y, tile_index, attributes, cpu, obp, pal_type);
+                }
+            } else {
+                if sprite_x >= -7 && sprite_x < 160 && sprite_y >= -15 && sprite_y < 144 {
+                    draw_sprite(&mut buffer, sprite_x, sprite_y, tile_index & 0xFE, attributes, cpu, obp, pal_type);
+                    draw_sprite(&mut buffer, sprite_x, sprite_y + 8, tile_index | 0x01, attributes, cpu, obp, pal_type);
                 }
             }
-        //}
-        
-        // convert buffer to image data
-        let mut data = Vec::with_capacity(160*144*4);
-        let palette = get_palette(&cpu);
-        buffer.iter().for_each(|&color_index| {
-            data.extend_from_slice(&palette[color_index as usize]);
-        });
+        }
+
+        // Convert buffer to RGBA using palettes based on color mode
+        let palettes = if cpu.color_mode == 0 {
+            &cpu.gbc_palettes
+        } else {
+            &DEFAULT_GBC_PALETTES
+        };
+        let mut data = [0u8; 160 * 144 * 4];
+        for (i, &pixel) in buffer.iter().enumerate() {
+            let ci = unpack_color_index(pixel) as usize;
+            let pt = unpack_palette_type(pixel) as usize;
+            let color = &palettes[pt][ci];
+            let off = i * 4;
+            data[off] = color[0];
+            data[off + 1] = color[1];
+            data[off + 2] = color[2];
+            data[off + 3] = color[3];
+        }
         let image_data = web_sys::ImageData::new_with_u8_clamped_array_and_sh(Clamped(&data), 160, 144).unwrap();
         context.put_image_data(&image_data, 0.0, 0.0).unwrap();
     }
-
-    // set #FF44 to 90
 }
 
-fn draw_sprite(buffer: &mut [u8], sprite_x: i16, sprite_y: i16, tile_index: u8, attributes: u8, cpu: &CPU) {
+fn draw_sprite(buffer: &mut [u8], sprite_x: i16, sprite_y: i16, tile_index: u8,
+               attributes: u8, cpu: &CPU, obp: u8, pal_type: u8) {
     let flip_x = attributes & 0x20 == 0x20;
     let flip_y = attributes & 0x40 == 0x40;
     let priority = attributes & 0x80 == 0x80;
     let sprite_addr = 0x8000 + (tile_index as u16 * 16);
     let sprite_data = cpu.get_mem_slice(sprite_addr as usize, (sprite_addr + 16) as usize);
-    //console::log_1(&format!("Sprite data: {:x?}", sprite_data).into());
 
     for y in 0..8u8 {
         for x in 0..8u8 {
@@ -140,33 +462,37 @@ fn draw_sprite(buffer: &mut [u8], sprite_x: i16, sprite_y: i16, tile_index: u8, 
             let dy = if flip_y { 7 - y } else { y };
             let buffer_x = sprite_x as i32 + x as i32;
             let buffer_y = sprite_y as i32 + y as i32;
-            
+
             if buffer_x < 0 || buffer_x >= 160 || buffer_y < 0 || buffer_y >= 144 {
                 continue;
             }
-            
-            let buffer_index = (buffer_y * 160 + buffer_x) as usize;
-            
-            let b1 = sprite_data[(dy as usize * 2) as usize];
-            let b2 = sprite_data[(dy as usize * 2 + 1) as usize];
-            let color = get_color_index(b1, b2, dx);
 
-            if color != 0 && (!priority || buffer[buffer_index] == 0) {
-                buffer[buffer_index] = color;
-            }
+            let buffer_index = (buffer_y * 160 + buffer_x) as usize;
+
+            let b1 = sprite_data[(dy as usize * 2)];
+            let b2 = sprite_data[(dy as usize * 2 + 1)];
+            let raw = get_color_index(b1, b2, dx);
+
+            // Sprite color 0 is transparent
+            if raw == 0 { continue; }
+
+            let ci = apply_dmg_palette(raw, obp);
+            let bg_ci = unpack_color_index(buffer[buffer_index]);
+
+            // BG priority: if set, sprite only shows over BG color 0
+            if priority && bg_ci != 0 { continue; }
+
+            buffer[buffer_index] = pack_pixel(ci, pal_type);
         }
     }
 }
 
 pub fn draw_vram(context: &web_sys::CanvasRenderingContext2d, cpu: &mut CPU) {
-    //16*24 tiles of 8x8 pixels
-    console::log_1(&format!("vram slice: {:x?}", cpu.get_mem_slice(0x8000, 0xa000)).into());
-    console::log_1(&format!("vram slice: {:x?}", cpu.get_mem_slice(0x9800, 0x9c00)).into());
-    let mut buffer = [0; 384 * 8 * 8];
+    let mut buffer = [0u8; 384 * 8 * 8];
+    let tile_data = cpu.get_tile_data(0x8000);
     for tile_index in 0..384 {
         let x = tile_index % 16;
         let y = tile_index / 16;
-        let tile_data = cpu.get_tile_data(0x8000);
         let offset: u16 = tile_index as u16 * 16;
         for ty in 0..8 {
             let b1 = tile_data[(offset + (ty * 2) as u16) as usize];
@@ -174,19 +500,24 @@ pub fn draw_vram(context: &web_sys::CanvasRenderingContext2d, cpu: &mut CPU) {
             for tx in 0..8 {
                 let b1sel = (b1 >> (7 - tx)) & 0x01;
                 let b2sel = (b2 >> (7 - tx)) & 0x01;
-                let color = ((b1sel << 1) | b2sel) as usize;
+                let color = ((b2sel << 1) | b1sel) as usize;
                 let index = ((y * 8 + ty) * 128 + (x * 8 + tx)) as usize;
                 if index < buffer.len() {
-                    buffer[index] = color;
+                    buffer[index] = color as u8;
                 }
             }
         }
     }
-    let mut data = Vec::with_capacity(128*192*4);
-    let palette = get_palette(&cpu);
-    buffer.iter().for_each(|&color_index| {
-        data.extend_from_slice(&palette[color_index as usize]);
+    let pal = if cpu.color_mode == 0 {
+        &cpu.gbc_palettes[0]
+    } else {
+        &DEFAULT_GBC_PALETTES[0]
+    };
+    let mut data = Vec::with_capacity(128 * 192 * 4);
+    buffer.iter().for_each(|&ci| {
+        data.extend_from_slice(&pal[ci as usize]);
     });
     let image_data = web_sys::ImageData::new_with_u8_clamped_array_and_sh(Clamped(&data), 128, 192).unwrap();
     context.put_image_data(&image_data, 0.0, 0.0).unwrap();
 }
+

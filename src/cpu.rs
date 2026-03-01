@@ -1,8 +1,19 @@
-use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::collections::HashMap;
 
 use web_sys::console;
+use crate::apu::APU;
+
+/// A breakpoint condition that pauses emulation when met.
+#[derive(Clone, Debug)]
+pub enum Breakpoint {
+    /// Break when PC equals this address
+    Pc(u16),
+    /// Break when a register equals a specific value.
+    /// The register is identified by name: "a","b","c","d","e","h","l","f","sp"
+    Reg(String, u16),
+    /// Break when memory at a given address equals a value
+    Mem(u16, u8),
+}
 
 pub struct CPU {
     reg_a: u8,
@@ -19,6 +30,7 @@ pub struct CPU {
     boot_mem: [u8; 0x10000],
     pub booting: bool,
     memory: [u8; 0x10000],
+    rom: Vec<u8>,
     ram: [[u8; 0x2000]; 4],
     pub halt: bool,
     pub cycles: u32,
@@ -27,7 +39,7 @@ pub struct CPU {
     timer_cycles:  u32,
     consolelog: bool,
     pub show_vram: bool,
-    pub keys: HashMap<u32, bool>,
+    pub keys: [bool; 256],
     ppu_cycles: u32,
     pub go_next: AtomicBool,
     cartridge_type: u8,
@@ -35,25 +47,23 @@ pub struct CPU {
     rambank: u8,
     mbc_rom_mode: u8,
     mbc_ram_enable: bool,
+    mbc1_bank2: u8,  // The 2-bit register written via 0x4000-0x5FFF
+    rom_bank_mask: u8,  // Mask based on ROM size (number of banks - 1)
+    ei_pending: bool,
+    div_cycles: u32,
+    pub apu: APU,
+    /// GBC-style color palettes: [BG, OBP0, OBP1], each is 4 RGBA colors
+    pub gbc_palettes: [[[u8; 4]; 4]; 3],
+    /// 0 = GBC color mode, 1 = classic DMG green
+    pub color_mode: u8,
+    /// Emulation speed multiplier (1 = normal, 2 = 2×, etc.)
+    pub speed_multiplier: u32,
+    /// Active breakpoints
+    pub breakpoints: Vec<Breakpoint>,
 }
 
 impl CPU {
     pub fn new() -> CPU {
-        let default_keys = [
-            37, // left
-            38, // up
-            39, // right
-            40, // down
-            65, // a
-            66, // b
-            13, // enter
-            16, // shift
-            17, // ctrl
-        ];
-        let mut keys = HashMap::new();
-        for key in default_keys.iter() {
-            keys.insert(*key, false);
-        }
         CPU {
             reg_a: 0,
             reg_b: 0,
@@ -69,6 +79,7 @@ impl CPU {
             boot_mem: [0; 0x10000],
             booting: true,
             memory: [0; 0x10000],
+            rom: Vec::new(),
             ram: [[0; 0x2000]; 4],
             halt: false,
             cycles: 0,
@@ -77,14 +88,23 @@ impl CPU {
             timer_cycles: 0,
             consolelog: false,
             show_vram: false,
-            keys,
+            keys: [false; 256],
             ppu_cycles: 0,
             go_next: AtomicBool::new(false),
             cartridge_type: 0,
-            rombank: 0,
+            rombank: 1,
             rambank: 0,
             mbc_rom_mode: 0,
             mbc_ram_enable: false,
+            mbc1_bank2: 0,
+            rom_bank_mask: 1,  // Will be set properly in load_rom
+            ei_pending: false,
+            div_cycles: 0,
+            apu: APU::new(),
+            gbc_palettes: crate::ppu::DEFAULT_GBC_PALETTES,
+            color_mode: 0,
+            speed_multiplier: 1,
+            breakpoints: Vec::new(),
         }
     }
 
@@ -105,6 +125,189 @@ impl CPU {
         self.show_vram = !self.show_vram;
     }
 
+    pub fn toggle_color_mode(&mut self) {
+        self.color_mode = if self.color_mode == 0 { 1 } else { 0 };
+        console::log_1(&format!("Color mode: {}", if self.color_mode == 0 { "GBC Color" } else { "DMG Green" }).into());
+    }
+
+    /// Cycle through speed multipliers: 1 → 2 → 4 → 8 → 1
+    pub fn cycle_speed(&mut self) {
+        self.speed_multiplier = match self.speed_multiplier {
+            1 => 2,
+            2 => 4,
+            4 => 8,
+            _ => 1,
+        };
+    }
+
+    pub fn set_speed(&mut self, multiplier: u32) {
+        self.speed_multiplier = multiplier.max(1).min(8);
+    }
+
+    pub fn get_speed(&self) -> u32 {
+        self.speed_multiplier
+    }
+
+    // ── Breakpoints ──────────────────────────────────────────────────────
+
+    pub fn add_breakpoint_pc(&mut self, addr: u16) {
+        self.breakpoints.push(Breakpoint::Pc(addr));
+        console::log_1(&format!("Breakpoint added: PC == {:04X}  [#{}]", addr, self.breakpoints.len() - 1).into());
+    }
+
+    pub fn add_breakpoint_reg(&mut self, reg: &str, value: u16) {
+        self.breakpoints.push(Breakpoint::Reg(reg.to_ascii_lowercase(), value));
+        console::log_1(&format!("Breakpoint added: {} == {:04X}  [#{}]", reg, value, self.breakpoints.len() - 1).into());
+    }
+
+    pub fn add_breakpoint_mem(&mut self, addr: u16, value: u8) {
+        self.breakpoints.push(Breakpoint::Mem(addr, value));
+        console::log_1(&format!("Breakpoint added: [${:04X}] == {:02X}  [#{}]", addr, value, self.breakpoints.len() - 1).into());
+    }
+
+    pub fn remove_breakpoint(&mut self, index: usize) {
+        if index < self.breakpoints.len() {
+            let removed = self.breakpoints.remove(index);
+            console::log_1(&format!("Removed breakpoint #{}: {:?}", index, removed).into());
+        } else {
+            console::log_1(&format!("Invalid breakpoint index: {}", index).into());
+        }
+    }
+
+    pub fn clear_breakpoints(&mut self) {
+        let count = self.breakpoints.len();
+        self.breakpoints.clear();
+        console::log_1(&format!("Cleared {} breakpoint(s)", count).into());
+    }
+
+    pub fn list_breakpoints(&self) -> String {
+        if self.breakpoints.is_empty() {
+            return "No breakpoints set".to_string();
+        }
+        let mut out = String::new();
+        for (i, bp) in self.breakpoints.iter().enumerate() {
+            let desc = match bp {
+                Breakpoint::Pc(addr) => format!("#{}: PC == ${:04X}", i, addr),
+                Breakpoint::Reg(reg, val) => format!("#{}: {} == ${:04X}", i, reg.to_uppercase(), val),
+                Breakpoint::Mem(addr, val) => format!("#{}: [${:04X}] == ${:02X}", i, addr, val),
+            };
+            if i > 0 { out.push('\n'); }
+            out.push_str(&desc);
+        }
+        out
+    }
+
+    /// Returns the register value for the given name, or None.
+    fn get_reg_value(&self, name: &str) -> Option<u16> {
+        match name {
+            "a" => Some(self.reg_a as u16),
+            "b" => Some(self.reg_b as u16),
+            "c" => Some(self.reg_c as u16),
+            "d" => Some(self.reg_d as u16),
+            "e" => Some(self.reg_e as u16),
+            "h" => Some(self.reg_h as u16),
+            "l" => Some(self.reg_l as u16),
+            "f" => Some(self.reg_f as u16),
+            "af" => Some(self.af()),
+            "bc" => Some(self.bc()),
+            "de" => Some(self.de()),
+            "hl" => Some(self.hl()),
+            "sp" => Some(self.stackpointer),
+            "pc" => Some(self.program_counter),
+            _ => None,
+        }
+    }
+
+    /// Check all breakpoints against current state. Returns true if any hit.
+    pub fn check_breakpoints(&mut self) -> bool {
+        if self.breakpoints.is_empty() {
+            return false;
+        }
+        for bp in &self.breakpoints {
+            let hit = match bp {
+                Breakpoint::Pc(addr) => self.program_counter == *addr,
+                Breakpoint::Reg(reg, val) => {
+                    self.get_reg_value(reg).map_or(false, |v| v == *val)
+                }
+                Breakpoint::Mem(addr, val) => {
+                    self.memory[*addr as usize] == *val
+                }
+            };
+            if hit {
+                let desc = match bp {
+                    Breakpoint::Pc(addr) => format!("PC == ${:04X}", addr),
+                    Breakpoint::Reg(reg, val) => format!("{} == ${:04X}", reg.to_uppercase(), val),
+                    Breakpoint::Mem(addr, val) => format!("[${:04X}] == ${:02X}", addr, val),
+                };
+                console::log_1(&format!("🔴 Breakpoint hit: {}  (PC=${:04X})", desc, self.program_counter).into());
+                self.consolelog = true;
+                self.is_paused.store(true, Ordering::Relaxed);
+                return true;
+            }
+        }
+        false
+    }
+
+    // ── Memory / register inspection ─────────────────────────────────────
+
+    /// Read a single byte via the full read_byte dispatch (respects MBC banking).
+    pub fn peek(&self, addr: u16) -> u8 {
+        self.read_byte(addr as usize)
+    }
+
+    /// Hex-dump a range of memory. Returns a formatted string like a traditional
+    /// hex viewer: address | hex bytes | ASCII.  Uses read_byte so banked ROM is
+    /// visible.  Max 256 bytes per call to keep output sane.
+    pub fn peek_slice(&self, start: u16, len: u16) -> String {
+        let len = len.min(256);
+        let mut out = String::new();
+        let mut addr = start;
+        let end = start.wrapping_add(len);
+        while addr != end {
+            // Address column
+            out.push_str(&format!("{:04X} | ", addr));
+            let row_end = addr.wrapping_add(16).min(end);
+            let row_len = row_end.wrapping_sub(addr);
+            // Hex bytes
+            let row_start = addr;
+            for i in 0..16u16 {
+                if i < row_len {
+                    out.push_str(&format!("{:02X} ", self.read_byte(addr.wrapping_add(i) as usize)));
+                } else {
+                    out.push_str("   ");
+                }
+            }
+            out.push_str("| ");
+            // ASCII column
+            for i in 0..row_len {
+                let b = self.read_byte(row_start.wrapping_add(i) as usize);
+                out.push(if b >= 0x20 && b < 0x7F { b as char } else { '.' });
+            }
+            out.push('\n');
+            addr = row_end;
+        }
+        out
+    }
+
+    /// Return a compact string of all register values + flags.
+    pub fn peek_regs(&self) -> String {
+        let flags = format!("{}{}{}{}",
+            if self.reg_f & 0x80 != 0 { 'Z' } else { '-' },
+            if self.reg_f & 0x40 != 0 { 'N' } else { '-' },
+            if self.reg_f & 0x20 != 0 { 'H' } else { '-' },
+            if self.reg_f & 0x10 != 0 { 'C' } else { '-' },
+        );
+        format!(
+            "A:{:02X}  F:{:02X} [{}]\nB:{:02X}  C:{:02X}  BC:{:04X}\nD:{:02X}  E:{:02X}  DE:{:04X}\nH:{:02X}  L:{:02X}  HL:{:04X}\nSP:{:04X}  PC:{:04X}\nIME:{}  HALT:{}  Bank:{:02X}",
+            self.reg_a, self.reg_f, flags,
+            self.reg_b, self.reg_c, self.bc(),
+            self.reg_d, self.reg_e, self.de(),
+            self.reg_h, self.reg_l, self.hl(),
+            self.stackpointer, self.program_counter,
+            self.interrupt_master_enable as u8, self.halt as u8, self.rombank,
+        )
+    }
+
     pub fn bootload(&mut self, data: Vec<u8>) {
         for i in 0..data.len() {
             self.boot_mem[i] = data[i];
@@ -112,11 +315,79 @@ impl CPU {
     }
     
     pub fn load_rom(&mut self, data: Vec<u8>) {
-        for i in 0..data.len() {
+        // Copy first 32KB (or less) into memory for direct access
+        let copy_len = data.len().min(0x8000);
+        for i in 0..copy_len {
             self.memory[i] = data[i];
         }
+        // Store full ROM for bank switching
+        self.rom = data;
         self.cartridge_type = self.memory[0x147];
-        console::log_1(&format!("Cartridge type: {:x}", self.cartridge_type).into());
+        // Compute ROM bank mask: number of banks - 1
+        // Each bank is 16KB, so num_banks = rom_size / 0x4000
+        let num_banks = (self.rom.len() / 0x4000).max(2) as u8;
+        self.rom_bank_mask = num_banks - 1;
+        console::log_1(&format!("Cartridge type: {:x}, ROM size: {} KB, banks: {}, mask: {:02X}",
+            self.cartridge_type, self.rom.len() / 1024, num_banks, self.rom_bank_mask).into());
+
+        // Assign GBC-style color palette based on ROM title
+        self.gbc_palettes = crate::ppu::gbc_palette_for_rom(&self.rom);
+        console::log_1(&format!("GBC palette assigned for title: '{}'", self.rom_title()).into());
+    }
+
+    /// Returns true if the cartridge type has a battery (save-capable)
+    pub fn has_battery(&self) -> bool {
+        matches!(self.cartridge_type, 0x03 | 0x06 | 0x09 | 0x0D | 0x0F | 0x10 | 0x13 | 0x1B | 0x1E)
+    }
+
+    /// Get the ROM title from the cartridge header (0x134-0x143)
+    pub fn rom_title(&self) -> String {
+        let mut title = String::new();
+        for i in 0x134..=0x143 {
+            let c = self.rom.get(i).copied().unwrap_or(0);
+            if c == 0 { break; }
+            title.push(c as char);
+        }
+        title.trim().to_string()
+    }
+
+    /// Export external RAM as a flat byte vector (for saving)
+    pub fn export_save_ram(&self) -> Vec<u8> {
+        let ram_size = self.get_ram_size();
+        let num_banks = (ram_size / 0x2000).max(1);
+        let mut data = Vec::with_capacity(num_banks * 0x2000);
+        for bank in 0..num_banks {
+            data.extend_from_slice(&self.ram[bank]);
+        }
+        data
+    }
+
+    /// Import external RAM from a flat byte vector (for loading saves)
+    pub fn import_save_ram(&mut self, data: &[u8]) {
+        let ram_size = self.get_ram_size();
+        let num_banks = (ram_size / 0x2000).max(1);
+        for bank in 0..num_banks {
+            let start = bank * 0x2000;
+            let end = (start + 0x2000).min(data.len());
+            if start < data.len() {
+                let len = end - start;
+                self.ram[bank][..len].copy_from_slice(&data[start..end]);
+            }
+        }
+        console::log_1(&format!("Loaded save RAM: {} bytes into {} banks", data.len(), num_banks).into());
+    }
+
+    /// Get the external RAM size from the cartridge header (0x149)
+    fn get_ram_size(&self) -> usize {
+        match self.rom.get(0x149).copied().unwrap_or(0) {
+            0x00 => 0,
+            0x01 => 0x800,    // 2 KB (unused officially but some carts use it)
+            0x02 => 0x2000,   // 8 KB  (1 bank)
+            0x03 => 0x8000,   // 32 KB (4 banks)
+            0x04 => 0x20000,  // 128 KB (16 banks)
+            0x05 => 0x10000,  // 64 KB (8 banks)
+            _ => 0x2000,      // Default to 1 bank
+        }
     }
 
     fn set_flag_bit(&mut self, bit: u8, value: bool) {
@@ -133,62 +404,116 @@ impl CPU {
 
     pub fn write_byte(&mut self, address: usize, data: u8) {
         //console::log_1(&format!("Writing to address: {:x}", address).into());
+        // Debug: track writes to IE register
+        //if address == 0xFFFF {
+            //console::log_1(&format!("IE write: {:02X} at PC:{:04X} SP:{:04X}", data, self.program_counter, self.stackpointer).into());
+        //}
         match address {
-            0xFF26 => self.handle_sound_control(),
+            0xFF50 => {
+                if data != 0 {
+                    self.booting = false;
+                }
+            }
+            0xFF10..=0xFF3F => {
+                // APU registers
+                self.apu.write_register(address as u16, data);
+            }
             0xFF00 => self.handle_joypad(data),
             0xFF46 => self.dma_transfer(data),
+            0xFF04 => {
+                // Writing any value to DIV resets it to 0
+                self.memory[0xFF04] = 0;
+                self.div_cycles = 0;
+            }
+            0xFF41 => {
+                // STAT register: lower 3 bits (mode + coincidence flag) are read-only
+                let read_only = self.memory[0xFF41] & 0x07;
+                self.memory[0xFF41] = (data & 0xF8) | read_only;
+            }
+            0xFF44 => {
+                // Writing any value to LY resets it to 0
+                self.memory[0xFF44] = 0;
+            }
+            0xFF02 => {
+                self.memory[0xFF02] = data;
+                // Serial transfer: when bit 7 is set with internal clock (bit 0)
+                if data == 0x81 {
+                    // Print the serial byte for debug (blargg test output)
+                    let sb = self.memory[0xFF01];
+                    console::log_1(&format!("{}", sb as char).into());
+                    // Transfer complete: clear bit 7
+                    self.memory[0xFF02] &= 0x7F;
+                    // Request serial interrupt
+                    self.request_interrupt(3);
+                }
+            }
             _ => {
                 match self.cartridge_type {
                     0x0 => {
                         self.memory[address] = data;
                     }
-                    0x1 => {
+                    0x1 | 0x2 | 0x3 => {
                         if address < 0x2000 {
                             // RAM enable
                             self.mbc_ram_enable = data == 0x0A;
                         } else if address < 0x4000 {
-                            // ROM bank number
+                            // ROM bank number (lower 5 bits)
                             self.rombank = data & 0x1F;
-                            if self.rombank == 0 || self.rombank == 0x20 || self.rombank == 0x40 || self.rombank == 0x60 {
-                                self.rombank += 1;
+                            if self.rombank == 0 {
+                                self.rombank = 1;
                             }
-                            //console::log_1(&format!("ROM bank: {:x}", self.rombank).into());
+
                         } else if address < 0x6000 {
-                            // ROM/RAM mode
-                            if self.mbc_rom_mode == 0 {
-                                self.rombank |= (data & 0x3) << 5
-                            }
-                            else {
-                                self.rambank = data & 0x3
-                            }
+                            // 2-bit register: affects ROM upper bits OR RAM bank depending on mode
+                            self.mbc1_bank2 = data & 0x3;
                         } else if address < 0x8000 {
-                            // RAM bank number
-                            self.mbc_rom_mode = {
-                                if data > 0 {
-                                    1
-                                } else {
-                                    0
-                                }
-                            };
+                            // Banking mode select (bit 0 only)
+                            self.mbc_rom_mode = data & 0x01;
                         } else if address >= 0xA000 && address < 0xC000 {
-                            // RAM bank
+                            // RAM bank write
                             if self.mbc_ram_enable {
-                                self.ram[self.rambank as usize][address - 0xa000] = data;
+                                let ram_bank = if self.mbc_rom_mode == 1 { self.mbc1_bank2 as usize } else { 0 };
+                                self.ram[ram_bank][address - 0xa000] = data;
+                            }
+                        } else {
+                            self.memory[address] = data;
+                        }
+                    }
+                    0x0F..=0x13 => {
+                        // MBC3 (+TIMER, +RAM, +BATTERY variants)
+                        if address < 0x2000 {
+                            // RAM and Timer enable
+                            self.mbc_ram_enable = (data & 0x0F) == 0x0A;
+                        } else if address < 0x4000 {
+                            // ROM bank number (7 bits)
+                            self.rombank = data & 0x7F;
+                            if self.rombank == 0 {
+                                self.rombank = 1;
+                            }
+                        } else if address < 0x6000 {
+                            // RAM bank number (0x00-0x03) or RTC register select (0x08-0x0C)
+                            if data <= 0x03 {
+                                self.rambank = data;
+                            }
+                            // RTC register select (0x08-0x0C) — ignored for now
+                        } else if address < 0x8000 {
+                            // Latch clock data — ignored for now (RTC not implemented)
+                        } else if address >= 0xA000 && address < 0xC000 {
+                            // External RAM write
+                            if self.mbc_ram_enable && self.rambank <= 0x03 {
+                                self.ram[self.rambank as usize][address - 0xA000] = data;
                             }
                         } else {
                             self.memory[address] = data;
                         }
                     }
                     _ => {
-                        unimplemented!("Cartridge type not implemented");
+                        console::log_1(&format!("Unsupported cartridge type {:x}, falling back to plain write", self.cartridge_type).into());
+                        self.memory[address] = data;
                     }
                 }
             }
         }
-    }
-
-    fn handle_sound_control(&mut self) {
-        self.memory[0xFF26] = 0xFF;
     }
 
     fn handle_joypad(&mut self, data: u8) {
@@ -197,65 +522,124 @@ impl CPU {
 
     fn dma_transfer(&mut self, data: u8) {
         let start = (data as u16) << 8;
-        for i in 0..0xA0 {
-            self.write_byte(0xFE00 + i, self.read_byte((start + i as u16) as usize));
+        for i in 0..0xA0u16 {
+            let byte = self.read_byte((start + i) as usize);
+            self.memory[0xFE00 + i as usize] = byte;
         }
     }
 
     pub fn read_byte(&self, address: usize) -> u8 {
-        let memory = {
-            if self.booting && address < 0x100{
-                &self.boot_mem
-            } else {
-                &self.memory
-            }
-        };
+        // Boot ROM takes priority for addresses 0x00-0xFF during boot
+        if self.booting && address < 0x100 {
+            return self.boot_mem[address];
+        }
         if address == 0xFF00 {
-            if memory[0xFF00] & 0x20 == 0x20 {
-                // add keys and bit 7 and 6
-                return memory[0xFF00] | ((self.keys[&40] as u8) << 3) | ((self.keys[&38] as u8) << 2) | ((self.keys[&37] as u8) << 1) | (self.keys[&39] as u8) | (1<<7) | (1<<6);
+            let select = self.memory[0xFF00];
+            let p14 = select & 0x10 == 0; // direction keys
+            let p15 = select & 0x20 == 0; // button keys
+
+            let mut result: u8 = 0x0F; // all unpressed (active low)
+
+            if p14 {
+                // P14 selected (low) - direction keys
+                // Bit 0: Right, Bit 1: Left, Bit 2: Up, Bit 3: Down
+                // Active low: 0 = pressed
+                let right = !self.keys[39] as u8;
+                let left = !self.keys[37] as u8;
+                let up = !self.keys[38] as u8;
+                let down = !self.keys[40] as u8;
+                result &= (down << 3) | (up << 2) | (left << 1) | right;
             }
-            if memory[0xFF00] & 0x10 == 0x10 {
-                return (memory[0xFF00] & 0xf0 )| ((self.keys[&13] as u8) << 3) | ((self.keys[&16] as u8) << 2) | ((self.keys[&66] as u8) << 1) | (self.keys[&65] as u8) | (1<<7) | (1<<6);
+            if p15 {
+                // P15 selected (low) - button keys
+                // Bit 0: A, Bit 1: B, Bit 2: Select, Bit 3: Start
+                // Active low: 0 = pressed
+                let a = !self.keys[65] as u8;
+                let b = !self.keys[66] as u8;
+                let select_btn = !self.keys[16] as u8;
+                let start = !self.keys[13] as u8;
+                result &= (start << 3) | (select_btn << 2) | (b << 1) | a;
             }
+
+            return (select & 0xF0) | result;
+        }
+        // APU registers
+        if address >= 0xFF10 && address <= 0xFF3F {
+            return self.apu.read_register(address as u16);
         }
         match self.cartridge_type {
             0x0 => {
-                return memory[address];
+                return self.memory[address];
             }
-            0x1 => {
+            0x1 | 0x2 | 0x3 => {
                 if address < 0x4000 {
-                    return memory[address];
+                    // Bank 0 area
+                    if self.mbc_rom_mode == 1 {
+                        // In RAM banking mode (mode 1), bank 0 area uses upper bits
+                        let bank = ((self.mbc1_bank2 as usize) << 5) & (self.rom_bank_mask as usize);
+                        let rom_addr = address + bank * 0x4000;
+                        return self.rom.get(rom_addr).copied().unwrap_or(0xFF);
+                    }
+                    return self.rom.get(address).copied().unwrap_or(0xFF);
                 }
                 // rombank switch
-                if address < 0x8000 && address >= 0x4000 {
-                    let bank = self.rombank as usize;
-                    //console::log_1(&format!("address: {:x}, bank: {:x}", address, bank).into());
-                    return memory[address - 0x4000 + bank * 0x4000];
+                if address < 0x8000 {
+                    // Full bank number: upper 2 bits from mbc1_bank2, lower 5 from rombank
+                    let bank_raw = ((self.mbc1_bank2 as usize) << 5) | (self.rombank as usize);
+                    let bank = bank_raw & (self.rom_bank_mask as usize);
+                    let rom_addr = address - 0x4000 + bank * 0x4000;
+                    return self.rom.get(rom_addr).copied().unwrap_or(0xFF);
                 }
                 // rambank switch
                 if address >= 0xA000 && address < 0xC000 {
-                    return self.ram[self.rambank as usize][address - 0xA000];
+                    if self.mbc_ram_enable {
+                        let ram_bank = if self.mbc_rom_mode == 1 { self.mbc1_bank2 as usize } else { 0 };
+                        return self.ram[ram_bank][address - 0xA000];
+                    }
+                    return 0xFF;
                 }
-                memory[address]
+                self.memory[address]
+            }
+            0x0F..=0x13 => {
+                // MBC3
+                if address < 0x4000 {
+                    // Bank 0 — always fixed
+                    return self.rom.get(address).copied().unwrap_or(0xFF);
+                }
+                if address < 0x8000 {
+                    // Switchable ROM bank (7-bit bank number)
+                    let bank = if self.rombank == 0 { 1 } else { self.rombank as usize };
+                    let bank = bank & (self.rom_bank_mask as usize);
+                    let rom_addr = (address - 0x4000) + bank * 0x4000;
+                    return self.rom.get(rom_addr).copied().unwrap_or(0xFF);
+                }
+                if address >= 0xA000 && address < 0xC000 {
+                    // External RAM or RTC register read
+                    if self.mbc_ram_enable && self.rambank <= 0x03 {
+                        return self.ram[self.rambank as usize][address - 0xA000];
+                    }
+                    // RTC registers (0x08-0x0C) — return 0 for now
+                    return 0xFF;
+                }
+                self.memory[address]
             }
             _ => {
-                unimplemented!("Cartridge type not implemented");
+                self.memory[address]
             }
         }
     }
 
     fn read(&mut self) -> u8 {
         let data = self.read_byte(self.program_counter as usize);
-        self.program_counter += 1;
+        self.program_counter = self.program_counter.wrapping_add(1);
         data
     }
 
     fn read16(&mut self) -> u16 {
         let data1 = self.read_byte(self.program_counter as usize);
-        let data2 = self.read_byte(self.program_counter as usize + 1);
+        let data2 = self.read_byte(self.program_counter.wrapping_add(1) as usize);
         let data = (data2 as u16) << 8 | data1 as u16;
-        self.program_counter += 2;
+        self.program_counter = self.program_counter.wrapping_add(2);
         data
     }
 
@@ -270,6 +654,9 @@ impl CPU {
         self.reg_f = 0;
         self.stackpointer = 0x100;
         self.interrupt_master_enable = false;
+        self.ei_pending = false;
+        self.div_cycles = 0;
+        self.timer_cycles = 0;
         self.program_counter = 0;
         self.halt = false;
     }
@@ -290,26 +677,68 @@ impl CPU {
         (self.reg_a as u16) << 8 | self.reg_f as u16
     }
 
-    pub fn get_tile_data(&self, base:i32) -> Vec<u8> {
-        let mut data = Vec::with_capacity(0x2000);
-        for i in 0..0x2000 {
-            data.push(self.read_byte((base + i) as usize));
+    pub fn get_debug_state(&self) -> String {
+        let opcode = self.read_byte(self.program_counter as usize);
+        let ie = self.read_byte(0xFFFF);
+        let iflag = self.read_byte(0xFF0F);
+        let ly = self.memory[0xFF44];
+        let stat = self.read_byte(0xFF41);
+        let lcdc = self.read_byte(0xFF40);
+        let tac = self.read_byte(0xFF07);
+        let tima = self.read_byte(0xFF05);
+        let flags = format!("{}{}{}{}",
+            if self.reg_f & 0x80 != 0 { 'Z' } else { '-' },
+            if self.reg_f & 0x40 != 0 { 'N' } else { '-' },
+            if self.reg_f & 0x20 != 0 { 'H' } else { '-' },
+            if self.reg_f & 0x10 != 0 { 'C' } else { '-' },
+        );
+        // Dump a few bytes around PC
+        let mut mem_dump = String::new();
+        let pc = self.program_counter as usize;
+        for i in 0..8 {
+            let addr = pc.wrapping_add(i);
+            if addr <= 0xFFFF {
+                mem_dump.push_str(&format!("{:02X} ", self.read_byte(addr)));
+            }
         }
-        data
+        format!(
+            "PC:{:04X} OP:{:02X} SP:{:04X}\nAF:{:04X} BC:{:04X}\nDE:{:04X} HL:{:04X}\nF:[{}] IME:{} HALT:{}\nLY:{:02X} STAT:{:02X} LCDC:{:02X}\nIE:{:02X} IF:{:02X}\nTAC:{:02X} TIMA:{:02X}\nBank:{:02X} Cart:{:02X} Boot:{}\nMem@PC: {}\nCycles:{}",
+            self.program_counter, opcode, self.stackpointer,
+            self.af(), self.bc(),
+            self.de(), self.hl(),
+            flags, self.interrupt_master_enable as u8, self.halt as u8,
+            ly, stat, lcdc,
+            ie, iflag,
+            tac, tima,
+            self.rombank, self.cartridge_type, self.booting as u8,
+            mem_dump.trim(),
+            self.total_cycles,
+        )
+    }
+
+    pub fn get_tile_data(&self, base: usize) -> &[u8] {
+        &self.memory[base..base + 0x2000]
     }
 
     pub fn get_sprite(&self, i: u8) -> [u8; 4] {
         let base = 0xFE00 + i as usize * 4;
         [
-            self.read_byte(base),
-            self.read_byte(base + 1),
-            self.read_byte(base + 2),
-            self.read_byte(base + 3),
+            self.memory[base],
+            self.memory[base + 1],
+            self.memory[base + 2],
+            self.memory[base + 3],
         ]
     }
 
-    pub fn get_mem_slice(&self, start: usize, end: usize) -> Vec<u8> {
-        self.memory[start..end].to_vec()
+    /// Direct read-only access to the memory array (for PPU/rendering hot paths
+    /// where addresses are known to always map to self.memory).
+    #[inline]
+    pub fn memory_ref(&self) -> &[u8; 0x10000] {
+        &self.memory
+    }
+
+    pub fn get_mem_slice(&self, start: usize, end: usize) -> &[u8] {
+        &self.memory[start..end]
     }
 
     pub fn handle_interrupts(&mut self) {
@@ -321,8 +750,8 @@ impl CPU {
         if !self.interrupt_master_enable {
             // Even if IME is false, interrupts can still wake the CPU from HALT
             if self.halt {
-                let interrupt_flag = self.read_byte(0xFF0F);
-                let interrupt_enable = self.read_byte(0xFFFF);
+                let interrupt_flag = self.memory[0xFF0F];
+                let interrupt_enable = self.memory[0xFFFF];
                 if interrupt_flag & interrupt_enable & 0x1F != 0 {
                     self.halt = false;
                 }
@@ -330,32 +759,32 @@ impl CPU {
             return;
         }
     
-        let interrupt_flag = self.read_byte(0xFF0F);
-        let interrupt_enable = self.read_byte(0xFFFF);
-    
+        let interrupt_flag = self.memory[0xFF0F];
+        let interrupt_enable = self.memory[0xFFFF];
+
         // Only check bits 0-4, as these are the only valid interrupt bits
         let valid_interrupts = interrupt_flag & interrupt_enable & 0x1F;
     
         if valid_interrupts != 0 {
             self.halt = false; // Wake up from HALT state
     
-            for i in 0..5 {
+            for i in 0u16..5 {
                 if valid_interrupts & (1 << i) != 0 {
                     // Disable further interrupts
                     self.interrupt_master_enable = false;
     
                     // Clear the interrupt flag
-                    self.write_byte(0xFF0F, interrupt_flag & !(1 << i));
-    
-                    // Push the current SP onto the stack
+                    self.write_byte(0xFF0F, interrupt_flag & !(1u8 << i));
+
+                    // Push the current PC onto the stack
                     self.push(self.program_counter);
     
                     // Jump to the interrupt handler address
-                    self.program_counter = 0x40 + i * 0x08;
-    
+                    self.program_counter = 0x0040 + i * 0x0008;
+
                     // Consume cycles for interrupt handling (5 M-cycles)
-                    self.cycles += 20;
-    
+                    self.cycles += 5;
+
                     return; // Handle only one interrupt at a time
                 }
             }
@@ -363,7 +792,9 @@ impl CPU {
     }
 
     pub fn set_keys(&mut self, key: u32, value: bool) {
-        self.keys.insert(key, value);
+        if (key as usize) < self.keys.len() {
+            self.keys[key as usize] = value;
+        }
     }
 
     pub fn request_interrupt(&mut self, interrupt: u8) {
@@ -374,7 +805,14 @@ impl CPU {
     }
 
     pub fn handle_timer(&mut self, cycles: u32) {
-        let tac = self.read_byte(0xFF07);
+        // DIV register increments at 16384 Hz (every 256 T-cycles)
+        self.div_cycles += cycles;
+        while self.div_cycles >= 256 {
+            self.div_cycles -= 256;
+            self.memory[0xFF04] = self.memory[0xFF04].wrapping_add(1);
+        }
+
+        let tac = self.memory[0xFF07];
         if tac & 0x04 == 0x04 {
             self.timer_cycles += cycles;
             let threshold = match tac & 0x03 {
@@ -387,20 +825,28 @@ impl CPU {
             
             while self.timer_cycles >= threshold {
                 self.timer_cycles -= threshold;
-                let tima = self.read_byte(0xFF05);
+                let tima = self.memory[0xFF05];
                 if tima == 0xFF {
-                    self.write_byte(0xFF05, self.read_byte(0xFF06));
+                    self.memory[0xFF05] = self.memory[0xFF06];
                     self.request_interrupt(2); // Timer interrupt
                 } else {
-                    self.write_byte(0xFF05, tima.wrapping_add(1));
+                    self.memory[0xFF05] = tima.wrapping_add(1);
                 }
             }
         }
     }
     
+    pub fn update_apu(&mut self, t_cycles: u32) {
+        self.apu.tick(t_cycles);
+    }
+
+    pub fn get_audio_buffer(&mut self) -> Vec<f32> {
+        self.apu.drain_samples()
+    }
+
     pub fn update_ppu(&mut self, cycles: u32) {
         // Check if LCD is on
-        let lcd_control = self.read_byte(0xFF40);
+        let lcd_control = self.memory[0xFF40];
         let lcd_on = (lcd_control & 0x80) != 0;
 
         if lcd_on {
@@ -408,7 +854,7 @@ impl CPU {
             self.ppu_cycles += cycles;
 
             // Get current PPU mode
-            let current_mode = self.read_byte(0xFF41) & 0b11;
+            let current_mode = self.memory[0xFF41] & 0b11;
 
             match current_mode {
                 0 => self.handle_hblank(),
@@ -426,9 +872,8 @@ impl CPU {
 
     fn handle_lcd_off(&mut self) {
         // When LCD is off, LY should be 0 and mode should be 0 (H-Blank)
-        self.write_byte(0xFF44, 0); // LY = 0
-        let stat = self.read_byte(0xFF41) & 0xFC; // Clear mode bits (set to 0)
-        self.write_byte(0xFF41, stat);
+        self.memory[0xFF44] = 0;
+        self.memory[0xFF41] &= 0xFC; // Clear mode bits directly
 
         // Reset PPU cycles
         self.ppu_cycles = 0;
@@ -438,7 +883,7 @@ impl CPU {
         if self.ppu_cycles >= 204 { // Average H-Blank duration
             self.ppu_cycles -= 204;
             self.increment_ly();
-            if self.read_byte(0xFF44) == 144 {
+            if self.memory[0xFF44] == 144 {
                 // Enter V-Blank
                 self.set_ppu_mode(1);
                 self.request_interrupt(0); // V-Blank interrupt
@@ -453,8 +898,20 @@ impl CPU {
         if self.ppu_cycles >= 456 { // One scanline duration
             self.ppu_cycles -= 456;
             self.increment_ly();
-            if self.read_byte(0xFF44) == 0 {
-                // V-Blank finished, restart from top
+            let ly = self.memory[0xFF44];
+            if ly > 153 {
+                // V-Blank finished, reset LY to 0 and restart from top
+                self.memory[0xFF44] = 0;
+                // Check LYC=LY coincidence for LY=0
+                let lyc = self.memory[0xFF45];
+                if 0 == lyc {
+                    self.memory[0xFF41] |= 0x04; // Set coincidence flag
+                    if self.memory[0xFF41] & 0x40 != 0 {
+                        self.request_interrupt(1);
+                    }
+                } else {
+                    self.memory[0xFF41] &= !0x04; // Clear coincidence flag
+                }
                 self.set_ppu_mode(2);
             }
         }
@@ -479,15 +936,24 @@ impl CPU {
     }
 
     fn set_ppu_mode(&mut self, mode: u8) {
-        let mut stat = self.read_byte(0xFF41);
-        stat &= 0b11111100; // Clear the mode bits
-        stat |= mode; // Set the new mode
-        self.write_byte(0xFF41, stat);
+        // Write mode bits directly to memory (lower 2 bits of STAT)
+        self.memory[0xFF41] = (self.memory[0xFF41] & 0b11111100) | (mode & 0x03);
 
         // Check if we need to request STAT interrupt
         // Only do this if the LCD is on
-        if (self.read_byte(0xFF40) & 0x80) != 0 {
-            if (stat & (0b1 << (mode + 3))) != 0 {
+        if (self.memory[0xFF40] & 0x80) != 0 {
+            // Mode 0 (H-Blank) → bit 3
+            // Mode 1 (V-Blank) → bit 4
+            // Mode 2 (OAM search) → bit 5
+            // Mode 3 has NO STAT interrupt enable bit
+            let stat = self.memory[0xFF41];
+            let fire = match mode {
+                0 => stat & 0x08 != 0,
+                1 => stat & 0x10 != 0,
+                2 => stat & 0x20 != 0,
+                _ => false,
+            };
+            if fire {
                 self.request_interrupt(1); // STAT interrupt
             }
         }
@@ -495,29 +961,27 @@ impl CPU {
 
     fn increment_ly(&mut self) {
         // Only increment LY if the LCD is on
-        if (self.read_byte(0xFF40) & 0x80) != 0 {
-            let ly = self.read_byte(0xFF44);
-            self.write_byte(0xFF44, ly.wrapping_add(1));
+        if (self.memory[0xFF40] & 0x80) != 0 {
+            let ly = self.memory[0xFF44].wrapping_add(1);
+            self.memory[0xFF44] = ly;
 
             // Check LYC=LY coincidence
-            let lyc = self.read_byte(0xFF45);
-            let mut stat = self.read_byte(0xFF41);
+            let lyc = self.memory[0xFF45];
             if ly == lyc {
-                stat |= 0b100; // Set coincidence flag
-                if stat & 0b0100_0000 != 0 {
+                self.memory[0xFF41] |= 0x04; // Set coincidence flag (bit 2)
+                if self.memory[0xFF41] & 0x40 != 0 {
                     self.request_interrupt(1); // STAT interrupt
                 }
             } else {
-                stat &= 0b11111011; // Clear coincidence flag
+                self.memory[0xFF41] &= !0x04; // Clear coincidence flag
             }
-            self.write_byte(0xFF41, stat);
         }
     }
 
     fn push(&mut self, data: u16) {
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (data >> 8) as u8);
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (data & 0xFF) as u8);
     }
 
@@ -769,8 +1233,7 @@ impl CPU {
             0xfe => "cp",
             0xff => "rst38h",
             _ => {
-                console::log_1(&format!("Unknown opcode: {:x}", opcode).into());
-                exit(1);
+                "UNKNOWN"
             }
         }
     }
@@ -1037,6 +1500,9 @@ impl CPU {
     }
 
     pub fn execute(&mut self) {
+        // Save whether EI was already pending before this instruction
+        let was_ei_pending = self.ei_pending;
+
         let opcode = self.read();
         // if ei, pause
         // if opcode == 0xFB {
@@ -1312,9 +1778,16 @@ impl CPU {
             0xfe => self.cp(),
             0xff => self.rst38h(),
             _ => {
-                console::log_1(&format!("Unknown opcode: {:x}", opcode).into());
-                exit(1);
+                panic!("Unknown opcode: 0x{:02X} at PC=0x{:04X} | AF={:04X} BC={:04X} DE={:04X} HL={:04X} SP={:04X}",
+                    opcode, self.program_counter.wrapping_sub(1), self.af(), self.bc(), self.de(), self.hl(), self.stackpointer);
             }
+        }
+
+        // Delayed EI: if EI was pending from a previous instruction and
+        // wasn't cancelled by this instruction (e.g., DI), enable IME now
+        if was_ei_pending && self.ei_pending {
+            self.interrupt_master_enable = true;
+            self.ei_pending = false;
         }
     }
 
@@ -1598,28 +2071,32 @@ impl CPU {
 
     fn ldhbca(&mut self) {
         self.write_byte(((self.reg_b as u16) << 8 | self.reg_c as u16 )as usize, self.reg_a);
-        self.cycles += 3;
+        self.cycles += 2;
     }
 
     fn incbc(&mut self) {
-        let mut data = (self.reg_b as u16) << 8 | self.reg_c as u16;
-        data += 1;
-        data &= 0xFFFF;
+        let mut data = ((self.reg_b as u16) << 8 | self.reg_c as u16).wrapping_add(1);
         self.reg_b = (data >> 8) as u8;
         self.reg_c = data as u8;
         self.cycles += 2;
     }
 
     fn incb(&mut self) { 
-        self.set_flag_bit(5, self.reg_b & 0x07 + 1 > 0x07);
-        self.reg_b += 1;
+        self.set_flag_bit(5, (self.reg_b & 0x0F) + 1 > 0x0F);
+        self.reg_b = self.reg_b.wrapping_add(1);
         self.set_flag_bit(7, self.reg_b==0);
         self.set_flag_bit(6, false);
         self.cycles += 1;
     }
 
     fn decb(&mut self) {
+        // set H flag if borrow from bit 4
+        self.set_flag_bit(5, (self.reg_b & 0x0F) == 0x00);
         self.reg_b = self.dec(self.reg_b);
+        // set Z flag if result is 0
+        self.set_flag_bit(7, self.reg_b==0);
+        // set N flag = 1
+        self.set_flag_bit(6, true);
         self.cycles += 1;
     }
 
@@ -1646,7 +2123,7 @@ impl CPU {
         let hl = self.hl();
         let bc = self.bc();
         let result = hl as u32 + bc as u32;
-        self.set_flag_bit(5, ((hl & 0x7ff) + (bc & 0x7ff)) > 0x7ff);
+        self.set_flag_bit(5, (hl & 0xfff) + (bc & 0xfff) > 0xfff);
         self.set_flag_bit(6, false);
         self.set_flag_bit(4, result > 0xffff);
         self.reg_h = (result >> 8) as u8;
@@ -1660,7 +2137,7 @@ impl CPU {
     }
 
     fn decbc(&mut self) {
-        let bc = self.bc() - 1;
+        let bc = self.bc().wrapping_sub(1);
         self.reg_b = (bc >> 8) as u8;
         self.reg_c = bc as u8;
         self.cycles += 2;
@@ -1668,15 +2145,18 @@ impl CPU {
     }
 
     fn incc(&mut self) {
-        self.set_flag_bit(5, self.reg_c & 0x07 + 1 > 0x07);
-        self.reg_c += 1;
+        self.set_flag_bit(5, (self.reg_c & 0x0F) + 1 > 0x0F);
+        self.reg_c = self.reg_c.wrapping_add(1);
         self.set_flag_bit(7, self.reg_c==0);
         self.set_flag_bit(6, false);
         self.cycles += 1;
     }
 
     fn decc(&mut self) {
+        self.set_flag_bit(5, (self.reg_c & 0x0F) == 0x00);
         self.reg_c = self.dec(self.reg_c);
+        (*self).set_flag_bit(7, self.reg_c==0);
+        self.set_flag_bit(6, true);
         self.cycles += 1;
     }
 
@@ -1692,7 +2172,14 @@ impl CPU {
     }
 
     fn stop(&mut self) {
-        exit(0);
+        // STOP is a 2-byte instruction (0x10 0x00) — consume the second byte
+        self.read();
+        // On DMG, STOP halts until a button is pressed or interrupt occurs.
+        // For emulation: just treat it as a 2-byte NOP to avoid deadlocks.
+        // The DIV register is reset by STOP.
+        self.memory[0xFF04] = 0;
+        self.div_cycles = 0;
+        self.cycles += 1;
     }
 
     fn ldded16(&mut self) {
@@ -1707,23 +2194,25 @@ impl CPU {
     }
 
     fn incde(&mut self) {
-        let de = self.de();
-        let result = de + 1;
-        self.reg_d = (result >> 8) as u8;
-        self.reg_e = result as u8;
+        let de = self.de().wrapping_add(1);
+        self.reg_d = (de >> 8) as u8;
+        self.reg_e = de as u8;
         self.cycles += 2;
     }
 
     fn incd(&mut self) {
-        self.set_flag_bit(5, self.reg_d & 0x07 + 1 > 0x07);
-        self.reg_d += 1;
+        self.set_flag_bit(5, (self.reg_d & 0x0F) + 1 > 0x0F);
+        self.reg_d = self.reg_d.wrapping_add(1);
         self.set_flag_bit(7, self.reg_d==0);
         self.set_flag_bit(6, false);
         self.cycles += 1;
     }
 
     fn decd(&mut self) {
+        self.set_flag_bit(5, (self.reg_d & 0x0F) == 0x00);
         self.reg_d = self.dec(self.reg_d);
+        self.set_flag_bit(7, self.reg_d==0);
+        self.set_flag_bit(6, true);
         self.cycles += 1;
     }
 
@@ -1753,7 +2242,7 @@ impl CPU {
         let hl = self.hl();
         let de = self.de();
         let result = hl as u32 + de as u32;
-        self.set_flag_bit(5, ((hl & 0x7ff) + (de & 0x7ff)) > 0x7ff);
+        self.set_flag_bit(5, (hl & 0xfff) + (de & 0xfff) > 0xfff);
         self.set_flag_bit(6, false);
         self.set_flag_bit(4, result > 0xffff);
         self.reg_h = (result >> 8) as u8;
@@ -1768,22 +2257,25 @@ impl CPU {
 
     fn decde(&mut self) {
         let de = self.de();
-        let result = de - 1;
+        let result = de.wrapping_sub(1);
         self.reg_d = (result >> 8) as u8;
         self.reg_e = result as u8;
         self.cycles += 2;
     }
 
     fn ince(&mut self) {
-        self.set_flag_bit(5, self.reg_e & 0x07 + 1 > 0x07);
-        self.reg_e += 1;
+        self.set_flag_bit(5, (self.reg_e & 0x0F) + 1 > 0x0F);
+        self.reg_e = self.reg_e.wrapping_add(1);
         self.set_flag_bit(7, self.reg_e==0);
         self.set_flag_bit(6, false);
         self.cycles += 1;
     }
 
     fn dece(&mut self) {
+        self.set_flag_bit(5, (self.reg_e & 0x0F) == 0x00);
         self.reg_e = self.dec(self.reg_e);
+        self.set_flag_bit(7, self.reg_e==0);
+        self.set_flag_bit(6, true);
         self.cycles += 1;
     }
 
@@ -1804,7 +2296,7 @@ impl CPU {
 
     fn jrnz(&mut self) {
         if self.get_flag_bit(7) {
-            self.program_counter += 1;
+            self.program_counter = self.program_counter.wrapping_add(1);
             self.cycles += 2;
         } else {
             let offset = self.read() as i8;
@@ -1822,7 +2314,7 @@ impl CPU {
     fn ldhlplusa(&mut self) {
         self.write_byte(self.hl() as usize, self.reg_a);
         let mut hl = self.hl();
-        hl += 1;
+        hl = hl.wrapping_add(1);
         self.reg_h = (hl >> 8) as u8;
         self.reg_l = hl as u8;
         self.cycles += 2;
@@ -1830,15 +2322,15 @@ impl CPU {
 
     fn inchl(&mut self) {
         let mut hl = self.hl();
-        hl += 1;
+        hl = hl.wrapping_add(1);
         self.reg_h = (hl >> 8) as u8;
         self.reg_l = hl as u8;
         self.cycles += 2;
     }
 
     fn inch(&mut self) {
-        self.set_flag_bit(5, self.reg_h & 0x07 + 1 > 0x07);
-        self.reg_h += 1;
+        self.set_flag_bit(5, (self.reg_h & 0x0F) + 1 > 0x0F);
+        self.reg_h = self.reg_h.wrapping_add(1);
         self.set_flag_bit(7, self.reg_h==0);
         self.set_flag_bit(6, false);
         self.cycles += 1;
@@ -1887,7 +2379,7 @@ impl CPU {
             self.program_counter = (self.program_counter as i32 + offset as i32) as u16;
             self.cycles += 3;
         } else {
-            self.program_counter += 1;
+            self.program_counter = self.program_counter.wrapping_add(1);
             self.cycles += 2;
         }
     }
@@ -1895,7 +2387,7 @@ impl CPU {
     fn addhlhl(&mut self) {
         let hl = self.hl();
         let result = hl as u32 + hl as u32;
-        self.set_flag_bit(5, ((hl & 0x7ff) + (hl & 0x7ff)) > 0x7ff);
+        self.set_flag_bit(5, (hl & 0xfff) + (hl & 0xfff) > 0xfff);
         self.set_flag_bit(6, false);
         self.set_flag_bit(4, result > 0xffff);
         self.reg_h = (result >> 8) as u8;
@@ -1905,7 +2397,7 @@ impl CPU {
 
     fn ldahlplus(&mut self) {
         self.reg_a = self.read_byte(self.hl() as usize);
-        let hl = self.hl() + 1;
+        let hl = self.hl().wrapping_add(1);
         self.reg_h = (hl >> 8) as u8;
         self.reg_l = hl as u8;
         self.cycles += 2;
@@ -1913,15 +2405,15 @@ impl CPU {
 
     fn dechl(&mut self) {
         let mut hl = self.hl();
-        hl -= 1;
+        hl = hl.wrapping_sub(1);
         self.reg_h = (hl >> 8) as u8;
         self.reg_l = hl as u8;
         self.cycles += 2;
     }
 
     fn incl(&mut self) {
-        self.set_flag_bit(5, self.reg_l & 0x07 + 1 > 0x07);
-        self.reg_l += 1;
+        self.set_flag_bit(5, (self.reg_l & 0x0F) + 1 > 0x0F);
+        self.reg_l = self.reg_l.wrapping_add(1);
         self.set_flag_bit(7, self.reg_l==0);
         self.set_flag_bit(6, false);
         self.cycles += 1;
@@ -1946,7 +2438,7 @@ impl CPU {
 
     fn jrncr8(&mut self) {
         if self.get_flag_bit(4) {
-            self.program_counter += 1;
+            self.program_counter = self.program_counter.wrapping_add(1);
             self.cycles += 2;
         } else {
             let offset = self.read() as i8;
@@ -1964,22 +2456,22 @@ impl CPU {
     fn ldhlmina(&mut self) {
         let mut hl = self.hl();
         self.write_byte(hl as usize, self.reg_a);
-        hl -= 1;
+        hl = hl.wrapping_sub(1);
         self.reg_h = (hl >> 8) as u8;
         self.reg_l = hl as u8;
         self.cycles += 2;
     }
 
     fn incsp(&mut self) {
-        self.stackpointer += 1;
+        self.stackpointer = self.stackpointer.wrapping_add(1);
         self.cycles += 2;
     }
 
     fn inchhl(&mut self) {
         let hl = self.hl();
         let mut data = self.read_byte(hl as usize);
-        self.set_flag_bit(5, ((data & 0x07) + 1) > 0x07);
-        data += 1;
+        self.set_flag_bit(5, ((data & 0x0F) + 1) > 0x0F);
+        data = data.wrapping_add(1);
         self.set_flag_bit(7, data==0);
         self.set_flag_bit(6, false);
         self.write_byte(hl as usize, data);
@@ -2011,7 +2503,7 @@ impl CPU {
             self.program_counter = (self.program_counter as i32 + offset as i32) as u16;
             self.cycles += 3;
         } else {
-            self.program_counter += 1;
+            self.program_counter = self.program_counter.wrapping_add(1);
             self.cycles += 2;
         }
     }
@@ -2022,7 +2514,7 @@ impl CPU {
         let result = hl as u32 + sp as u32;
 
         // Set the Half Carry flag (bit 11 carry)
-        self.set_flag_bit(5, ((hl as u32 & 0x07FF) + (sp as u32 & 0x07FF)) > 0x07FF);
+        self.set_flag_bit(5, (hl & 0x0FFF) + (sp & 0x0FFF) > 0x0FFF);
 
         // Set the Subtract flag to false
         self.set_flag_bit(6, false);
@@ -2038,20 +2530,20 @@ impl CPU {
 
     fn ldahlmin(&mut self) {
         self.reg_a = self.read_byte(self.hl() as usize);
-        let hl = self.hl() - 1;
+        let hl = self.hl().wrapping_sub(1);
         self.reg_h = (hl >> 8) as u8;
         self.reg_l = hl as u8;
         self.cycles += 2;
     }
 
     fn decsp(&mut self) {
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.cycles += 2;
     }
 
     fn inca(&mut self) {
-        self.set_flag_bit(5, self.reg_a & 0x07 + 1 > 0x07);
-        self.reg_a += 1;
+        self.set_flag_bit(5, (self.reg_a & 0x0F) + 1 > 0x0F);
+        self.reg_a = self.reg_a.wrapping_add(1);
         self.set_flag_bit(7, self.reg_a==0);
         self.set_flag_bit(6, false);
         self.cycles += 1;
@@ -2059,14 +2551,17 @@ impl CPU {
 
     fn dec(&mut self,mut val:u8) -> u8 {
         self.set_flag_bit(5, (val & 0x0F) < 0x01);
-        val -= 1;
+        val = val.wrapping_sub(1);
         self.set_flag_bit(7, val==0);
         self.set_flag_bit(6, true);
         val
     }
 
     fn deca(&mut self) {
+        self.set_flag_bit(5, (self.reg_a & 0x0F) == 0x00);
         self.reg_a = self.dec(self.reg_a);
+        self.set_flag_bit(7, self.reg_a==0);
+        self.set_flag_bit(6, true);
         self.cycles += 1;
     }
 
@@ -2353,10 +2848,26 @@ impl CPU {
     }
 
     fn halt(&mut self) {
-        if self.interrupt_master_enable {
-            // IME is set, enter low-power mode until an interrupt occurs
-            self.halt = true;
+        let ie = self.memory[0xFFFF];
+        let iflag = self.memory[0xFF0F];
+        if !self.interrupt_master_enable && ie == 0 {
+            //console::log_1(&format!("HALT DEADLOCK at PC:{:04X} IE:{:02X} IF:{:02X} IME:{} Bank:{} Bank2:{} Mode:{}",
+                //self.program_counter, ie, iflag, self.interrupt_master_enable,
+                //self.rombank, self.mbc1_bank2, self.mbc_rom_mode).into());
+            // Dump stack context
+            let sp = self.stackpointer as usize;
+            let mut stack_dump = String::new();
+            for i in 0..8 {
+                let addr = sp.wrapping_add(i);
+                if addr <= 0xFFFF {
+                    stack_dump.push_str(&format!("{:02X} ", self.read_byte(addr)));
+                }
+            }
+            //console::log_1(&format!("Stack@SP({:04X}): {}", sp, stack_dump.trim()).into());
         }
+        //console::log_1(&format!("HALT at PC:{:04X} IE:{:02X} IF:{:02X} IME:{}",
+            //self.program_counter, ie, iflag, self.interrupt_master_enable).into());
+        self.halt = true;
         self.cycles += 1;
     }
 
@@ -2455,10 +2966,11 @@ impl CPU {
     }
 
     fn cb_adcar8(&mut self, val: u8) {
-        let tmp = self.reg_a as i16 + val as i16 + self.get_flag_bit(4) as i16;
+        let carry = self.get_flag_bit(4) as u8;
+        let tmp = self.reg_a as i16 + val as i16 + carry as i16;
         self.set_flag_bit(7, (tmp & 0xFF) == 0);
         self.set_flag_bit(6, false);
-        self.set_flag_bit(5, (self.reg_a & 0x0F) + (val & 0x0F) + self.get_flag_bit(4) as u8 > 0x0F);
+        self.set_flag_bit(5, (self.reg_a & 0x0F) + (val & 0x0F) + carry > 0x0F);
         self.set_flag_bit(4, tmp > 0xFF);
         self.reg_a = tmp as u8;
     }
@@ -2507,7 +3019,8 @@ impl CPU {
         let tmp = self.reg_a as i16 - b as i16;
         self.set_flag_bit(7, (tmp & 0xFF) == 0);
         self.set_flag_bit(6, true);
-        self.set_flag_bit(5, (((self.reg_a & 0x0F) - (b & 0x0F)) & 0x10) == 0x10);
+        // Fixed Half-Carry calculation:
+        self.set_flag_bit(5, (self.reg_a & 0x0F) < (b & 0x0F));
         self.set_flag_bit(4, tmp < 0);
         self.reg_a = tmp as u8;
     }
@@ -2553,10 +3066,12 @@ impl CPU {
     }
 
     fn subca(&mut self, b: u8) {
-        let tmp = self.reg_a as i16 - b as i16 - self.get_flag_bit(4) as i16;
+        let carry = self.get_flag_bit(4) as i16;
+        let tmp = self.reg_a as i16 - b as i16 - carry;
         self.set_flag_bit(7, (tmp & 0xFF) == 0);
         self.set_flag_bit(6, true);
-        self.set_flag_bit(5, (((self.reg_a & 0x0F) - (b & 0x0F) - self.get_flag_bit(4) as u8) & 0x10) == 0x10);
+        // Fixed Half-Carry calculation:
+        self.set_flag_bit(5, ((self.reg_a & 0x0F) as i16 - (b & 0x0F) as i16 - carry) < 0);
         self.set_flag_bit(4, tmp < 0);
         self.reg_a = tmp as u8;
     }
@@ -2748,7 +3263,7 @@ impl CPU {
     fn cpr8(&mut self, b: u8) {
         self.set_flag_bit(7, self.reg_a == b);
         self.set_flag_bit(6, true);
-        self.set_flag_bit(5, self.reg_a & 0x0F < b & 0x0F);
+        self.set_flag_bit(5, (self.reg_a & 0x0F) < (b & 0x0F));
         self.set_flag_bit(4, self.reg_a < b);
     }
 
@@ -2803,9 +3318,9 @@ impl CPU {
 
     fn popbc(&mut self) {
         self.reg_c = self.read_byte(self.stackpointer as usize);
-        self.stackpointer += 1;
+        self.stackpointer = self.stackpointer.wrapping_add(1);
         self.reg_b = self.read_byte(self.stackpointer as usize);
-        self.stackpointer += 1;
+        self.stackpointer = self.stackpointer.wrapping_add(1);
         self.cycles += 3;
     }
 
@@ -2814,7 +3329,7 @@ impl CPU {
             self.program_counter = self.read16();
             self.cycles += 4;
         } else {
-            self.program_counter += 2;
+            self.program_counter = self.program_counter.wrapping_add(2);
             self.cycles += 3;
         }
     }
@@ -2828,33 +3343,33 @@ impl CPU {
         if !self.get_flag_bit(7) {
             self.calla16();
         } else {
-            self.program_counter += 2;
+            self.program_counter = self.program_counter.wrapping_add(2);
             self.cycles += 3;
         }
     }
 
     fn pushbc(&mut self) {
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, self.reg_b);
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, self.reg_c);
-        self.cycles += 3;
+        self.cycles += 4;
     }
 
     fn adda8(&mut self) {
         let b = self.read();
-        self.set_flag_bit(5, (self.reg_a & 0x07) + (b & 0x07) > 0x07);
-        self.set_flag_bit(4, self.reg_a as i16 + b as i16 > 0xFF);
-        self.reg_a += b;
+        self.set_flag_bit(5, (self.reg_a & 0x0F) + (b & 0x0F) > 0x0F);
+        self.set_flag_bit(4, self.reg_a as u16 + b as u16 > 0xFF);
+        self.reg_a = self.reg_a.wrapping_add(b);
         self.set_flag_bit(7, self.reg_a == 0);
         self.set_flag_bit(6, false);
         self.cycles += 2;
     }
 
     fn rst00h(&mut self) {
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter) as u8);
         self.program_counter = 0x00;
         self.cycles += 4;
@@ -2871,9 +3386,9 @@ impl CPU {
 
     fn ret(&mut self) {
         let l = self.read_byte(self.stackpointer as usize);
-        self.stackpointer += 1;
+        self.stackpointer = self.stackpointer.wrapping_add(1);
         let h = self.read_byte(self.stackpointer as usize);
-        self.stackpointer += 1;
+        self.stackpointer = self.stackpointer.wrapping_add(1);
         self.program_counter = (h as u16) << 8 | l as u16;
         self.cycles += 4;
 
@@ -2884,7 +3399,7 @@ impl CPU {
             self.program_counter = self.read16();
             self.cycles += 4;
         } else {
-            self.program_counter += 2;
+            self.program_counter = self.program_counter.wrapping_add(2);
             self.cycles += 3;
         }
     }
@@ -2893,35 +3408,37 @@ impl CPU {
         if self.get_flag_bit(7) {
             self.calla16();
         } else {
-            self.program_counter += 2;
+            self.program_counter = self.program_counter.wrapping_add(2);
             self.cycles += 3;
         }
     }
 
     fn calla16(&mut self) {
-        self.stackpointer -= 1;
-        self.write_byte(self.stackpointer as usize, (self.program_counter+2 >> 8) as u8);
-        self.stackpointer -= 1;
-        self.write_byte(self.stackpointer as usize, (self.program_counter+2) as u8);
+        let return_addr = self.program_counter + 2;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
+        self.write_byte(self.stackpointer as usize, (return_addr >> 8) as u8);
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
+        self.write_byte(self.stackpointer as usize, return_addr as u8);
         self.program_counter = self.read16();
         self.cycles += 6;
     }
 
     fn adcaa8(&mut self) {
         let v= self.read();
-        let tmp = self.reg_a as u16 + v as u16 + self.get_flag_bit(4) as u16;
+        let carry = self.get_flag_bit(4) as u16;
+        let tmp = self.reg_a as u16 + v as u16 + carry;
         self.set_flag_bit(7, tmp as u8 == 0);
         self.set_flag_bit(6, false);
-        self.set_flag_bit(5, (self.reg_a as u16 & 0x07) + (v as u16 & 0x07) + (self.get_flag_bit(4) as u16) > 0x07);
+        self.set_flag_bit(5, (self.reg_a as u16 & 0x0F) + (v as u16 & 0x0F) + carry > 0x0F);
         self.set_flag_bit(4, tmp > 0xFF);
         self.reg_a = tmp as u8;
         self.cycles += 2;
     }
 
     fn rst08h(&mut self) {
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter) as u8);
         self.program_counter = 0x08;
         self.cycles += 4;
@@ -2938,9 +3455,9 @@ impl CPU {
 
     fn popde(&mut self) {
         self.reg_e = self.read_byte(self.stackpointer as usize);
-        self.stackpointer += 1;
+        self.stackpointer = self.stackpointer.wrapping_add(1);
         self.reg_d = self.read_byte(self.stackpointer as usize);
-        self.stackpointer += 1;
+        self.stackpointer = self.stackpointer.wrapping_add(1);
         self.cycles += 3;
     }
 
@@ -2949,7 +3466,7 @@ impl CPU {
             self.program_counter = self.read16();
             self.cycles += 4;
         } else {
-            self.program_counter += 2;
+            self.program_counter = self.program_counter.wrapping_add(2);
             self.cycles += 3;
         }
     }
@@ -2958,15 +3475,15 @@ impl CPU {
         if !self.get_flag_bit(4) {
             self.calla16();
         } else {
-            self.program_counter += 2;
+            self.program_counter = self.program_counter.wrapping_add(2);
             self.cycles += 3;
         }
     }
 
     fn pushde(&mut self) {
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, self.reg_d);
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, self.reg_e);
         self.cycles += 4;
     }
@@ -2978,14 +3495,14 @@ impl CPU {
         // Set the half carry flag (bit 4 carry)
         self.set_flag_bit(5, (self.reg_a & 0x0F) < (b & 0x0F));
         self.set_flag_bit(4, self.reg_a < b);
-        self.reg_a -= b;
+        self.reg_a = self.reg_a.wrapping_sub(b);
         self.cycles += 2;
     }
 
     fn rst10h(&mut self) {
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter) as u8);
         self.program_counter = 0x10;
         self.cycles += 4;
@@ -3010,7 +3527,7 @@ impl CPU {
             self.program_counter = self.read16();
             self.cycles += 4;
         } else {
-            self.program_counter += 2;
+            self.program_counter = self.program_counter.wrapping_add(2);
             self.cycles += 3;
         }
     }
@@ -3019,26 +3536,27 @@ impl CPU {
         if self.get_flag_bit(4) {
             self.calla16();
         } else {
-            self.program_counter += 2;
+            self.program_counter = self.program_counter.wrapping_add(2);
             self.cycles += 3;
         }
     }
 
     fn sbca8(&mut self) {
         let b = self.read();
-        let tmp = self.reg_a as i16 - b as i16 - self.get_flag_bit(4) as i16;
+        let carry = self.get_flag_bit(4) as i16;
+        let tmp = self.reg_a as i16 - b as i16 - carry;
         self.set_flag_bit(7, tmp as u8 == 0);
         self.set_flag_bit(6, true);
-        self.set_flag_bit(5, (((self.reg_a  & 0x07) as i16) - ((b & 0x07)  as i16) - (self.get_flag_bit(4) as i16) )< 0);
+        self.set_flag_bit(5, ((self.reg_a & 0x0F) as i16 - (b & 0x0F) as i16 - carry) < 0);
         self.set_flag_bit(4, tmp < 0);
         self.reg_a = tmp as u8;
         self.cycles += 2;
     }
 
     fn rst18h(&mut self) {
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter) as u8);
         self.program_counter = 0x18;
         self.cycles += 4;
@@ -3052,9 +3570,9 @@ impl CPU {
 
     fn pophl(&mut self) {
         self.reg_l = self.read_byte(self.stackpointer as usize);
-        self.stackpointer += 1;
+        self.stackpointer = self.stackpointer.wrapping_add(1);
         self.reg_h = self.read_byte(self.stackpointer as usize);
-        self.stackpointer += 1;
+        self.stackpointer = self.stackpointer.wrapping_add(1);
         self.cycles += 3;
     }
 
@@ -3064,9 +3582,9 @@ impl CPU {
     }
 
     fn pushhl(&mut self) {
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, self.reg_h);
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, self.reg_l);
         self.cycles += 4;
     }
@@ -3078,9 +3596,9 @@ impl CPU {
     }
 
     fn rst20h(&mut self) {
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter) as u8);
         self.program_counter = 0x20;
         self.cycles += 4;
@@ -3088,27 +3606,19 @@ impl CPU {
 
     fn addspr8(&mut self) {
         // Add the signed value e8 to SP.
-        // Flags:
-        //     Z:0
-        //     N:0
-        //     H:Set if overflow from bit 3.
-        //     C:Set if overflow from bit 7.
-        let b = self.read() as i8 as i32;
-        let sp_i32 = self.stackpointer as i32;
+        // Flags are based on unsigned addition of low byte of SP and unsigned e8
+        let b = self.read();
+        let offset = b as i8 as i16 as u16;
 
         // Clear Z and N flags
         self.set_flag_bit(6, false);
         self.set_flag_bit(7, false);
 
-        if b >= 0 {
-            self.set_flag_bit(4, ((sp_i32 & 0xFF) + b) > 0xFF);
-            self.set_flag_bit(5, ((sp_i32 & 0xF) + (b & 0xF)) > 0xF);
-        } else {
-            self.set_flag_bit(4, ((sp_i32+b) & 0xFF) <= (self.stackpointer as i32 & 0xFF));
-            self.set_flag_bit(5, ((sp_i32+b) & 0x0F) <= (self.stackpointer as i32 & 0xF));
-        }
+        // Carry and half-carry are based on lower byte unsigned add
+        self.set_flag_bit(4, (self.stackpointer & 0xFF) + (b as u16) > 0xFF);
+        self.set_flag_bit(5, (self.stackpointer & 0xF) + (b as u16 & 0xF) > 0xF);
 
-        self.stackpointer = (sp_i32 + b) as u16;
+        self.stackpointer = self.stackpointer.wrapping_add(offset);
         self.cycles += 4;
     }
 
@@ -3131,9 +3641,9 @@ impl CPU {
     }
 
     fn rst28h(&mut self) {
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter) as u8);
         self.program_counter = 0x28;
         self.cycles += 4;
@@ -3149,9 +3659,9 @@ impl CPU {
         self.reg_f = self.read_byte(self.stackpointer as usize);
         // set lower 4 bits to 0
         self.reg_f &= 0xF0;
-        self.stackpointer += 1;
+        self.stackpointer = self.stackpointer.wrapping_add(1);
         self.reg_a = self.read_byte(self.stackpointer as usize);
-        self.stackpointer += 1;
+        self.stackpointer = self.stackpointer.wrapping_add(1);
         self.cycles += 3;
     }
 
@@ -3162,13 +3672,14 @@ impl CPU {
 
     fn di(&mut self) {
         self.interrupt_master_enable = false;
+        self.ei_pending = false;
         self.cycles += 1;
     }
 
     fn pushaf(&mut self) {
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, self.reg_a);
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, self.reg_f);
         self.cycles += 4;
     }
@@ -3180,30 +3691,29 @@ impl CPU {
     }
 
     fn rst30h(&mut self) {
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter) as u8);
         self.program_counter = 0x30;
         self.cycles += 4;
     }
 
     fn ldhlspr8(&mut self) {
-        let b = self.read() as i8 as i32;
-        let sp_i32 = self.stackpointer as i32;
+        // LD HL, SP+r8
+        // Flags are based on unsigned addition of low byte of SP and unsigned e8
+        let b = self.read();
+        let offset = b as i8 as i16 as u16;
 
         // Clear Z and N flags
         self.set_flag_bit(6, false);
         self.set_flag_bit(7, false);
 
-        if b >= 0 {
-            self.set_flag_bit(4, ((sp_i32 & 0xFF) + b) > 0xFF);
-            self.set_flag_bit(5, ((sp_i32 & 0xF) + (b & 0xF)) > 0xF);
-        } else {
-            self.set_flag_bit(4, ((sp_i32+b) & 0xFF) <= (self.stackpointer as i32 & 0xFF));
-            self.set_flag_bit(5, ((sp_i32+b) & 0x0F) <= (self.stackpointer as i32 & 0xF));
-        }
-        let hl = (sp_i32 + b) as u16;
+        // Carry and half-carry are based on lower byte unsigned add
+        self.set_flag_bit(4, (self.stackpointer & 0xFF) + (b as u16) > 0xFF);
+        self.set_flag_bit(5, (self.stackpointer & 0xF) + (b as u16 & 0xF) > 0xF);
+
+        let hl = self.stackpointer.wrapping_add(offset);
         self.reg_h = (hl >> 8) as u8;
         self.reg_l = hl as u8;
         self.cycles += 3;
@@ -3221,29 +3731,30 @@ impl CPU {
     }
 
     fn ei(&mut self) {
-        self.interrupt_master_enable = true;
+        // EI enables interrupts after the next instruction (delayed by one instruction)
+        self.ei_pending = true;
         self.cycles += 1;
     }
 
     fn cp(&mut self) {
-        self.set_flag_bit(7, self.reg_a == self.read_byte(self.program_counter as usize));
+        let b = self.read();
+        self.set_flag_bit(7, self.reg_a == b);
         self.set_flag_bit(6, true);
-        self.set_flag_bit(5, self.reg_a & 0x0F < self.read_byte(self.program_counter as usize) & 0x0F);
-        self.set_flag_bit(4, self.reg_a < self.read_byte(self.program_counter as usize));
-        self.program_counter += 1;
+        self.set_flag_bit(5, (self.reg_a & 0x0F) < (b & 0x0F));
+        self.set_flag_bit(4, self.reg_a < b);
         self.cycles += 2;
     }
 
     fn rst38h(&mut self) {
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
-        self.stackpointer -= 1;
+        self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, self.program_counter as u8);
         self.program_counter = 0x38;
         self.cycles += 4;
     }
 
-    fn cb_rlc(&mut self, n: u8) -> u8 {
+    fn  cb_rlc(&mut self, n: u8) -> u8 {
         let carry = n & 0x80;
         let n = (n << 1) & 0xff | carry >> 7;
         self.set_flag_bit(4, carry != 0);
@@ -3695,7 +4206,7 @@ impl CPU {
     fn bit0hl(&mut self) {
         let v = self.read_byte(self.hl() as usize);
         self.bit(v,0);
-        self.cycles+=2;
+        self.cycles+=3;
     }
 
     fn bit0a(&mut self) {
@@ -3736,7 +4247,7 @@ impl CPU {
     fn bit1hl(&mut self) {
         let v = self.read_byte(self.hl() as usize);
         self.bit(v,1);
-        self.cycles+=2;
+        self.cycles+=3;
     }
 
     fn bit1a(&mut self) {
@@ -3777,7 +4288,7 @@ impl CPU {
     fn bit2hl(&mut self) {
         let v = self.read_byte(self.hl() as usize);
         self.bit(v,2);
-        self.cycles+=2;
+        self.cycles+=3;
     }
 
     fn bit2a(&mut self) {
@@ -3818,7 +4329,7 @@ impl CPU {
     fn bit3hl(&mut self) {
         let v = self.read_byte(self.hl() as usize);
         self.bit(v,3);
-        self.cycles+=2;
+        self.cycles+=3;
     }
 
     fn bit3a(&mut self) {
@@ -3859,7 +4370,7 @@ impl CPU {
     fn bit4hl(&mut self) {
         let v = self.read_byte(self.hl() as usize);
         self.bit(v,4);
-        self.cycles+=2;
+        self.cycles+=3;
     }
 
     fn bit4a(&mut self) {
@@ -3900,7 +4411,7 @@ impl CPU {
     fn bit5hl(&mut self) {
         let v = self.read_byte(self.hl() as usize);
         self.bit(v,5);
-        self.cycles+=2;
+        self.cycles+=3;
     }
 
     fn bit5a(&mut self) {
@@ -3941,7 +4452,7 @@ impl CPU {
     fn bit6hl(&mut self) {
         let v = self.read_byte(self.hl() as usize);
         self.bit(v,6);
-        self.cycles+=2;
+        self.cycles+=3;
     }
 
     fn bit6a(&mut self) {
@@ -3982,7 +4493,7 @@ impl CPU {
     fn bit7hl(&mut self) {
         let v = self.read_byte(self.hl() as usize);
         self.bit(v,7);
-        self.cycles+=2;
+        self.cycles+=3;
     }
 
     fn bit7a(&mut self) {
@@ -4028,7 +4539,7 @@ impl CPU {
         let v = self.read_byte(self.hl() as usize);
         let val=self.res(v,0);
         self.write_byte(self.hl() as usize, val);
-        self.cycles+=2;
+        self.cycles+=4;
     }
 
     fn res0a(&mut self) {
@@ -4070,7 +4581,7 @@ impl CPU {
         let v = self.read_byte(self.hl() as usize);
         let val=self.res(v,1);
         self.write_byte(self.hl() as usize, val);
-        self.cycles+=2;
+        self.cycles+=4;
     }
 
     fn res1a(&mut self) {
@@ -4112,7 +4623,7 @@ impl CPU {
         let v = self.read_byte(self.hl() as usize);
         let val=self.res(v,2);
         self.write_byte(self.hl() as usize, val);
-        self.cycles+=2;
+        self.cycles+=4;
     }
 
     fn res2a(&mut self) {
@@ -4154,7 +4665,7 @@ impl CPU {
         let v = self.read_byte(self.hl() as usize);
         let val=self.res(v,3);
         self.write_byte(self.hl() as usize, val);
-        self.cycles+=2;
+        self.cycles+=4;
     }
 
     fn res3a(&mut self) {
@@ -4196,7 +4707,7 @@ impl CPU {
         let v = self.read_byte(self.hl() as usize);
         let val=self.res(v,4);
         self.write_byte(self.hl() as usize, val);
-        self.cycles+=2;
+        self.cycles+=4;
     }
 
     fn res4a(&mut self) {
@@ -4238,7 +4749,7 @@ impl CPU {
         let v = self.read_byte(self.hl() as usize);
         let val=self.res(v,5);
         self.write_byte(self.hl() as usize, val);
-        self.cycles+=2;
+        self.cycles+=4;
     }
 
     fn res5a(&mut self) {
@@ -4280,7 +4791,7 @@ impl CPU {
         let v = self.read_byte(self.hl() as usize);
         let val=self.res(v,6);
         self.write_byte(self.hl() as usize, val);
-        self.cycles+=2;
+        self.cycles+=4;
     }
 
     fn res6a(&mut self) {
@@ -4322,7 +4833,7 @@ impl CPU {
         let v = self.read_byte(self.hl() as usize);
         let val=self.res(v,7);
         self.write_byte(self.hl() as usize, val);
-        self.cycles+=2;
+        self.cycles+=4;
     }
 
     fn res7a(&mut self) {
@@ -4368,7 +4879,7 @@ impl CPU {
         let v = self.read_byte(self.hl() as usize);
         let val=self.set(v,0);
         self.write_byte(self.hl() as usize, val);
-        self.cycles+=2;
+        self.cycles+=4;
     }
 
     fn set0a(&mut self) {
@@ -4410,7 +4921,7 @@ impl CPU {
         let v = self.read_byte(self.hl() as usize);
         let val=self.set(v,1);
         self.write_byte(self.hl() as usize, val);
-        self.cycles+=2;
+        self.cycles+=4;
     }
 
     fn set1a(&mut self) {
@@ -4452,7 +4963,7 @@ impl CPU {
         let v = self.read_byte(self.hl() as usize);
         let val=self.set(v,2);
         self.write_byte(self.hl() as usize, val);
-        self.cycles+=2;
+        self.cycles+=4;
     }
 
     fn set2a(&mut self) {
@@ -4494,7 +5005,7 @@ impl CPU {
         let v = self.read_byte(self.hl() as usize);
         let val=self.set(v,3);
         self.write_byte(self.hl() as usize, val);
-        self.cycles+=2;
+        self.cycles+=4;
     }
 
     fn set3a(&mut self) {
@@ -4536,7 +5047,7 @@ impl CPU {
         let v = self.read_byte(self.hl() as usize);
         let val=self.set(v,4);
         self.write_byte(self.hl() as usize, val);
-        self.cycles+=2;
+        self.cycles+=4;
     }
 
     fn set4a(&mut self) {
@@ -4578,7 +5089,7 @@ impl CPU {
         let v = self.read_byte(self.hl() as usize);
         let val=self.set(v,5);
         self.write_byte(self.hl() as usize, val);
-        self.cycles+=2;
+        self.cycles+=4;
     }
 
     fn set5a(&mut self) {
@@ -4620,7 +5131,7 @@ impl CPU {
         let v = self.read_byte(self.hl() as usize);
         let val=self.set(v,6);
         self.write_byte(self.hl() as usize, val);
-        self.cycles+=2;
+        self.cycles+=4;
     }
 
     fn set6a(&mut self) {
@@ -4662,7 +5173,7 @@ impl CPU {
         let v = self.read_byte(self.hl() as usize);
         let val=self.set(v,7);
         self.write_byte(self.hl() as usize, val);
-        self.cycles+=2;
+        self.cycles+=4;
     }
 
     fn set7a(&mut self) {

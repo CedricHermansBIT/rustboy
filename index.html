@@ -2,47 +2,686 @@
 <html lang="en-US">
   <head>
     <meta charset="utf-8" />
-    <title>hello-wasm example</title>
-  </head>
-  <body>
-    <body style="margin: 0; display: flex; justify-content: center; align-items: center; height: 100vh;">
-        <canvas
-            id="rustboy-canvas"
-          style="image-rendering: pixelated; image-rendering: crisp-edges; height: 100%;"
-        >
-        </canvas>
-        <canvas id="vram-canvas" style="image-rendering: pixelated; image-rendering: crisp-edges; height: 100%; display:none"></canvas>
-    </body>
-    <script>
-      function toggleVramCanvas(v) {
-          const vramCanvas = document.getElementById('vram-canvas');
-          if (v) {
-            vramCanvas.style.display = 'block';
-          } else {
-            vramCanvas.style.display = 'none';
-          }
+    <title>RustBoy</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body {
+        background: #111;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        overflow: hidden;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        color: #ccc;
       }
 
-      let keys = {};
+      /* Main layout: help | canvas | help */
+      #layout {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        max-width: 100vw;
+        overflow: hidden;
+        gap: 0;
+      }
 
-      // Set up event listeners to track key states
+      /* Canvas area */
+      #screen-area {
+        position: relative;
+        height: 100%;
+        display: flex;
+        align-items: center;
+      }
+      canvas {
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+      }
+      #rustboy-canvas {
+        height: 100%;
+      }
+      #vram-canvas {
+        display: none;
+        height: 100%;
+      }
+      /* When VRAM viewer is active, scale down so both canvases fit side-by-side */
+      #screen-area.vram-active #rustboy-canvas {
+        height: 65vh;
+      }
+      #screen-area.vram-active #vram-canvas {
+        height: 65vh;
+      }
+
+      /* Speed badge */
+      #speed-badge {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        background: rgba(0,0,0,0.7);
+        color: #7bf;
+        font-family: 'Consolas', 'Courier New', monospace;
+        font-size: 14px;
+        font-weight: bold;
+        padding: 3px 10px;
+        border-radius: 4px;
+        border: 1px solid #335;
+        pointer-events: none;
+        z-index: 10;
+        transition: opacity 0.3s;
+      }
+      #speed-badge.hidden { opacity: 0; }
+
+      /* Side panels */
+      .side-panel {
+        width: 220px;
+        padding: 20px 18px;
+        flex-shrink: 0;
+      }
+      .side-panel.left { text-align: right; }
+      .side-panel.right { text-align: left; }
+
+      .side-panel h3 {
+        color: #9be89b;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 10px;
+        font-weight: 600;
+      }
+      .side-panel .key-group {
+        margin-bottom: 16px;
+      }
+      .side-panel .key-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 2px 0;
+        font-size: 0.82rem;
+        line-height: 1.6;
+      }
+      .side-panel.left .key-row { flex-direction: row-reverse; }
+      .side-panel .key-row kbd {
+        display: inline-block;
+        background: #222;
+        color: #ddd;
+        border: 1px solid #444;
+        border-radius: 3px;
+        padding: 1px 7px;
+        font-family: 'Consolas', 'Courier New', monospace;
+        font-size: 0.78rem;
+        min-width: 28px;
+        text-align: center;
+        white-space: nowrap;
+      }
+      .side-panel .key-row .desc {
+        color: #999;
+        padding: 0 8px;
+      }
+
+      /* ROM picker overlay */
+      #rom-picker {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.85);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 100;
+        color: #eee;
+      }
+      #rom-picker.hidden { display: none; }
+      #rom-picker h2 {
+        font-size: 1.4rem;
+        margin-bottom: 1rem;
+        color: #9be89b;
+        text-shadow: 0 0 6px #4a4;
+      }
+      #rom-list {
+        list-style: none;
+        max-height: 70vh;
+        overflow-y: auto;
+        width: 340px;
+      }
+      #rom-list li {
+        padding: 0.55rem 1rem;
+        cursor: pointer;
+        border-radius: 4px;
+        font-size: 0.95rem;
+        transition: background 0.12s;
+      }
+      #rom-list li:hover,
+      #rom-list li.selected {
+        background: rgba(120,220,120,0.2);
+      }
+      #rom-list li.selected {
+        outline: 1px solid #9be89b;
+      }
+      #rom-picker .hint {
+        margin-top: 1rem;
+        font-size: 0.75rem;
+        color: #888;
+      }
+
+      /* Upload area */
+      #upload-area {
+        margin-top: 0.8rem;
+        width: 340px;
+        text-align: center;
+      }
+      #upload-btn {
+        width: 100%;
+        padding: 0.65rem 1rem;
+        background: transparent;
+        color: #9be89b;
+        border: 1px dashed #4a4;
+        border-radius: 6px;
+        font-size: 0.95rem;
+        cursor: pointer;
+        font-family: inherit;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      #upload-btn:hover {
+        background: rgba(120,220,120,0.12);
+        border-color: #9be89b;
+      }
+      #upload-btn:focus {
+        outline: 1px solid #9be89b;
+        outline-offset: 2px;
+      }
+
+      /* Debug HUD */
+      #debug-hud {
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        background: rgba(0,0,0,0.80);
+        color: #0f0;
+        font-family: 'Consolas', 'Courier New', monospace;
+        font-size: 13px;
+        line-height: 1.4;
+        padding: 10px 14px;
+        border-radius: 6px;
+        border: 1px solid #333;
+        white-space: pre;
+        z-index: 50;
+        pointer-events: none;
+        min-width: 230px;
+      }
+      #debug-hud.hidden { display: none; }
+      #debug-hud .label { color: #888; }
+
+      /* Hide side panels on narrow screens */
+      @media (max-width: 820px) {
+        .side-panel { display: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="layout">
+      <!-- Left panel: Gamepad controls -->
+      <div class="side-panel left">
+        <div class="key-group">
+          <h3>Gamepad</h3>
+          <div class="key-row"><kbd>↑↓←→</kbd><span class="desc">D-Pad</span></div>
+          <div class="key-row"><kbd>A</kbd><span class="desc">A Button</span></div>
+          <div class="key-row"><kbd>B</kbd><span class="desc">B Button</span></div>
+          <div class="key-row"><kbd>Enter</kbd><span class="desc">Start</span></div>
+          <div class="key-row"><kbd>Shift</kbd><span class="desc">Select</span></div>
+        </div>
+        <div class="key-group">
+          <h3>Speed</h3>
+          <div class="key-row"><kbd>Tab</kbd><span class="desc">Cycle 1×–8×</span></div>
+        </div>
+      </div>
+
+      <!-- Screen area -->
+      <div id="screen-area">
+        <canvas id="rustboy-canvas"></canvas>
+        <canvas id="vram-canvas"></canvas>
+        <div id="speed-badge" class="hidden">1×</div>
+      </div>
+
+      <!-- Right panel: Emulator controls -->
+      <div class="side-panel right">
+        <div class="key-group">
+          <h3>Emulator</h3>
+          <div class="key-row"><kbd>Space</kbd><span class="desc">Pause / Resume</span></div>
+          <div class="key-row"><kbd>Esc</kbd><span class="desc">ROM Picker</span></div>
+          <div class="key-row"><kbd>C</kbd><span class="desc">Color Mode</span></div>
+          <div class="key-row"><kbd>V</kbd><span class="desc">VRAM Viewer</span></div>
+          <div class="key-row"><kbd>Num *</kbd><span class="desc">Reset</span></div>
+        </div>
+        <div class="key-group">
+          <h3>Debug</h3>
+          <div class="key-row"><kbd>D</kbd><span class="desc">Debug HUD</span></div>
+          <div class="key-row"><kbd>L</kbd><span class="desc">Console Log</span></div>
+          <div class="key-row"><kbd>N</kbd><span class="desc">Step (paused)</span></div>
+        </div>
+        <div class="key-group">
+          <h3>Console (F12)</h3>
+          <div class="key-row"><kbd>bp(addr)</kbd><span class="desc">PC break</span></div>
+          <div class="key-row"><kbd>bpr(r,v)</kbd><span class="desc">Reg break</span></div>
+          <div class="key-row"><kbd>bpm(a,v)</kbd><span class="desc">Mem break</span></div>
+          <div class="key-row"><kbd>bpl()</kbd><span class="desc">List</span></div>
+          <div class="key-row"><kbd>bpd(n)</kbd><span class="desc">Delete #n</span></div>
+          <div class="key-row"><kbd>bpc()</kbd><span class="desc">Clear all</span></div>
+          <div class="key-row"><kbd>mem(addr)</kbd><span class="desc">Read byte</span></div>
+          <div class="key-row"><kbd>dump(a,n)</kbd><span class="desc">Hex dump</span></div>
+          <div class="key-row"><kbd>regs()</kbd><span class="desc">Registers</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Debug HUD -->
+    <div id="debug-hud" class="hidden"></div>
+
+    <!-- ROM picker overlay -->
+    <div id="rom-picker">
+      <h2>RustBoy</h2>
+      <ul id="rom-list"></ul>
+      <div id="upload-area">
+        <button id="upload-btn">📂 Upload ROM (.gb)</button>
+        <input type="file" id="rom-file-input" accept=".gb,.gbc,.bin" style="display:none" />
+      </div>
+      <p class="hint">↑/↓ navigate &middot; Enter load &middot; Esc cancel &middot; Drag &amp; drop .gb files</p>
+    </div>
+
+    <script>
+      /* ── ROM list (dynamically probed) ── */
+      const KNOWN_ROMS = [
+        "cpu_instrs.gb",
+        "dmg_sound.gb",
+        "Dr. Mario (World).gb",
+        "Pokemon Red (UE) [S][!].gb",
+        "01-special.gb",
+        "02-interrupts.gb",
+        "03-op sp,hl.gb",
+        "04-op r,imm.gb",
+        "05-op rp.gb",
+        "06-ld r,r.gb",
+        "07-jr,jp,call,ret,rst.gb",
+        "08-misc instrs.gb",
+        "09-op r,r.gb",
+        "10-bit ops.gb",
+        "11-op a,(hl).gb",
+      ];
+      let ROMS = []; // populated after probing
+
+      /* ── helpers ── */
+      function toggleVramCanvas(v) {
+        document.getElementById('vram-canvas').style.display = v ? 'block' : 'none';
+        document.getElementById('screen-area').classList.toggle('vram-active', v);
+      }
+
+      /* ── Save data persistence ── */
+      function storeSaveData(key, data) {
+        try {
+          // Convert Uint8Array to base64 string for localStorage
+          let binary = '';
+          for (let i = 0; i < data.length; i++) {
+            binary += String.fromCharCode(data[i]);
+          }
+          localStorage.setItem(key, btoa(binary));
+          console.log('Save stored: ' + key + ' (' + data.length + ' bytes)');
+        } catch(e) {
+          console.warn('Failed to store save:', e);
+        }
+      }
+
+      function loadSaveData(key) {
+        try {
+          const b64 = localStorage.getItem(key);
+          if (!b64) return undefined;
+          const binary = atob(b64);
+          const data = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            data[i] = binary.charCodeAt(i);
+          }
+          console.log('Save loaded: ' + key + ' (' + data.length + ' bytes)');
+          return data;
+        } catch(e) {
+          console.warn('Failed to load save:', e);
+          return undefined;
+        }
+      }
+
+      let saveInterval = null;
+
+      /* ── Audio system ── */
+      let audioCtx = null;
+      let audioNode = null;
+      // Ring buffer for audio (large enough for several frames)
+      const AUDIO_BUF_SIZE = 8192;
+      let audioLeftBuf  = new Float32Array(AUDIO_BUF_SIZE);
+      let audioRightBuf = new Float32Array(AUDIO_BUF_SIZE);
+      let audioWritePos = 0;
+      let audioReadPos  = 0;
+      let audioSamplesAvailable = 0;
+
+      function queueAudioSamples(left, right) {
+        if (!audioCtx) return;
+        const len = left.length;
+        for (let i = 0; i < len; i++) {
+          audioLeftBuf[audioWritePos]  = left[i];
+          audioRightBuf[audioWritePos] = right[i];
+          audioWritePos = (audioWritePos + 1) % AUDIO_BUF_SIZE;
+        }
+        audioSamplesAvailable += len;
+        if (audioSamplesAvailable > AUDIO_BUF_SIZE) {
+          // Overflow: discard oldest samples
+          const overflow = audioSamplesAvailable - AUDIO_BUF_SIZE;
+          audioReadPos = (audioReadPos + overflow) % AUDIO_BUF_SIZE;
+          audioSamplesAvailable = AUDIO_BUF_SIZE;
+        }
+      }
+
+      function initAudio() {
+        if (audioCtx) return;
+        try {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+
+          // Use ScriptProcessorNode (widely supported, no COOP/COEP needed)
+          const bufferSize = 2048;
+          audioNode = audioCtx.createScriptProcessor(bufferSize, 0, 2);
+          audioNode.onaudioprocess = function(e) {
+            const outL = e.outputBuffer.getChannelData(0);
+            const outR = e.outputBuffer.getChannelData(1);
+            const len = outL.length;
+
+            for (let i = 0; i < len; i++) {
+              if (audioSamplesAvailable > 0) {
+                outL[i] = audioLeftBuf[audioReadPos];
+                outR[i] = audioRightBuf[audioReadPos];
+                audioReadPos = (audioReadPos + 1) % AUDIO_BUF_SIZE;
+                audioSamplesAvailable--;
+              } else {
+                // Underrun: output silence
+                outL[i] = 0;
+                outR[i] = 0;
+              }
+            }
+          };
+          audioNode.connect(audioCtx.destination);
+          console.log('Audio initialized: ' + audioCtx.sampleRate + ' Hz');
+        } catch(e) {
+          console.warn('Audio init failed:', e);
+        }
+      }
+
+      /* ── ROM picker state ── */
+      const pickerEl  = document.getElementById('rom-picker');
+      const listEl    = document.getElementById('rom-list');
+      let   pickerOpen = true;
+      let   selectedIdx = 0;
+      let   Module = null;
+
+      /* ── Debug HUD ── */
+      const debugHud = document.getElementById('debug-hud');
+      let   debugVisible = false;
+      let   debugInterval = null;
+
+      function toggleDebug() {
+        debugVisible = !debugVisible;
+        debugHud.classList.toggle('hidden', !debugVisible);
+        if (debugVisible && !debugInterval) {
+          debugInterval = setInterval(updateDebug, 50); // 20 fps update
+        } else if (!debugVisible && debugInterval) {
+          clearInterval(debugInterval);
+          debugInterval = null;
+        }
+      }
+
+      function updateDebug() {
+        if (!Module || !Module._get_debug_state) return;
+        try {
+          debugHud.textContent = Module._get_debug_state();
+        } catch(e) {
+          debugHud.textContent = 'Error: ' + e.message;
+        }
+      }
+
+      function buildList() {
+        listEl.innerHTML = '';
+        if (ROMS.length === 0) {
+          const li = document.createElement('li');
+          li.textContent = 'No local ROMs found — upload one below';
+          li.style.color = '#666';
+          li.style.cursor = 'default';
+          li.style.fontStyle = 'italic';
+          listEl.appendChild(li);
+        } else {
+          ROMS.forEach((name, i) => {
+            const li = document.createElement('li');
+            li.textContent = name;
+            li.addEventListener('click', () => { selectedIdx = i; loadSelectedRom(); });
+            if (i === selectedIdx) li.classList.add('selected');
+            listEl.appendChild(li);
+          });
+        }
+      }
+
+      function refreshSelection() {
+        if (ROMS.length === 0) return;
+        [...listEl.children].forEach((li, i) => {
+          li.classList.toggle('selected', i === selectedIdx);
+          if (i === selectedIdx) li.scrollIntoView({ block: 'nearest' });
+        });
+      }
+
+      function openPicker()  { pickerOpen = true;  pickerEl.classList.remove('hidden'); refreshSelection(); }
+      function closePicker() { pickerOpen = false; pickerEl.classList.add('hidden'); }
+
+      async function loadSelectedRom() {
+        if (ROMS.length === 0) return;
+        const name = ROMS[selectedIdx];
+        closePicker();
+        initAudio();
+        try {
+          const resp = await fetch('roms/' + encodeURIComponent(name));
+          if (!resp.ok) throw new Error(resp.statusText);
+          const buf = await resp.arrayBuffer();
+          Module._load_rom_data(new Uint8Array(buf));
+        } catch (e) {
+          console.error('Failed to load ROM:', e);
+          openPicker();
+        }
+      }
+
+      function loadRomFromBuffer(buffer, name) {
+        closePicker();
+        initAudio();
+        console.log('Loading uploaded ROM: ' + (name || 'unknown') + ' (' + buffer.byteLength + ' bytes)');
+        Module._load_rom_data(new Uint8Array(buffer));
+      }
+
+      /* ── Upload ROM handling ── */
+      const uploadBtn = document.getElementById('upload-btn');
+      const fileInput = document.getElementById('rom-file-input');
+
+      uploadBtn.addEventListener('click', () => fileInput.click());
+
+      fileInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (Module) {
+            loadRomFromBuffer(reader.result, file.name);
+          } else {
+            console.error('WASM module not loaded yet');
+          }
+        };
+        reader.readAsArrayBuffer(file);
+        // Reset so same file can be re-selected
+        fileInput.value = '';
+      });
+
+      // Also support drag-and-drop onto the picker
+      pickerEl.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+      pickerEl.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const file = e.dataTransfer.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (Module) {
+            loadRomFromBuffer(reader.result, file.name);
+          }
+        };
+        reader.readAsArrayBuffer(file);
+      });
+
+      // Global drag-and-drop: works even when emulating (drops a new ROM)
+      document.body.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+      document.body.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const file = e.dataTransfer.files[0];
+        if (!file || !Module) return;
+        const reader = new FileReader();
+        reader.onload = () => loadRomFromBuffer(reader.result, file.name);
+        reader.readAsArrayBuffer(file);
+      });
+
+      /* ── Probe which ROMs actually exist on the server ── */
+      async function probeRoms() {
+        const available = [];
+        const checks = KNOWN_ROMS.map(async (name) => {
+          try {
+            const resp = await fetch('roms/' + encodeURIComponent(name), { method: 'HEAD' });
+            if (resp.ok) available.push(name);
+          } catch (e) { /* not available */ }
+        });
+        await Promise.all(checks);
+        // Preserve original order
+        ROMS = KNOWN_ROMS.filter(n => available.includes(n));
+        selectedIdx = 0;
+        buildList();
+      }
+      probeRoms();
+
+      /* ── Speed badge ── */
+      const speedBadge = document.getElementById('speed-badge');
+      let speedHideTimeout = null;
+
+      function updateSpeedBadge() {
+        if (!Module || !Module._get_speed) return;
+        try {
+          const speed = Module._get_speed();
+          speedBadge.textContent = speed + '×';
+          speedBadge.classList.remove('hidden');
+          // Hide badge after 2s if speed is 1×
+          clearTimeout(speedHideTimeout);
+          if (speed === 1) {
+            speedHideTimeout = setTimeout(() => speedBadge.classList.add('hidden'), 1500);
+          }
+        } catch(e) {}
+      }
+
+      /* ── keyboard handling ── */
       window.addEventListener('keydown', (e) => {
-          keys[e.key] = true;
-          Module._set_key_state(e.keyCode, true);
+        // D toggles debug HUD (works everywhere)
+        if (e.key === 'd' || e.key === 'D') {
+          if (!pickerOpen) { toggleDebug(); e.preventDefault(); return; }
+        }
+
+        if (pickerOpen) {
+          if (ROMS.length > 0) {
+            if (e.key === 'ArrowDown')  { selectedIdx = (selectedIdx + 1) % ROMS.length; refreshSelection(); e.preventDefault(); }
+            if (e.key === 'ArrowUp')    { selectedIdx = (selectedIdx - 1 + ROMS.length) % ROMS.length; refreshSelection(); e.preventDefault(); }
+            if (e.key === 'Enter')      { loadSelectedRom(); e.preventDefault(); }
+          }
+          if (e.key === 'Escape')     { if (!ROMS.length) return; closePicker(); e.preventDefault(); }
+          return;
+        }
+        // Tab: cycle speed — prevent default to stop browser focus switching
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          if (Module) {
+            Module._set_key_state(e.keyCode, true);
+            // Delay to let Rust process the key toggle, then update badge
+            setTimeout(updateSpeedBadge, 50);
+          }
+          return;
+        }
+        if (e.key === 'Escape') {
+          // Save before switching ROMs
+          if (Module && Module._save_game) { try { Module._save_game(); } catch(e) {} }
+          openPicker(); e.preventDefault(); return;
+        }
+        if (Module) Module._set_key_state(e.keyCode, true);
       });
 
       window.addEventListener('keyup', (e) => {
-          keys[e.key] = false;
-          Module._set_key_state(e.keyCode, false);
+        if (e.key === 'Tab') { e.preventDefault(); }
+        if (pickerOpen) return;
+        if (Module) Module._set_key_state(e.keyCode, false);
       });
     </script>
+
     <script type="module">
-      
-      import init, {set_key_state} from './out/rustboy.js';
+      import init, {
+        set_key_state, load_rom_data, get_debug_state, save_game, get_speed,
+        add_breakpoint_pc, add_breakpoint_reg, add_breakpoint_mem,
+        remove_breakpoint, clear_breakpoints, list_breakpoints,
+        peek, peek_slice, peek_regs
+      } from './out/rustboy.js';
       init().then(() => {
-        window.Module = {
+        Module = {
           _set_key_state: set_key_state,
+          _load_rom_data: load_rom_data,
+          _get_debug_state: get_debug_state,
+          _save_game: save_game,
+          _get_speed: get_speed,
         };
+
+        // ── Console breakpoint API ──────────────────────────────
+        // Usage (from browser devtools console):
+        //   bp(0x0150)          — break when PC == 0x0150
+        //   bpr("a", 0x42)     — break when register A == 0x42
+        //   bpr("hl", 0xC000)  — break when HL == 0xC000
+        //   bpm(0xFF44, 90)    — break when memory[0xFF44] == 90 (LY scanline)
+        //   bpd(0)             — delete breakpoint #0
+        //   bpc()              — clear all breakpoints
+        //   bpl()              — list all breakpoints
+        window.bp  = (addr) => { add_breakpoint_pc(addr); };
+        window.bpr = (reg, val) => { add_breakpoint_reg(reg, val); };
+        window.bpm = (addr, val) => { add_breakpoint_mem(addr, val); };
+        window.bpd = (idx) => { remove_breakpoint(idx); };
+        window.bpc = () => { clear_breakpoints(); };
+        window.bpl = () => { console.log(list_breakpoints()); };
+
+        // ── Console memory / register inspection API ────────────
+        // Usage:
+        //   mem(0xFF40)             — read single byte (returns number)
+        //   dump(0xC000, 64)        — hex dump 64 bytes from 0xC000
+        //   dump(0xFF00)            — hex dump 16 bytes (default) from 0xFF00
+        //   regs()                  — show all register values
+        window.mem  = (addr) => { return peek(addr); };
+        window.dump = (start, len) => { console.log(peek_slice(start, len || 16)); };
+        window.regs = () => { console.log(peek_regs()); };
+
+        // Auto-save every 5 seconds
+        saveInterval = setInterval(() => {
+          if (Module && Module._save_game) {
+            try { Module._save_game(); } catch(e) {}
+          }
+        }, 5000);
+
+        // Save on page unload (closing tab, refreshing, etc.)
+        window.addEventListener('beforeunload', () => {
+          if (Module && Module._save_game) {
+            try { Module._save_game(); } catch(e) {}
+          }
+        });
+
+        // Also save when visibility changes (switching tabs)
+        document.addEventListener('visibilitychange', () => {
+          if (document.hidden && Module && Module._save_game) {
+            try { Module._save_game(); } catch(e) {}
+          }
+        });
       }).catch(err => console.error(err));
 
     </script>
