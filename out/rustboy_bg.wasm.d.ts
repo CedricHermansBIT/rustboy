@@ -1,0 +1,27 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const add_breakpoint_mem: (a: number, b: number) => void;
+export const add_breakpoint_pc: (a: number) => void;
+export const add_breakpoint_reg: (a: number, b: number, c: number) => void;
+export const clear_breakpoints: () => void;
+export const get_debug_state: () => [number, number];
+export const get_speed: () => number;
+export const list_breakpoints: () => [number, number];
+export const load_rom_data: (a: number, b: number) => void;
+export const main_js: () => void;
+export const peek: (a: number) => number;
+export const peek_regs: () => [number, number];
+export const peek_slice: (a: number, b: number) => [number, number];
+export const remove_breakpoint: (a: number) => void;
+export const save_game: () => void;
+export const set_key_state: (a: number, b: number) => void;
+export const wasm_bindgen__closure__destroy__h30ea1fee59aedf62: (a: number, b: number) => void;
+export const wasm_bindgen__convert__closures_____invoke__h1be67b495a4498d7: (a: number, b: number) => void;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_exn_store: (a: number) => void;
+export const __externref_table_alloc: () => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_start: () => void;
