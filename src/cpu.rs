@@ -31,7 +31,7 @@ pub struct CPU {
     pub booting: bool,
     memory: [u8; 0x10000],
     rom: Vec<u8>,
-    ram: [[u8; 0x2000]; 4],
+    ram: [[u8; 0x2000]; 16],
     pub halt: bool,
     pub cycles: u32,
     pub total_cycles: u64,
@@ -43,12 +43,12 @@ pub struct CPU {
     ppu_cycles: u32,
     pub go_next: AtomicBool,
     cartridge_type: u8,
-    rombank: u8,
+    rombank: u16,
     rambank: u8,
     mbc_rom_mode: u8,
     mbc_ram_enable: bool,
     mbc1_bank2: u8,  // The 2-bit register written via 0x4000-0x5FFF
-    rom_bank_mask: u8,  // Mask based on ROM size (number of banks - 1)
+    rom_bank_mask: u16,  // Mask based on ROM size (number of banks - 1)
     ei_pending: bool,
     div_cycles: u32,
     pub apu: APU,
@@ -80,7 +80,7 @@ impl CPU {
             booting: true,
             memory: [0; 0x10000],
             rom: Vec::new(),
-            ram: [[0; 0x2000]; 4],
+            ram: [[0; 0x2000]; 16],
             halt: false,
             cycles: 0,
             total_cycles: 0,
@@ -298,13 +298,13 @@ impl CPU {
             if self.reg_f & 0x10 != 0 { 'C' } else { '-' },
         );
         format!(
-            "A:{:02X}  F:{:02X} [{}]\nB:{:02X}  C:{:02X}  BC:{:04X}\nD:{:02X}  E:{:02X}  DE:{:04X}\nH:{:02X}  L:{:02X}  HL:{:04X}\nSP:{:04X}  PC:{:04X}\nIME:{}  HALT:{}  Bank:{:02X}",
+            "A:{:02X}  F:{:02X} [{}]\nB:{:02X}  C:{:02X}  BC:{:04X}\nD:{:02X}  E:{:02X}  DE:{:04X}\nH:{:02X}  L:{:02X}  HL:{:04X}\nSP:{:04X}  PC:{:04X}\nIME:{}  HALT:{}  ROM:{:03X}  RAM:{:02X}",
             self.reg_a, self.reg_f, flags,
             self.reg_b, self.reg_c, self.bc(),
             self.reg_d, self.reg_e, self.de(),
             self.reg_h, self.reg_l, self.hl(),
             self.stackpointer, self.program_counter,
-            self.interrupt_master_enable as u8, self.halt as u8, self.rombank,
+            self.interrupt_master_enable as u8, self.halt as u8, self.rombank, self.rambank,
         )
     }
 
@@ -325,9 +325,9 @@ impl CPU {
         self.cartridge_type = self.memory[0x147];
         // Compute ROM bank mask: number of banks - 1
         // Each bank is 16KB, so num_banks = rom_size / 0x4000
-        let num_banks = (self.rom.len() / 0x4000).max(2) as u8;
+        let num_banks = (self.rom.len() / 0x4000).max(2) as u16;
         self.rom_bank_mask = num_banks - 1;
-        console::log_1(&format!("Cartridge type: {:x}, ROM size: {} KB, banks: {}, mask: {:02X}",
+        console::log_1(&format!("Cartridge type: {:02X}, ROM size: {} KB, banks: {}, mask: {:03X}",
             self.cartridge_type, self.rom.len() / 1024, num_banks, self.rom_bank_mask).into());
 
         // Assign GBC-style color palette based on ROM title
@@ -458,7 +458,7 @@ impl CPU {
                             self.mbc_ram_enable = data == 0x0A;
                         } else if address < 0x4000 {
                             // ROM bank number (lower 5 bits)
-                            self.rombank = data & 0x1F;
+                            self.rombank = (data & 0x1F) as u16;
                             if self.rombank == 0 {
                                 self.rombank = 1;
                             }
@@ -486,7 +486,7 @@ impl CPU {
                             self.mbc_ram_enable = (data & 0x0F) == 0x0A;
                         } else if address < 0x4000 {
                             // ROM bank number (7 bits)
-                            self.rombank = data & 0x7F;
+                            self.rombank = (data & 0x7F) as u16;
                             if self.rombank == 0 {
                                 self.rombank = 1;
                             }
@@ -501,6 +501,35 @@ impl CPU {
                         } else if address >= 0xA000 && address < 0xC000 {
                             // External RAM write
                             if self.mbc_ram_enable && self.rambank <= 0x03 {
+                                self.ram[self.rambank as usize][address - 0xA000] = data;
+                            }
+                        } else {
+                            self.memory[address] = data;
+                        }
+                    }
+                    0x19..=0x1E => {
+                        // MBC5 (+RAM, +BATTERY, +RUMBLE variants)
+                        if address < 0x2000 {
+                            // RAM enable
+                            self.mbc_ram_enable = (data & 0x0F) == 0x0A;
+                        } else if address < 0x3000 {
+                            // ROM bank number — low 8 bits
+                            self.rombank = (self.rombank & 0x100) | data as u16;
+                        } else if address < 0x4000 {
+                            // ROM bank number — high bit (bit 8)
+                            self.rombank = (self.rombank & 0xFF) | ((data as u16 & 0x01) << 8);
+                        } else if address < 0x6000 {
+                            // RAM bank number (0x00-0x0F)
+                            // For rumble carts, bit 3 is the rumble motor (ignored here)
+                            if self.cartridge_type >= 0x1C {
+                                // MBC5+Rumble: only lower 3 bits are RAM bank
+                                self.rambank = data & 0x07;
+                            } else {
+                                self.rambank = data & 0x0F;
+                            }
+                        } else if address >= 0xA000 && address < 0xC000 {
+                            // External RAM write
+                            if self.mbc_ram_enable {
                                 self.ram[self.rambank as usize][address - 0xA000] = data;
                             }
                         } else {
@@ -623,6 +652,27 @@ impl CPU {
                 }
                 self.memory[address]
             }
+            0x19..=0x1E => {
+                // MBC5
+                if address < 0x4000 {
+                    // Bank 0 — always fixed
+                    return self.rom.get(address).copied().unwrap_or(0xFF);
+                }
+                if address < 0x8000 {
+                    // Switchable ROM bank (9-bit, bank 0 is valid)
+                    let bank = (self.rombank as usize) & (self.rom_bank_mask as usize);
+                    let rom_addr = (address - 0x4000) + bank * 0x4000;
+                    return self.rom.get(rom_addr).copied().unwrap_or(0xFF);
+                }
+                if address >= 0xA000 && address < 0xC000 {
+                    // External RAM
+                    if self.mbc_ram_enable {
+                        return self.ram[self.rambank as usize][address - 0xA000];
+                    }
+                    return 0xFF;
+                }
+                self.memory[address]
+            }
             _ => {
                 self.memory[address]
             }
@@ -702,7 +752,7 @@ impl CPU {
             }
         }
         format!(
-            "PC:{:04X} OP:{:02X} SP:{:04X}\nAF:{:04X} BC:{:04X}\nDE:{:04X} HL:{:04X}\nF:[{}] IME:{} HALT:{}\nLY:{:02X} STAT:{:02X} LCDC:{:02X}\nIE:{:02X} IF:{:02X}\nTAC:{:02X} TIMA:{:02X}\nBank:{:02X} Cart:{:02X} Boot:{}\nMem@PC: {}\nCycles:{}",
+            "PC:{:04X} OP:{:02X} SP:{:04X}\nAF:{:04X} BC:{:04X}\nDE:{:04X} HL:{:04X}\nF:[{}] IME:{} HALT:{}\nLY:{:02X} STAT:{:02X} LCDC:{:02X}\nIE:{:02X} IF:{:02X}\nTAC:{:02X} TIMA:{:02X}\nROM:{:03X} RAM:{:02X} Cart:{:02X} Boot:{}\nMem@PC: {}\nCycles:{}",
             self.program_counter, opcode, self.stackpointer,
             self.af(), self.bc(),
             self.de(), self.hl(),
@@ -710,7 +760,7 @@ impl CPU {
             ly, stat, lcdc,
             ie, iflag,
             tac, tima,
-            self.rombank, self.cartridge_type, self.booting as u8,
+            self.rombank, self.rambank, self.cartridge_type, self.booting as u8,
             mem_dump.trim(),
             self.total_cycles,
         )
