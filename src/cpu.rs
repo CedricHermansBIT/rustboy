@@ -13,6 +13,10 @@ pub enum Breakpoint {
     Reg(String, u16),
     /// Break when memory at a given address equals a value
     Mem(u16, u8),
+    /// Break when the CPU is about to execute a specific opcode
+    Opcode(u8),
+    /// Break when a specific CB-prefixed opcode is about to execute (0xCB + byte)
+    CbOpcode(u8),
 }
 
 pub struct CPU {
@@ -174,6 +178,14 @@ impl CPU {
         }
     }
 
+    pub fn add_breakpoint_opcode(&mut self, opcode: u8) {
+        self.breakpoints.push(Breakpoint::Opcode(opcode));
+    }
+
+    pub fn add_breakpoint_cb_opcode(&mut self, opcode: u8) {
+        self.breakpoints.push(Breakpoint::CbOpcode(opcode));
+    }
+
     pub fn clear_breakpoints(&mut self) {
         let count = self.breakpoints.len();
         self.breakpoints.clear();
@@ -190,6 +202,8 @@ impl CPU {
                 Breakpoint::Pc(addr) => format!("#{}: PC == ${:04X}", i, addr),
                 Breakpoint::Reg(reg, val) => format!("#{}: {} == ${:04X}", i, reg.to_uppercase(), val),
                 Breakpoint::Mem(addr, val) => format!("#{}: [${:04X}] == ${:02X}", i, addr, val),
+                Breakpoint::Opcode(op) => format!("#{}: Opcode == ${:02X}", i, op),
+                Breakpoint::CbOpcode(op) => format!("#{}: CbOpcode == ${:02X}", i, op),
             };
             if i > 0 { out.push('\n'); }
             out.push_str(&desc);
@@ -232,12 +246,27 @@ impl CPU {
                 Breakpoint::Mem(addr, val) => {
                     self.memory[*addr as usize] == *val
                 }
+                Breakpoint::Opcode(op) => {
+                    let current_op = self.read_byte(self.program_counter as usize);
+                    current_op == *op
+                }
+                Breakpoint::CbOpcode(op) => {
+                    let current_op = self.read_byte(self.program_counter as usize);
+                    if current_op == 0xCB {
+                        let next_op = self.read_byte(self.program_counter.wrapping_add(1) as usize);
+                        next_op == *op
+                    } else {
+                        false
+                    }
+                }
             };
             if hit {
                 let desc = match bp {
                     Breakpoint::Pc(addr) => format!("PC == ${:04X}", addr),
                     Breakpoint::Reg(reg, val) => format!("{} == ${:04X}", reg.to_uppercase(), val),
                     Breakpoint::Mem(addr, val) => format!("[${:04X}] == ${:02X}", addr, val),
+                    Breakpoint::Opcode(op) => format!("Opcode == ${:02X}", op),
+                    Breakpoint::CbOpcode(op) => format!("CbOpcode == ${:02X}", op),
                 };
                 console::log_1(&format!("🔴 Breakpoint hit: {}  (PC=${:04X})", desc, self.program_counter).into());
                 self.consolelog = true;
@@ -450,7 +479,10 @@ impl CPU {
             _ => {
                 match self.cartridge_type {
                     0x0 => {
-                        self.memory[address] = data;
+                        // ROM only — writes to ROM area (0x0000-0x7FFF) are ignored
+                        if address >= 0x8000 {
+                            self.memory[address] = data;
+                        }
                     }
                     0x1 | 0x2 | 0x3 => {
                         if address < 0x2000 {
@@ -546,7 +578,9 @@ impl CPU {
     }
 
     fn handle_joypad(&mut self, data: u8) {
-        self.memory[0xFF00] = 0xF0 & data;
+        // Only bits 4-5 are writable (P14/P15 select lines)
+        // Bits 6-7 are unused and always read as 1
+        self.memory[0xFF00] = (data & 0x30) | 0xC0;
     }
 
     fn dma_transfer(&mut self, data: u8) {
@@ -590,7 +624,7 @@ impl CPU {
                 result &= (start << 3) | (select_btn << 2) | (b << 1) | a;
             }
 
-            return (select & 0xF0) | result;
+            return (select & 0x30) | 0xC0 | result;
         }
         // APU registers
         if address >= 0xFF10 && address <= 0xFF3F {
@@ -598,6 +632,10 @@ impl CPU {
         }
         match self.cartridge_type {
             0x0 => {
+                // ROM only — read from ROM for the ROM area
+                if address < 0x8000 {
+                    return self.rom.get(address).copied().unwrap_or(0xFF);
+                }
                 return self.memory[address];
             }
             0x1 | 0x2 | 0x3 => {
@@ -3020,7 +3058,7 @@ impl CPU {
         let tmp = self.reg_a as i16 + val as i16 + carry as i16;
         self.set_flag_bit(7, (tmp & 0xFF) == 0);
         self.set_flag_bit(6, false);
-        self.set_flag_bit(5, (self.reg_a & 0x0F) + (val & 0x0F) + carry > 0x0F);
+        self.set_flag_bit(5, ((self.reg_a & 0x0F) + (val & 0x0F) + carry) > 0x0F);
         self.set_flag_bit(4, tmp > 0xFF);
         self.reg_a = tmp as u8;
     }

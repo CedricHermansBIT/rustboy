@@ -1,12 +1,28 @@
 /* @ts-self-types="./rustboy.d.ts" */
 
 /**
+ * Add a breakpoint based on CB-prefixed instruction opcode (e.g., 0x7C for BIT 7,H)
+ * @param {number} opcode
+ */
+export function add_breakpoint_cb_opcode(opcode) {
+    wasm.add_breakpoint_cb_opcode(opcode);
+}
+
+/**
  * Add a breakpoint that triggers when memory at `addr` equals `value`.
  * @param {number} addr
  * @param {number} value
  */
 export function add_breakpoint_mem(addr, value) {
     wasm.add_breakpoint_mem(addr, value);
+}
+
+/**
+ * Add a breakpoint based on instruction opcode (e.g., 0xDA for JP C,a16)
+ * @param {number} opcode
+ */
+export function add_breakpoint_opcode(opcode) {
+    wasm.add_breakpoint_opcode(opcode);
 }
 
 /**
@@ -341,7 +357,7 @@ function __wbg_get_imports() {
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { dtor_idx: 21, function: Function { arguments: [], shim_idx: 22, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { dtor_idx: 34, function: Function { arguments: [], shim_idx: 35, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h30ea1fee59aedf62, wasm_bindgen__convert__closures_____invoke__h1be67b495a4498d7);
             return ret;
         },

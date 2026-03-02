@@ -1,7 +1,9 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
+export const add_breakpoint_cb_opcode: (a: number) => void;
 export const add_breakpoint_mem: (a: number, b: number) => void;
+export const add_breakpoint_opcode: (a: number) => void;
 export const add_breakpoint_pc: (a: number) => void;
 export const add_breakpoint_reg: (a: number, b: number, c: number) => void;
 export const clear_breakpoints: () => void;

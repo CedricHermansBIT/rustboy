@@ -611,7 +611,7 @@
     <script type="module">
       import init, {
         set_key_state, load_rom_data, get_debug_state, save_game, get_speed,
-        add_breakpoint_pc, add_breakpoint_reg, add_breakpoint_mem,
+        add_breakpoint_pc, add_breakpoint_reg, add_breakpoint_mem, add_breakpoint_opcode, add_breakpoint_cb_opcode,
         remove_breakpoint, clear_breakpoints, list_breakpoints,
         peek, peek_slice, peek_regs
       } from './out/rustboy.js';
@@ -627,10 +627,12 @@
         window.bp  = (a) => add_breakpoint_pc(a);
         window.bpr = (r,v) => add_breakpoint_reg(r,v);
         window.bpm = (a,v) => add_breakpoint_mem(a,v);
+        window.bpo = (o) => add_breakpoint_opcode(o);
+        window.bpcb = (o) => add_breakpoint_cb_opcode(o);
         window.bpd = (i) => remove_breakpoint(i);
         window.bpc = () => clear_breakpoints();
         window.bpl = () => console.log(list_breakpoints());
-        window.mem  = (a) => peek(a);
+        window.mem  = (a) => '0x' + peek(a).toString(16).toUpperCase().padStart(2, '0');
         window.dump = (s,l) => console.log(peek_slice(s, l||16));
         window.regs = () => console.log(peek_regs());
 

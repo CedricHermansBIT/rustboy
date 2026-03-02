@@ -2,9 +2,19 @@
 /* eslint-disable */
 
 /**
+ * Add a breakpoint based on CB-prefixed instruction opcode (e.g., 0x7C for BIT 7,H)
+ */
+export function add_breakpoint_cb_opcode(opcode: number): void;
+
+/**
  * Add a breakpoint that triggers when memory at `addr` equals `value`.
  */
 export function add_breakpoint_mem(addr: number, value: number): void;
+
+/**
+ * Add a breakpoint based on instruction opcode (e.g., 0xDA for JP C,a16)
+ */
+export function add_breakpoint_opcode(opcode: number): void;
 
 /**
  * Add a breakpoint that triggers when PC reaches the given address.
@@ -76,7 +86,9 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly add_breakpoint_cb_opcode: (a: number) => void;
     readonly add_breakpoint_mem: (a: number, b: number) => void;
+    readonly add_breakpoint_opcode: (a: number) => void;
     readonly add_breakpoint_pc: (a: number) => void;
     readonly add_breakpoint_reg: (a: number, b: number, c: number) => void;
     readonly clear_breakpoints: () => void;

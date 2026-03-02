@@ -158,6 +158,28 @@ pub fn add_breakpoint_mem(addr: u16, value: u8) {
     });
 }
 
+/// Add a breakpoint based on instruction opcode (e.g., 0xDA for JP C,a16)
+#[wasm_bindgen]
+pub fn add_breakpoint_opcode(opcode: u8) {
+    CPU.with(|c| {
+        let cpu_opt = c.borrow();
+        if let Some(cpu_rc) = cpu_opt.as_ref() {
+            cpu_rc.borrow_mut().add_breakpoint_opcode(opcode);
+        }
+    });
+}
+
+/// Add a breakpoint based on CB-prefixed instruction opcode (e.g., 0x7C for BIT 7,H)
+#[wasm_bindgen]
+pub fn add_breakpoint_cb_opcode(opcode: u8) {
+    CPU.with(|c| {
+        let cpu_opt = c.borrow();
+        if let Some(cpu_rc) = cpu_opt.as_ref() {
+            cpu_rc.borrow_mut().add_breakpoint_cb_opcode(opcode);
+        }
+    });
+}
+
 /// Remove a breakpoint by index.
 #[wasm_bindgen]
 pub fn remove_breakpoint(index: usize) {
