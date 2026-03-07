@@ -176,36 +176,39 @@
         min-width: 58px;
         min-height: 58px;
         border-radius: 999px;
-        border: 1px solid rgba(190, 230, 190, 0.28);
-        background: rgba(155, 232, 155, 0.14);
-        color: #f3fff3;
+        border: 1px solid rgba(220, 245, 220, 0.52);
+        background: rgba(10, 18, 10, 0.44);
+        color: #fff;
         font: inherit;
-        font-size: 1rem;
-        font-weight: 700;
+        font-size: 1.04rem;
+        font-weight: 800;
+        letter-spacing: 0.01em;
         cursor: pointer;
-        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18), inset 0 0 0 1px rgba(255,255,255,0.04);
-        backdrop-filter: blur(8px);
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28), inset 0 0 0 1px rgba(255,255,255,0.08);
+        backdrop-filter: blur(10px) saturate(120%);
         opacity: var(--touch-opacity);
-        transition: transform 0.08s ease, background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+        text-shadow: 0 1px 3px rgba(0,0,0,0.75);
+        transition: transform 0.08s ease, background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease, box-shadow 0.12s ease;
         touch-action: none;
       }
       .touch-btn.compact {
-        min-width: 70px;
-        min-height: 42px;
+        min-width: 78px;
+        min-height: 44px;
         border-radius: 18px;
-        font-size: 0.76rem;
-        padding: 0 14px;
+        font-size: 0.84rem;
+        padding: 0 16px;
       }
       .touch-btn.icon {
         padding: 0;
-        font-size: 1.15rem;
+        font-size: 1.34rem;
       }
-      .touch-btn.utility-btn { min-width: 72px; }
+      .touch-btn.utility-btn { min-width: 82px; }
       .touch-btn.pressed,
       .touch-btn:active {
         transform: scale(0.96);
-        background: rgba(155, 232, 155, 0.24);
-        border-color: rgba(190, 230, 190, 0.44);
+        background: rgba(155, 232, 155, 0.28);
+        border-color: rgba(235, 250, 235, 0.72);
+        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22), inset 0 0 0 1px rgba(255,255,255,0.12);
       }
       .touch-drag-handle {
         position: absolute;
@@ -239,15 +242,17 @@
         width: 42px;
         height: 42px;
         border-radius: 999px;
-        border: 1px solid rgba(190, 230, 190, 0.28);
-        background: rgba(0, 0, 0, 0.5);
-        color: #d8f5d8;
+        border: 1px solid rgba(220, 245, 220, 0.44);
+        background: rgba(0, 0, 0, 0.62);
+        color: #f4fff4;
+        text-shadow: 0 1px 3px rgba(0,0,0,0.8);
         font: inherit;
         font-size: 1.1rem;
-        font-weight: 700;
+        font-weight: 800;
         cursor: pointer;
         pointer-events: auto;
         z-index: 2;
+        box-shadow: 0 8px 22px rgba(0,0,0,0.24);
       }
       #touch-settings {
         position: absolute;
@@ -468,6 +473,33 @@
         right: calc(12px + env(safe-area-inset-right, 0px));
       }
       body.mobile-ui-touch #debug-hud { display: none !important; }
+      body.mobile-ui-wide #rustboy-canvas,
+      body.mobile-ui-wide #vram-canvas {
+        width: min(56vw, calc(68dvh * 1.08));
+        max-height: 68dvh;
+      }
+      body.mobile-ui-wide #screen-area.vram-active #rustboy-canvas,
+      body.mobile-ui-wide #screen-area.vram-active #vram-canvas {
+        width: min(40vw, calc(54dvh * 0.95));
+        max-height: 54dvh;
+      }
+      body.mobile-ui-wide .touch-btn {
+        min-width: 64px;
+        min-height: 64px;
+        font-size: 1.12rem;
+      }
+      body.mobile-ui-wide .touch-btn.icon { font-size: 1.44rem; }
+      body.mobile-ui-wide .touch-btn.compact {
+        min-width: 88px;
+        min-height: 48px;
+        font-size: 0.9rem;
+      }
+      body.mobile-ui-wide .touch-btn.utility-btn { min-width: 92px; }
+      body.mobile-ui-wide #touch-settings-toggle {
+        width: 46px;
+        height: 46px;
+        font-size: 1.2rem;
+      }
 
       @media (max-width: 1024px), (pointer: coarse) {
         .touch-btn { min-width: 62px; min-height: 62px; }
@@ -901,7 +933,6 @@
           const el = touchClusterMap[group];
           const pos = positions[group] || TOUCH_DEFAULTS.positions[getTouchProfile()][group];
           if (!el || !pos) continue;
-          //const rect = el.getBoundingClientRect();
           const left = (pos.x || 0) * bounds.width;
           const top = (pos.y || 0) * bounds.height;
           setTouchGroupPosition(group, left, top, false);
@@ -909,7 +940,9 @@
       }
       function renderTouchControls() {
         const enabled = shouldUseTouchControls();
+        const profile = enabled ? getTouchProfile() : '';
         document.body.classList.toggle('mobile-ui-touch', enabled);
+        document.body.classList.toggle('mobile-ui-wide', enabled && profile === 'wide');
         touchControlsEl.classList.toggle('hidden', !enabled);
         touchControlsEl.setAttribute('aria-hidden', enabled ? 'false' : 'true');
         if (!enabled) {
@@ -935,7 +968,7 @@
         renderTouchControls();
       }
       function resumeAudioContext() {
-        if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+        if (audioCtx && audioCtx.state !== 'running') audioCtx.resume().catch(() => {});
       }
 
       /* ═══════════════════════════════════════════════════════════════
