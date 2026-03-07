@@ -34,6 +34,11 @@ export function add_breakpoint_reg(reg: string, value: number): void;
 export function clear_breakpoints(): void;
 
 /**
+ * Clear the trace buffer.
+ */
+export function clear_trace(): void;
+
+/**
  * Returns current CPU debug state as a string (called from JS)
  */
 export function get_debug_state(): string;
@@ -42,6 +47,16 @@ export function get_debug_state(): string;
  * Returns the current emulation speed multiplier (1, 2, 4, or 8)
  */
 export function get_speed(): number;
+
+/**
+ * Get the full trace buffer as a single string (lines separated by \n).
+ */
+export function get_trace(): string;
+
+/**
+ * Returns true if tracing is currently active.
+ */
+export function is_tracing(): boolean;
 
 /**
  * List all breakpoints (returns string for console display).
@@ -82,6 +97,16 @@ export function save_game(): void;
 
 export function set_key_state(key_code: number, is_pressed: boolean): void;
 
+/**
+ * Toggle CPU instruction tracing on/off.
+ */
+export function toggle_trace(): void;
+
+/**
+ * Get the number of lines currently in the trace buffer.
+ */
+export function trace_len(): number;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -92,8 +117,11 @@ export interface InitOutput {
     readonly add_breakpoint_pc: (a: number) => void;
     readonly add_breakpoint_reg: (a: number, b: number, c: number) => void;
     readonly clear_breakpoints: () => void;
+    readonly clear_trace: () => void;
     readonly get_debug_state: () => [number, number];
     readonly get_speed: () => number;
+    readonly get_trace: () => [number, number];
+    readonly is_tracing: () => number;
     readonly list_breakpoints: () => [number, number];
     readonly load_rom_data: (a: number, b: number) => void;
     readonly main_js: () => void;
@@ -103,6 +131,8 @@ export interface InitOutput {
     readonly remove_breakpoint: (a: number) => void;
     readonly save_game: () => void;
     readonly set_key_state: (a: number, b: number) => void;
+    readonly toggle_trace: () => void;
+    readonly trace_len: () => number;
     readonly wasm_bindgen__closure__destroy__h30ea1fee59aedf62: (a: number, b: number) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h1be67b495a4498d7: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;

@@ -305,9 +305,10 @@ const PAL_BG: u8 = 0;
 const PAL_OBJ0: u8 = 1;
 const PAL_OBJ1: u8 = 2;
 
+// Store the raw background color inside bits 4-5 of the pixel byte
 #[inline]
-fn pack_pixel(color_index: u8, palette_type: u8) -> u8 {
-    (palette_type << 2) | (color_index & 0x03)
+fn pack_pixel(color_index: u8, palette_type: u8, raw_color: u8) -> u8 {
+    (raw_color << 4) | (palette_type << 2) | (color_index & 0x03)
 }
 
 #[inline]
@@ -333,107 +334,117 @@ fn apply_dmg_palette(color_index: u8, palette_reg: u8) -> u8 {
     (palette_reg >> (color_index * 2)) & 0x03
 }
 
-pub fn draw_state(context: &web_sys::CanvasRenderingContext2d, cpu: &mut CPU) {
-    // Buffer stores packed pixel: color_index + palette_type
-    let mut buffer = [0u8; 160 * 144];
+pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
+    let ly = cpu.memory[0xFF44];
+    if ly >= 144 { return; }
 
-    context.clear_rect(0.0, 0.0, 160.0, 144.0);
-
-    let lcd_control = cpu.memory_ref()[0xFF40];
-    let scroll_y = cpu.memory_ref()[0xFF42];
-    let scroll_x = cpu.memory_ref()[0xFF43];
+    let lcd_control = cpu.memory[0xFF40];
+    let scroll_y = cpu.memory[0xFF42];
+    let scroll_x = cpu.memory[0xFF43];
+    let bgp = cpu.memory[0xFF47];
 
     if lcd_control & 0x80 == 0x80 {
         let tile_map_base: usize = if lcd_control & 0x08 == 0x08 { 0x9C00 } else { 0x9800 };
         let tile_data_base: usize = if lcd_control & 0x10 == 0x10 { 0x8000 } else { 0x8800 };
 
-        let tile_data = cpu.get_mem_slice(tile_data_base, tile_data_base + 0x2000);
-        let bgp = cpu.memory_ref()[0xFF47];
+        // 1. DRAW BACKGROUND FOR THIS LINE
+        let dy = ly.wrapping_add(scroll_y);
+        for x in 0..160u32 {
+            let dx = ((x + scroll_x as u32) & 0xFF) as u8;
+            let tile_index = cpu.memory[tile_map_base + (dy as usize / 8) * 32 + (dx as usize / 8)];
 
-        // Draw the background
-        let mem = cpu.memory_ref();
-        for y in 0..144u32 {
-            for x in 0..160u32 {
-                let dx = ((x + scroll_x as u32) & 0xFF) as u8;
-                let dy = ((y + scroll_y as u32) & 0xFF) as u8;
-                let tile_index = mem[tile_map_base + (dy as usize / 8) * 32 + (dx as usize / 8)];
-                let offset: u16 = if tile_data_base == 0x8000 {
-                    tile_index as u16 * 16 + ((dy % 8) * 2) as u16
-                } else {
-                    ((tile_index as i8 as i16 + 128) as u16) * 16 + ((dy % 8) * 2) as u16
-                };
-                let b1 = tile_data[offset as usize];
-                let b2 = tile_data[offset as usize + 1];
-                let raw = get_color_index(b1, b2, dx);
-                let ci = apply_dmg_palette(raw, bgp);
-                buffer[(y * 160 + x) as usize] = pack_pixel(ci, PAL_BG);
-            }
+            let offset: u16 = if tile_data_base == 0x8000 {
+                tile_index as u16 * 16 + ((dy % 8) * 2) as u16
+            } else {
+                ((tile_index as i8 as i16 + 128) as u16) * 16 + ((dy % 8) * 2) as u16
+            };
+
+            let b1 = cpu.memory[tile_data_base + offset as usize];
+            let b2 = cpu.memory[tile_data_base + offset as usize + 1];
+
+            let raw = get_color_index(b1, b2, dx % 8);
+            let ci = apply_dmg_palette(raw, bgp);
+
+            cpu.frame_buffer[(ly as usize * 160) + x as usize] = pack_pixel(ci, PAL_BG, raw);
         }
 
-        // Draw the window
+        // 2. DRAW WINDOW FOR THIS LINE
         if lcd_control & 0x20 == 0x20 {
-            let window_y = cpu.memory_ref()[0xFF4A];
-            let window_x = cpu.memory_ref()[0xFF4B].wrapping_sub(7);
+            let window_y = cpu.memory[0xFF4A];
+            let window_x = cpu.memory[0xFF4B] as i32 - 7;
             let window_tile_map_base: usize = if lcd_control & 0x40 == 0x40 { 0x9C00 } else { 0x9800 };
-            if window_y <= 143 {
-                let mem = cpu.memory_ref();
-                for screen_y in window_y as u32..144 {
-                    for screen_x in window_x as u32..160 {
-                        let wx = (screen_x - window_x as u32) as u8;
-                        let wy = (screen_y - window_y as u32) as u8;
 
-                        let tile_index = mem[window_tile_map_base + (wy as usize / 8) * 32 + (wx as usize / 8)];
+            if ly >= window_y {
+                let wy = ly - window_y;
+                for screen_x in 0..160i32 {
+                    if screen_x >= window_x {
+                        let wx = (screen_x - window_x) as u8;
+                        let tile_index = cpu.memory[window_tile_map_base + (wy as usize / 8) * 32 + (wx as usize / 8)];
 
                         let offset: u16 = if tile_data_base == 0x8000 {
                             tile_index as u16 * 16 + ((wy % 8) * 2) as u16
                         } else {
                             ((tile_index as i8 as i16 + 128) as u16) * 16 + ((wy % 8) * 2) as u16
                         };
-                        let b1 = tile_data[offset as usize];
-                        let b2 = tile_data[offset as usize + 1];
+
+                        let b1 = cpu.memory[tile_data_base + offset as usize];
+                        let b2 = cpu.memory[tile_data_base + offset as usize + 1];
                         let raw = get_color_index(b1, b2, wx % 8);
                         let ci = apply_dmg_palette(raw, bgp);
-                        buffer[(screen_y * 160 + screen_x) as usize] = pack_pixel(ci, PAL_BG);
+
+                        cpu.frame_buffer[(ly as usize * 160) + screen_x as usize] = pack_pixel(ci, PAL_BG, raw);
                     }
                 }
             }
         }
+    }
+}
 
-        // Draw the sprites
+pub fn draw_state(context: &web_sys::CanvasRenderingContext2d, cpu: &mut crate::cpu::CPU) {
+    let lcd_control = cpu.memory[0xFF40];
+
+    // Only draw sprites and push to canvas if the LCD is on
+    if lcd_control & 0x80 == 0x80 {
         let mode = (lcd_control >> 2) & 0x01;
-        let obp0 = cpu.memory_ref()[0xFF48];
-        let obp1 = cpu.memory_ref()[0xFF49];
+        let obp0 = cpu.memory[0xFF48];
+        let obp1 = cpu.memory[0xFF49];
 
-        for i in 0..40 {
-            let sprite = cpu.get_sprite(i);
+        // DRAW SPRITES (Reverse order for correct priority)
+        for i in (0..40).rev() {
+            // Read sprite data directly from memory
+            let sprite_base = 0xFE00 + (i * 4);
+            let sprite_y = cpu.memory[sprite_base] as i16 - 16;
+            let sprite_x = cpu.memory[sprite_base + 1] as i16 - 8;
+            let tile_index = cpu.memory[sprite_base + 2];
+            let attributes = cpu.memory[sprite_base + 3];
 
-            let sprite_y = sprite[0] as i16 - 16;
-            let sprite_x = sprite[1] as i16 - 8;
-            let tile_index = sprite[2];
-            let attributes = sprite[3];
             let obp = if attributes & 0x10 != 0 { obp1 } else { obp0 };
             let pal_type = if attributes & 0x10 != 0 { PAL_OBJ1 } else { PAL_OBJ0 };
 
             if mode == 0 {
                 if sprite_x >= -7 && sprite_x < 160 && sprite_y >= -7 && sprite_y < 144 {
-                    draw_sprite(&mut buffer, sprite_x, sprite_y, tile_index, attributes, cpu, obp, pal_type);
+                    draw_sprite(&mut cpu.frame_buffer, sprite_x, sprite_y, tile_index, attributes, &cpu.memory, obp, pal_type);
                 }
             } else {
                 if sprite_x >= -7 && sprite_x < 160 && sprite_y >= -15 && sprite_y < 144 {
-                    draw_sprite(&mut buffer, sprite_x, sprite_y, tile_index & 0xFE, attributes, cpu, obp, pal_type);
-                    draw_sprite(&mut buffer, sprite_x, sprite_y + 8, tile_index | 0x01, attributes, cpu, obp, pal_type);
+                    let mut top_idx = tile_index & 0xFE;
+                    let mut bot_idx = tile_index | 0x01;
+                    if attributes & 0x40 != 0 { std::mem::swap(&mut top_idx, &mut bot_idx); }
+                    draw_sprite(&mut cpu.frame_buffer, sprite_x, sprite_y, top_idx, attributes, &cpu.memory, obp, pal_type);
+                    draw_sprite(&mut cpu.frame_buffer, sprite_x, sprite_y + 8, bot_idx, attributes, &cpu.memory, obp, pal_type);
                 }
             }
         }
 
-        // Convert buffer to RGBA using palettes based on color mode
+        // CONVERT TO RGBA AND PUSH TO CANVAS
         let palettes = if cpu.color_mode == 0 {
             &cpu.gbc_palettes
         } else {
             &DEFAULT_GBC_PALETTES
         };
+
         let mut data = [0u8; 160 * 144 * 4];
-        for (i, &pixel) in buffer.iter().enumerate() {
+        for (i, &pixel) in cpu.frame_buffer.iter().enumerate() {
             let ci = unpack_color_index(pixel) as usize;
             let pt = unpack_palette_type(pixel) as usize;
             let color = &palettes[pt][ci];
@@ -443,18 +454,23 @@ pub fn draw_state(context: &web_sys::CanvasRenderingContext2d, cpu: &mut CPU) {
             data[off + 2] = color[2];
             data[off + 3] = color[3];
         }
+
         let image_data = web_sys::ImageData::new_with_u8_clamped_array_and_sh(Clamped(&data), 160, 144).unwrap();
         context.put_image_data(&image_data, 0.0, 0.0).unwrap();
+    } else {
+        // Clear canvas if LCD is off
+        context.clear_rect(0.0, 0.0, 160.0, 144.0);
     }
 }
 
+// Note: CPU argument is changed to `memory: &[u8; 0x10000]`
 fn draw_sprite(buffer: &mut [u8], sprite_x: i16, sprite_y: i16, tile_index: u8,
-               attributes: u8, cpu: &CPU, obp: u8, pal_type: u8) {
+               attributes: u8, memory: &[u8; 0x10000], obp: u8, pal_type: u8) {
     let flip_x = attributes & 0x20 == 0x20;
     let flip_y = attributes & 0x40 == 0x40;
     let priority = attributes & 0x80 == 0x80;
-    let sprite_addr = 0x8000 + (tile_index as u16 * 16);
-    let sprite_data = cpu.get_mem_slice(sprite_addr as usize, (sprite_addr + 16) as usize);
+    let sprite_addr = 0x8000 + (tile_index as usize * 16);
+    let sprite_data = &memory[sprite_addr..sprite_addr + 16];
 
     for y in 0..8u8 {
         for x in 0..8u8 {
@@ -469,20 +485,19 @@ fn draw_sprite(buffer: &mut [u8], sprite_x: i16, sprite_y: i16, tile_index: u8,
 
             let buffer_index = (buffer_y * 160 + buffer_x) as usize;
 
-            let b1 = sprite_data[(dy as usize * 2)];
-            let b2 = sprite_data[(dy as usize * 2 + 1)];
+            let b1 = sprite_data[dy as usize * 2];
+            let b2 = sprite_data[dy as usize * 2 + 1];
             let raw = get_color_index(b1, b2, dx);
 
-            // Sprite color 0 is transparent
             if raw == 0 { continue; }
 
             let ci = apply_dmg_palette(raw, obp);
-            let bg_ci = unpack_color_index(buffer[buffer_index]);
 
-            // BG priority: if set, sprite only shows over BG color 0
-            if priority && bg_ci != 0 { continue; }
+            // Look up the raw color we packed into bits 4 and 5
+            let bg_raw = (buffer[buffer_index] >> 4) & 0x03;
+            if priority && bg_raw != 0 { continue; }
 
-            buffer[buffer_index] = pack_pixel(ci, pal_type);
+            buffer[buffer_index] = pack_pixel(ci, pal_type, raw);
         }
     }
 }

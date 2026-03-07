@@ -54,6 +54,13 @@ export function clear_breakpoints() {
 }
 
 /**
+ * Clear the trace buffer.
+ */
+export function clear_trace() {
+    wasm.clear_trace();
+}
+
+/**
  * Returns current CPU debug state as a string (called from JS)
  * @returns {string}
  */
@@ -77,6 +84,32 @@ export function get_debug_state() {
 export function get_speed() {
     const ret = wasm.get_speed();
     return ret >>> 0;
+}
+
+/**
+ * Get the full trace buffer as a single string (lines separated by \n).
+ * @returns {string}
+ */
+export function get_trace() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const ret = wasm.get_trace();
+        deferred1_0 = ret[0];
+        deferred1_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
+ * Returns true if tracing is currently active.
+ * @returns {boolean}
+ */
+export function is_tracing() {
+    const ret = wasm.is_tracing();
+    return ret !== 0;
 }
 
 /**
@@ -177,6 +210,22 @@ export function save_game() {
  */
 export function set_key_state(key_code, is_pressed) {
     wasm.set_key_state(key_code, is_pressed);
+}
+
+/**
+ * Toggle CPU instruction tracing on/off.
+ */
+export function toggle_trace() {
+    wasm.toggle_trace();
+}
+
+/**
+ * Get the number of lines currently in the trace buffer.
+ * @returns {number}
+ */
+export function trace_len() {
+    const ret = wasm.trace_len();
+    return ret >>> 0;
 }
 
 function __wbg_get_imports() {
@@ -357,7 +406,7 @@ function __wbg_get_imports() {
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { dtor_idx: 34, function: Function { arguments: [], shim_idx: 35, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { dtor_idx: 37, function: Function { arguments: [], shim_idx: 38, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h30ea1fee59aedf62, wasm_bindgen__convert__closures_____invoke__h1be67b495a4498d7);
             return ret;
         },

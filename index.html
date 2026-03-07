@@ -59,6 +59,21 @@
       }
       #speed-badge.hidden { opacity: 0; }
 
+      /* Trace badge */
+      #trace-badge {
+        position: absolute;
+        top: 10px; left: 10px;
+        background: rgba(80,0,0,0.85);
+        color: #f44;
+        font-family: 'Consolas', 'Courier New', monospace;
+        font-size: 13px; font-weight: bold;
+        padding: 3px 10px; border-radius: 4px;
+        border: 1px solid #a33;
+        pointer-events: none; z-index: 10;
+        animation: pulse 1s infinite alternate;
+      }
+      #trace-badge.hidden { display: none; }
+
       /* Side panels */
       .side-panel {
         width: 220px; padding: 20px 18px; flex-shrink: 0;
@@ -262,6 +277,7 @@
         <canvas id="rustboy-canvas"></canvas>
         <canvas id="vram-canvas"></canvas>
         <div id="speed-badge" class="hidden">1×</div>
+        <div id="trace-badge" class="hidden">⏺ REC</div>
       </div>
 
       <div class="side-panel right" id="panel-right">
@@ -279,6 +295,8 @@
           <div class="key-row" data-action="console_log"><kbd></kbd><span class="desc">Console Log</span></div>
           <div class="key-row" data-action="step"><kbd></kbd><span class="desc">Step (paused)</span></div>
           <div class="key-row" data-action="hide_panels"><kbd></kbd><span class="desc">Hide Panels</span></div>
+          <div class="key-row" data-action="trace_toggle"><kbd></kbd><span class="desc">Trace On/Off</span></div>
+          <div class="key-row" data-action="trace_download"><kbd></kbd><span class="desc">Download Trace</span></div>
         </div>
         <div class="key-group">
           <h3>Console (F12)</h3>
@@ -561,6 +579,52 @@
         try { debugHud.textContent = Module._get_debug_state(); } catch(e) {}
       }
 
+      /* ── Trace recording ── */
+      const traceBadge = document.getElementById('trace-badge');
+      let traceActive = false;
+      let traceCountInterval = null;
+      function toggleTrace() {
+        if (!Module || !Module._toggle_trace) return;
+        Module._toggle_trace();
+        traceActive = Module._is_tracing();
+        traceBadge.classList.toggle('hidden', !traceActive);
+        if (traceActive) {
+          // Update badge with line count periodically
+          traceCountInterval = setInterval(() => {
+            if (Module._trace_len) {
+              const n = Module._trace_len();
+              traceBadge.textContent = '⏺ REC ' + (n > 1000 ? (n/1000|0) + 'k' : n);
+            }
+          }, 500);
+        } else {
+          clearInterval(traceCountInterval);
+          traceCountInterval = null;
+        }
+      }
+      function downloadTrace() {
+        if (!Module || !Module._get_trace) return;
+        const text = Module._get_trace();
+        if (!text || text.length === 0) {
+          console.log('Trace buffer is empty — press F7 to start recording');
+          return;
+        }
+        const blob = new Blob([text], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'rustboy_trace.log';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        // Clear trace after download
+        if (Module._clear_trace) Module._clear_trace();
+        traceActive = false;
+        traceBadge.classList.add('hidden');
+        clearInterval(traceCountInterval);
+        traceCountInterval = null;
+      }
+
       function filterRoms() {
         const q = searchQuery.toLowerCase().trim();
         if (!q) {
@@ -785,6 +849,8 @@
         }
         if (action === 'debug_hud') { toggleDebug(); return; }
         if (action === 'hide_panels') { togglePanels(); return; }
+        if (action === 'trace_toggle') { toggleTrace(); return; }
+        if (action === 'trace_download') { downloadTrace(); return; }
 
         // Speed with badge update
         if (action === 'speed' && Module) {
@@ -813,7 +879,8 @@
         set_key_state, load_rom_data, get_debug_state, save_game, get_speed,
         add_breakpoint_pc, add_breakpoint_reg, add_breakpoint_mem, add_breakpoint_opcode, add_breakpoint_cb_opcode,
         remove_breakpoint, clear_breakpoints, list_breakpoints,
-        peek, peek_slice, peek_regs
+        peek, peek_slice, peek_regs,
+        toggle_trace, is_tracing, get_trace, clear_trace, trace_len
       } from './out/rustboy.js';
       init().then(() => {
         Module = {
@@ -822,6 +889,11 @@
           _get_debug_state: get_debug_state,
           _save_game: save_game,
           _get_speed: get_speed,
+          _toggle_trace: toggle_trace,
+          _is_tracing: is_tracing,
+          _get_trace: get_trace,
+          _clear_trace: clear_trace,
+          _trace_len: trace_len,
         };
 
         window.bp  = (a) => add_breakpoint_pc(a);

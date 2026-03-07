@@ -33,7 +33,8 @@ pub struct CPU {
     pub interrupt_master_enable: bool,
     boot_mem: [u8; 0x10000],
     pub booting: bool,
-    memory: [u8; 0x10000],
+    pub memory: [u8; 0x10000],
+    pub frame_buffer: [u8; 160 * 144],
     rom: Vec<u8>,
     ram: [[u8; 0x2000]; 16],
     pub halt: bool,
@@ -64,6 +65,10 @@ pub struct CPU {
     pub speed_multiplier: u32,
     /// Active breakpoints
     pub breakpoints: Vec<Breakpoint>,
+    /// When true, each instruction appends a trace line to trace_buffer
+    pub tracing: bool,
+    /// Accumulated trace lines (one per instruction)
+    pub trace_buffer: Vec<String>,
 }
 
 impl CPU {
@@ -83,6 +88,7 @@ impl CPU {
             boot_mem: [0; 0x10000],
             booting: true,
             memory: [0; 0x10000],
+            frame_buffer: [0; 160*144],
             rom: Vec::new(),
             ram: [[0; 0x2000]; 16],
             halt: false,
@@ -109,11 +115,323 @@ impl CPU {
             color_mode: 0,
             speed_multiplier: 1,
             breakpoints: Vec::new(),
+            tracing: false,
+            trace_buffer: Vec::new(),
         }
     }
 
     pub fn toggle_consolelog(&mut self) {
         self.consolelog = !self.consolelog;
+    }
+
+    // ── Tracing ─────────────────────────────────────────────────────────
+
+    pub fn toggle_trace(&mut self) {
+        self.tracing = !self.tracing;
+        if self.tracing {
+            console::log_1(&"🔴 Trace recording started".into());
+        } else {
+            console::log_1(&format!("⏹ Trace recording stopped ({} lines)", self.trace_buffer.len()).into());
+        }
+    }
+
+    pub fn is_tracing(&self) -> bool {
+        self.tracing
+    }
+
+    pub fn get_trace(&self) -> String {
+        self.trace_buffer.join("\n")
+    }
+
+    pub fn clear_trace(&mut self) {
+        let count = self.trace_buffer.len();
+        self.trace_buffer.clear();
+        console::log_1(&format!("Trace cleared ({} lines)", count).into());
+    }
+
+    /// Instruction size in bytes for a given opcode (CB prefix counts as 2 total).
+    fn opcode_size(opcode: u8) -> u8 {
+        match opcode {
+            // 1-byte instructions
+            0x00 | 0x02 | 0x03..=0x05 | 0x07 | 0x09..=0x0B | 0x0C..=0x0D | 0x0F |
+            0x12..=0x15 | 0x17 | 0x19..=0x1D | 0x1F |
+            0x22..=0x25 | 0x27 | 0x29..=0x2D | 0x2F |
+            0x32..=0x35 | 0x37 | 0x39..=0x3D | 0x3F |
+            0x40..=0x7F |
+            0x80..=0xBF |
+            0xC0 | 0xC1 | 0xC5 | 0xC7 | 0xC8 | 0xC9 |
+            0xCF |
+            0xD0 | 0xD1 | 0xD5 | 0xD7 | 0xD8 | 0xD9 | 0xDF |
+            0xE1 | 0xE2 | 0xE5 | 0xE7 | 0xE9 | 0xEF |
+            0xF1 | 0xF2 | 0xF3 | 0xF5 | 0xF7 | 0xF9 | 0xFB | 0xFF => 1,
+            // 2-byte instructions (immediate byte or relative offset)
+            0x06 | 0x0E | 0x10 | 0x16 | 0x18 | 0x1E |
+            0x20 | 0x26 | 0x28 | 0x2E | 0x30 | 0x36 | 0x38 | 0x3E |
+            0xC6 | 0xCE | 0xD6 | 0xDE | 0xE0 | 0xE6 | 0xE8 | 0xEE |
+            0xF0 | 0xF6 | 0xF8 | 0xFE => 2,
+            // CB prefix: 2 bytes total
+            0xCB => 2,
+            // 3-byte instructions (immediate 16-bit)
+            0x01 | 0x08 | 0x11 | 0x21 | 0x31 |
+            0xC2 | 0xC3 | 0xC4 | 0xCA | 0xCC | 0xCD |
+            0xD2 | 0xD4 | 0xDA | 0xDC |
+            0xEA | 0xFA => 3,
+            _ => 1,
+        }
+    }
+
+    /// Format one trace line at the current PC, BEFORE the instruction is consumed.
+    /// Format: A:XX F:ZNHC BC:XXXX DE:XXXX HL:XXXX SP:XXXX PC:XXXX |[BB]0xXXXX: xx xx xx  name
+    fn format_trace_line(&self) -> String {
+        let pc = self.program_counter;
+        let opcode = self.read_byte(pc as usize);
+        let size = Self::opcode_size(opcode);
+
+        let flags = format!("{}{}{}{}",
+            if self.reg_f & 0x80 != 0 { 'Z' } else { '-' },
+            if self.reg_f & 0x40 != 0 { 'N' } else { '-' },
+            if self.reg_f & 0x20 != 0 { 'H' } else { '-' },
+            if self.reg_f & 0x10 != 0 { 'C' } else { '-' },
+        );
+
+        // Determine which ROM bank this PC is in
+        let bank: u8 = if pc < 0x4000 { 0x00 } else if pc < 0x8000 { self.rombank as u8 } else { 0x00 };
+
+        // Collect instruction bytes
+        let mut hex_bytes = String::new();
+        for i in 0..size {
+            let b = self.read_byte(pc.wrapping_add(i as u16) as usize);
+            if i > 0 { hex_bytes.push(' '); }
+            hex_bytes.push_str(&format!("{:02x}", b));
+        }
+
+        // Read immediate operands
+        let imm8 = if size >= 2 { self.read_byte(pc.wrapping_add(1) as usize) } else { 0 };
+        let imm16 = if size >= 3 {
+            let lo = self.read_byte(pc.wrapping_add(1) as usize) as u16;
+            let hi = self.read_byte(pc.wrapping_add(2) as usize) as u16;
+            (hi << 8) | lo
+        } else { 0 };
+
+        // Get opcode name with resolved operands
+        let name = if opcode == 0xCB {
+            let cb_op = self.read_byte(pc.wrapping_add(1) as usize);
+            Self::cb_opcode_name_static(cb_op).to_string()
+        } else {
+            Self::resolve_operands(opcode, imm8, imm16)
+        };
+
+        format!(
+            "A:{:02X} F:{} BC:{:04x} DE:{:04x} HL:{:04x} SP:{:04x} PC:{:04x} |[{:02x}]0x{:04x}: {:10}{}",
+            self.reg_a, flags,
+            self.bc(), self.de(), self.hl(),
+            self.stackpointer, pc,
+            bank, pc,
+            hex_bytes, name,
+        )
+    }
+
+    /// Resolve immediate operands into the disassembly string.
+    fn resolve_operands(opcode: u8, imm8: u8, imm16: u16) -> String {
+        // Signed relative offset for JR instructions
+        let rel = imm8 as i8;
+        match opcode {
+            // 2-byte with d8 (unsigned immediate)
+            0x06 => format!("ld b,{}", imm8),
+            0x0e => format!("ld c,{}", imm8),
+            0x16 => format!("ld d,{}", imm8),
+            0x1e => format!("ld e,{}", imm8),
+            0x26 => format!("ld h,{}", imm8),
+            0x2e => format!("ld l,{}", imm8),
+            0x36 => format!("ld [hl],{}", imm8),
+            0x3e => format!("ld a,{}", imm8),
+            0xc6 => format!("add a,{}", imm8),
+            0xce => format!("adc a,{}", imm8),
+            0xd6 => format!("sub a,{}", imm8),
+            0xde => format!("sbc a,{}", imm8),
+            0xe6 => format!("and {}", imm8),
+            0xee => format!("xor {}", imm8),
+            0xf6 => format!("or {}", imm8),
+            0xfe => format!("cp a,{}", imm8),
+            // 2-byte with a8 (high-page offset)
+            0xe0 => format!("ldh [${:02x}],a", 0xFF00u16 | imm8 as u16),
+            0xf0 => format!("ldh a,[${:02x}]", 0xFF00u16 | imm8 as u16),
+            // 2-byte with r8 (relative jumps)
+            0x18 => format!("jr {}{}", if rel >= 0 { "+" } else { "" }, rel),
+            0x20 => format!("jr nz,{}{}", if rel >= 0 { "+" } else { "" }, rel),
+            0x28 => format!("jr z,{}{}", if rel >= 0 { "+" } else { "" }, rel),
+            0x30 => format!("jr nc,{}{}", if rel >= 0 { "+" } else { "" }, rel),
+            0x38 => format!("jr c,{}{}", if rel >= 0 { "+" } else { "" }, rel),
+            // 2-byte SP offset
+            0xe8 => format!("add sp,{}{}", if rel >= 0 { "+" } else { "" }, rel),
+            0xf8 => format!("ld hl,sp{}{}", if rel >= 0 { "+" } else { "" }, rel),
+            // 2-byte STOP
+            0x10 => "stop".to_string(),
+            // 3-byte with d16 (16-bit immediate)
+            0x01 => format!("ld bc,{}", imm16),
+            0x11 => format!("ld de,{}", imm16),
+            0x21 => format!("ld hl,{}", imm16),
+            0x31 => format!("ld sp,{}", imm16),
+            // 3-byte with a16 (absolute address)
+            0x08 => format!("ld [${:04x}],sp", imm16),
+            0xc2 => format!("jp nz,${:04x}", imm16),
+            0xc3 => format!("jp ${:04x}", imm16),
+            0xc4 => format!("call nz,${:04x}", imm16),
+            0xca => format!("jp z,${:04x}", imm16),
+            0xcc => format!("call z,${:04x}", imm16),
+            0xcd => format!("call ${:04x}", imm16),
+            0xd2 => format!("jp nc,${:04x}", imm16),
+            0xd4 => format!("call nc,${:04x}", imm16),
+            0xda => format!("jp c,${:04x}", imm16),
+            0xdc => format!("call c,${:04x}", imm16),
+            0xea => format!("ld [${:04x}],a", imm16),
+            0xfa => format!("ld a,[${:04x}]", imm16),
+            // All other opcodes (1-byte, no immediate) — use static name
+            _ => Self::opcode_name_static(opcode).to_string(),
+        }
+    }
+
+    fn opcode_name_static(opcode: u8) -> &'static str {
+        match opcode {
+            0x00 => "nop", 0x01 => "ld bc,d16", 0x02 => "ld [bc],a",
+            0x03 => "inc bc", 0x04 => "inc b", 0x05 => "dec b",
+            0x06 => "ld b,d8", 0x07 => "rlca", 0x08 => "ld [a16],sp",
+            0x09 => "add hl,bc", 0x0a => "ld a,[bc]", 0x0b => "dec bc",
+            0x0c => "inc c", 0x0d => "dec c", 0x0e => "ld c,d8", 0x0f => "rrca",
+            0x10 => "stop", 0x11 => "ld de,d16", 0x12 => "ld [de],a",
+            0x13 => "inc de", 0x14 => "inc d", 0x15 => "dec d",
+            0x16 => "ld d,d8", 0x17 => "rla", 0x18 => "jr r8",
+            0x19 => "add hl,de", 0x1a => "ld a,[de]", 0x1b => "dec de",
+            0x1c => "inc e", 0x1d => "dec e", 0x1e => "ld e,d8", 0x1f => "rra",
+            0x20 => "jr nz,r8", 0x21 => "ld hl,d16", 0x22 => "ld [hl+],a",
+            0x23 => "inc hl", 0x24 => "inc h", 0x25 => "dec h",
+            0x26 => "ld h,d8", 0x27 => "daa", 0x28 => "jr z,r8",
+            0x29 => "add hl,hl", 0x2a => "ld a,[hl+]", 0x2b => "dec hl",
+            0x2c => "inc l", 0x2d => "dec l", 0x2e => "ld l,d8", 0x2f => "cpl",
+            0x30 => "jr nc,r8", 0x31 => "ld sp,d16", 0x32 => "ld [hl-],a",
+            0x33 => "inc sp", 0x34 => "inc [hl]", 0x35 => "dec [hl]",
+            0x36 => "ld [hl],d8", 0x37 => "scf", 0x38 => "jr c,r8",
+            0x39 => "add hl,sp", 0x3a => "ld a,[hl-]", 0x3b => "dec sp",
+            0x3c => "inc a", 0x3d => "dec a", 0x3e => "ld a,d8", 0x3f => "ccf",
+            0x40 => "ld b,b", 0x41 => "ld b,c", 0x42 => "ld b,d", 0x43 => "ld b,e",
+            0x44 => "ld b,h", 0x45 => "ld b,l", 0x46 => "ld b,[hl]", 0x47 => "ld b,a",
+            0x48 => "ld c,b", 0x49 => "ld c,c", 0x4a => "ld c,d", 0x4b => "ld c,e",
+            0x4c => "ld c,h", 0x4d => "ld c,l", 0x4e => "ld c,[hl]", 0x4f => "ld c,a",
+            0x50 => "ld d,b", 0x51 => "ld d,c", 0x52 => "ld d,d", 0x53 => "ld d,e",
+            0x54 => "ld d,h", 0x55 => "ld d,l", 0x56 => "ld d,[hl]", 0x57 => "ld d,a",
+            0x58 => "ld e,b", 0x59 => "ld e,c", 0x5a => "ld e,d", 0x5b => "ld e,e",
+            0x5c => "ld e,h", 0x5d => "ld e,l", 0x5e => "ld e,[hl]", 0x5f => "ld e,a",
+            0x60 => "ld h,b", 0x61 => "ld h,c", 0x62 => "ld h,d", 0x63 => "ld h,e",
+            0x64 => "ld h,h", 0x65 => "ld h,l", 0x66 => "ld h,[hl]", 0x67 => "ld h,a",
+            0x68 => "ld l,b", 0x69 => "ld l,c", 0x6a => "ld l,d", 0x6b => "ld l,e",
+            0x6c => "ld l,h", 0x6d => "ld l,l", 0x6e => "ld l,[hl]", 0x6f => "ld l,a",
+            0x70 => "ld [hl],b", 0x71 => "ld [hl],c", 0x72 => "ld [hl],d", 0x73 => "ld [hl],e",
+            0x74 => "ld [hl],h", 0x75 => "ld [hl],l", 0x76 => "halt", 0x77 => "ld [hl],a",
+            0x78 => "ld a,b", 0x79 => "ld a,c", 0x7a => "ld a,d", 0x7b => "ld a,e",
+            0x7c => "ld a,h", 0x7d => "ld a,l", 0x7e => "ld a,[hl]", 0x7f => "ld a,a",
+            0x80 => "add a,b", 0x81 => "add a,c", 0x82 => "add a,d", 0x83 => "add a,e",
+            0x84 => "add a,h", 0x85 => "add a,l", 0x86 => "add a,[hl]", 0x87 => "add a,a",
+            0x88 => "adc a,b", 0x89 => "adc a,c", 0x8a => "adc a,d", 0x8b => "adc a,e",
+            0x8c => "adc a,h", 0x8d => "adc a,l", 0x8e => "adc a,[hl]", 0x8f => "adc a,a",
+            0x90 => "sub b", 0x91 => "sub c", 0x92 => "sub d", 0x93 => "sub e",
+            0x94 => "sub h", 0x95 => "sub l", 0x96 => "sub [hl]", 0x97 => "sub a",
+            0x98 => "sbc a,b", 0x99 => "sbc a,c", 0x9a => "sbc a,d", 0x9b => "sbc a,e",
+            0x9c => "sbc a,h", 0x9d => "sbc a,l", 0x9e => "sbc a,[hl]", 0x9f => "sbc a,a",
+            0xa0 => "and b", 0xa1 => "and c", 0xa2 => "and d", 0xa3 => "and e",
+            0xa4 => "and h", 0xa5 => "and l", 0xa6 => "and [hl]", 0xa7 => "and a",
+            0xa8 => "xor b", 0xa9 => "xor c", 0xaa => "xor d", 0xab => "xor e",
+            0xac => "xor h", 0xad => "xor l", 0xae => "xor [hl]", 0xaf => "xor a",
+            0xb0 => "or b", 0xb1 => "or c", 0xb2 => "or d", 0xb3 => "or e",
+            0xb4 => "or h", 0xb5 => "or l", 0xb6 => "or [hl]", 0xb7 => "or a",
+            0xb8 => "cp b", 0xb9 => "cp c", 0xba => "cp d", 0xbb => "cp e",
+            0xbc => "cp h", 0xbd => "cp l", 0xbe => "cp [hl]", 0xbf => "cp a",
+            0xc0 => "ret nz", 0xc1 => "pop bc", 0xc2 => "jp nz,a16", 0xc3 => "jp a16",
+            0xc4 => "call nz,a16", 0xc5 => "push bc", 0xc6 => "add a,d8", 0xc7 => "rst 00h",
+            0xc8 => "ret z", 0xc9 => "ret", 0xca => "jp z,a16", 0xcb => "CB",
+            0xcc => "call z,a16", 0xcd => "call a16", 0xce => "adc a,d8", 0xcf => "rst 08h",
+            0xd0 => "ret nc", 0xd1 => "pop de", 0xd2 => "jp nc,a16",
+            0xd4 => "call nc,a16", 0xd5 => "push de", 0xd6 => "sub d8", 0xd7 => "rst 10h",
+            0xd8 => "ret c", 0xd9 => "reti", 0xda => "jp c,a16",
+            0xdc => "call c,a16", 0xde => "sbc a,d8", 0xdf => "rst 18h",
+            0xe0 => "ldh [a8],a", 0xe1 => "pop hl", 0xe2 => "ld [c],a",
+            0xe5 => "push hl", 0xe6 => "and d8", 0xe7 => "rst 20h",
+            0xe8 => "add sp,r8", 0xe9 => "jp [hl]", 0xea => "ld [a16],a",
+            0xee => "xor d8", 0xef => "rst 28h",
+            0xf0 => "ldh a,[a8]", 0xf1 => "pop af", 0xf2 => "ld a,[c]",
+            0xf3 => "di", 0xf5 => "push af", 0xf6 => "or d8", 0xf7 => "rst 30h",
+            0xf8 => "ld hl,sp+r8", 0xf9 => "ld sp,hl", 0xfa => "ld a,[a16]",
+            0xfb => "ei", 0xfe => "cp d8", 0xff => "rst 38h",
+            _ => "UNKNOWN",
+        }
+    }
+
+    fn cb_opcode_name_static(opcode: u8) -> &'static str {
+        match opcode {
+            0x00 => "rlc b", 0x01 => "rlc c", 0x02 => "rlc d", 0x03 => "rlc e",
+            0x04 => "rlc h", 0x05 => "rlc l", 0x06 => "rlc [hl]", 0x07 => "rlc a",
+            0x08 => "rrc b", 0x09 => "rrc c", 0x0a => "rrc d", 0x0b => "rrc e",
+            0x0c => "rrc h", 0x0d => "rrc l", 0x0e => "rrc [hl]", 0x0f => "rrc a",
+            0x10 => "rl b", 0x11 => "rl c", 0x12 => "rl d", 0x13 => "rl e",
+            0x14 => "rl h", 0x15 => "rl l", 0x16 => "rl [hl]", 0x17 => "rl a",
+            0x18 => "rr b", 0x19 => "rr c", 0x1a => "rr d", 0x1b => "rr e",
+            0x1c => "rr h", 0x1d => "rr l", 0x1e => "rr [hl]", 0x1f => "rr a",
+            0x20 => "sla b", 0x21 => "sla c", 0x22 => "sla d", 0x23 => "sla e",
+            0x24 => "sla h", 0x25 => "sla l", 0x26 => "sla [hl]", 0x27 => "sla a",
+            0x28 => "sra b", 0x29 => "sra c", 0x2a => "sra d", 0x2b => "sra e",
+            0x2c => "sra h", 0x2d => "sra l", 0x2e => "sra [hl]", 0x2f => "sra a",
+            0x30 => "swap b", 0x31 => "swap c", 0x32 => "swap d", 0x33 => "swap e",
+            0x34 => "swap h", 0x35 => "swap l", 0x36 => "swap [hl]", 0x37 => "swap a",
+            0x38 => "srl b", 0x39 => "srl c", 0x3a => "srl d", 0x3b => "srl e",
+            0x3c => "srl h", 0x3d => "srl l", 0x3e => "srl [hl]", 0x3f => "srl a",
+            0x40 => "bit 0,b", 0x41 => "bit 0,c", 0x42 => "bit 0,d", 0x43 => "bit 0,e",
+            0x44 => "bit 0,h", 0x45 => "bit 0,l", 0x46 => "bit 0,[hl]", 0x47 => "bit 0,a",
+            0x48 => "bit 1,b", 0x49 => "bit 1,c", 0x4a => "bit 1,d", 0x4b => "bit 1,e",
+            0x4c => "bit 1,h", 0x4d => "bit 1,l", 0x4e => "bit 1,[hl]", 0x4f => "bit 1,a",
+            0x50 => "bit 2,b", 0x51 => "bit 2,c", 0x52 => "bit 2,d", 0x53 => "bit 2,e",
+            0x54 => "bit 2,h", 0x55 => "bit 2,l", 0x56 => "bit 2,[hl]", 0x57 => "bit 2,a",
+            0x58 => "bit 3,b", 0x59 => "bit 3,c", 0x5a => "bit 3,d", 0x5b => "bit 3,e",
+            0x5c => "bit 3,h", 0x5d => "bit 3,l", 0x5e => "bit 3,[hl]", 0x5f => "bit 3,a",
+            0x60 => "bit 4,b", 0x61 => "bit 4,c", 0x62 => "bit 4,d", 0x63 => "bit 4,e",
+            0x64 => "bit 4,h", 0x65 => "bit 4,l", 0x66 => "bit 4,[hl]", 0x67 => "bit 4,a",
+            0x68 => "bit 5,b", 0x69 => "bit 5,c", 0x6a => "bit 5,d", 0x6b => "bit 5,e",
+            0x6c => "bit 5,h", 0x6d => "bit 5,l", 0x6e => "bit 5,[hl]", 0x6f => "bit 5,a",
+            0x70 => "bit 6,b", 0x71 => "bit 6,c", 0x72 => "bit 6,d", 0x73 => "bit 6,e",
+            0x74 => "bit 6,h", 0x75 => "bit 6,l", 0x76 => "bit 6,[hl]", 0x77 => "bit 6,a",
+            0x78 => "bit 7,b", 0x79 => "bit 7,c", 0x7a => "bit 7,d", 0x7b => "bit 7,e",
+            0x7c => "bit 7,h", 0x7d => "bit 7,l", 0x7e => "bit 7,[hl]", 0x7f => "bit 7,a",
+            0x80 => "res 0,b", 0x81 => "res 0,c", 0x82 => "res 0,d", 0x83 => "res 0,e",
+            0x84 => "res 0,h", 0x85 => "res 0,l", 0x86 => "res 0,[hl]", 0x87 => "res 0,a",
+            0x88 => "res 1,b", 0x89 => "res 1,c", 0x8a => "res 1,d", 0x8b => "res 1,e",
+            0x8c => "res 1,h", 0x8d => "res 1,l", 0x8e => "res 1,[hl]", 0x8f => "res 1,a",
+            0x90 => "res 2,b", 0x91 => "res 2,c", 0x92 => "res 2,d", 0x93 => "res 2,e",
+            0x94 => "res 2,h", 0x95 => "res 2,l", 0x96 => "res 2,[hl]", 0x97 => "res 2,a",
+            0x98 => "res 3,b", 0x99 => "res 3,c", 0x9a => "res 3,d", 0x9b => "res 3,e",
+            0x9c => "res 3,h", 0x9d => "res 3,l", 0x9e => "res 3,[hl]", 0x9f => "res 3,a",
+            0xa0 => "res 4,b", 0xa1 => "res 4,c", 0xa2 => "res 4,d", 0xa3 => "res 4,e",
+            0xa4 => "res 4,h", 0xa5 => "res 4,l", 0xa6 => "res 4,[hl]", 0xa7 => "res 4,a",
+            0xa8 => "res 5,b", 0xa9 => "res 5,c", 0xaa => "res 5,d", 0xab => "res 5,e",
+            0xac => "res 5,h", 0xad => "res 5,l", 0xae => "res 5,[hl]", 0xaf => "res 5,a",
+            0xb0 => "res 6,b", 0xb1 => "res 6,c", 0xb2 => "res 6,d", 0xb3 => "res 6,e",
+            0xb4 => "res 6,h", 0xb5 => "res 6,l", 0xb6 => "res 6,[hl]", 0xb7 => "res 6,a",
+            0xb8 => "res 7,b", 0xb9 => "res 7,c", 0xba => "res 7,d", 0xbb => "res 7,e",
+            0xbc => "res 7,h", 0xbd => "res 7,l", 0xbe => "res 7,[hl]", 0xbf => "res 7,a",
+            0xc0 => "set 0,b", 0xc1 => "set 0,c", 0xc2 => "set 0,d", 0xc3 => "set 0,e",
+            0xc4 => "set 0,h", 0xc5 => "set 0,l", 0xc6 => "set 0,[hl]", 0xc7 => "set 0,a",
+            0xc8 => "set 1,b", 0xc9 => "set 1,c", 0xca => "set 1,d", 0xcb => "set 1,e",
+            0xcc => "set 1,h", 0xcd => "set 1,l", 0xce => "set 1,[hl]", 0xcf => "set 1,a",
+            0xd0 => "set 2,b", 0xd1 => "set 2,c", 0xd2 => "set 2,d", 0xd3 => "set 2,e",
+            0xd4 => "set 2,h", 0xd5 => "set 2,l", 0xd6 => "set 2,[hl]", 0xd7 => "set 2,a",
+            0xd8 => "set 3,b", 0xd9 => "set 3,c", 0xda => "set 3,d", 0xdb => "set 3,e",
+            0xdc => "set 3,h", 0xdd => "set 3,l", 0xde => "set 3,[hl]", 0xdf => "set 3,a",
+            0xe0 => "set 4,b", 0xe1 => "set 4,c", 0xe2 => "set 4,d", 0xe3 => "set 4,e",
+            0xe4 => "set 4,h", 0xe5 => "set 4,l", 0xe6 => "set 4,[hl]", 0xe7 => "set 4,a",
+            0xe8 => "set 5,b", 0xe9 => "set 5,c", 0xea => "set 5,d", 0xeb => "set 5,e",
+            0xec => "set 5,h", 0xed => "set 5,l", 0xee => "set 5,[hl]", 0xef => "set 5,a",
+            0xf0 => "set 6,b", 0xf1 => "set 6,c", 0xf2 => "set 6,d", 0xf3 => "set 6,e",
+            0xf4 => "set 6,h", 0xf5 => "set 6,l", 0xf6 => "set 6,[hl]", 0xf7 => "set 6,a",
+            0xf8 => "set 7,b", 0xf9 => "set 7,c", 0xfa => "set 7,d", 0xfb => "set 7,e",
+            0xfc => "set 7,h", 0xfd => "set 7,l", 0xfe => "set 7,[hl]", 0xff => "set 7,a",
+        }
     }
 
     pub fn set_next(&mut self) {
@@ -144,7 +462,7 @@ impl CPU {
         };
     }
 
-    pub fn set_speed(&mut self, multiplier: u32) {
+    pub fn _set_speed(&mut self, multiplier: u32) {
         self.speed_multiplier = multiplier.max(1).min(8);
     }
 
@@ -454,14 +772,60 @@ impl CPU {
                 self.memory[0xFF04] = 0;
                 self.div_cycles = 0;
             }
+            0xFF40 => {
+                let was_on = (self.memory[0xFF40] & 0x80) != 0;
+                let is_on = (data & 0x80) != 0;
+                self.memory[0xFF40] = data;
+
+                if was_on && !is_on {
+                    // LCD just turned off
+                    self.handle_lcd_off();
+                } else if !was_on && is_on {
+                    // LCD just turned on: reset PPU and start cleanly in Mode 2
+                    self.ppu_cycles = 0;
+                    self.memory[0xFF44] = 0;
+                    self.set_ppu_mode(2);
+
+                    // Immediately check LYC=LY coincidence for line 0
+                    let lyc = self.memory[0xFF45];
+                    if 0 == lyc {
+                        self.memory[0xFF41] |= 0x04;
+                        if self.memory[0xFF41] & 0x40 != 0 {
+                            self.request_interrupt(1);
+                        }
+                    } else {
+                        self.memory[0xFF41] &= !0x04;
+                    }
+                }
+            }
             0xFF41 => {
-                // STAT register: lower 3 bits (mode + coincidence flag) are read-only
                 let read_only = self.memory[0xFF41] & 0x07;
                 self.memory[0xFF41] = (data & 0xF8) | read_only;
+
+                // If the game just enabled the LYC=LY STAT interrupt while the coincidence flag is already set, fire it immediately.
+                if (data & 0x40) != 0 && (read_only & 0x04) != 0 {
+                    self.request_interrupt(1);
+                }
             }
             0xFF44 => {
                 // Writing any value to LY resets it to 0
-                self.memory[0xFF44] = 0;
+                // Actually do nothing
+                //self.memory[0xFF44] = 0;
+            }
+            0xFF45 => {
+                // LYC=LY coincidence flag
+                self.memory[0xFF45] = data;
+
+                // Update coincidence flag instantly when LYC is written to
+                let ly = self.memory[0xFF44];
+                if ly == data {
+                    self.memory[0xFF41] |= 0x04;
+                    if self.memory[0xFF41] & 0x40 != 0 {
+                        self.request_interrupt(1);
+                    }
+                } else {
+                    self.memory[0xFF41] &= !0x04;
+                }
             }
             0xFF02 => {
                 self.memory[0xFF02] = data;
@@ -476,6 +840,7 @@ impl CPU {
                     self.request_interrupt(3);
                 }
             }
+
             _ => {
                 match self.cartridge_type {
                     0x0 => {
@@ -808,7 +1173,7 @@ impl CPU {
         &self.memory[base..base + 0x2000]
     }
 
-    pub fn get_sprite(&self, i: u8) -> [u8; 4] {
+    pub fn _get_sprite(&self, i: u8) -> [u8; 4] {
         let base = 0xFE00 + i as usize * 4;
         [
             self.memory[base],
@@ -821,11 +1186,11 @@ impl CPU {
     /// Direct read-only access to the memory array (for PPU/rendering hot paths
     /// where addresses are known to always map to self.memory).
     #[inline]
-    pub fn memory_ref(&self) -> &[u8; 0x10000] {
+    pub fn _memory_ref(&self) -> &[u8; 0x10000] {
         &self.memory
     }
 
-    pub fn get_mem_slice(&self, start: usize, end: usize) -> &[u8] {
+    pub fn _get_mem_slice(&self, start: usize, end: usize) -> &[u8] {
         &self.memory[start..end]
     }
 
@@ -954,7 +1319,7 @@ impl CPU {
         }
         else {
             // LCD is off
-            self.handle_lcd_off();
+            //self.handle_lcd_off(); // Now handled by write byte
         }
     }
 
@@ -1019,9 +1384,10 @@ impl CPU {
             // Move to H-Blank
             self.set_ppu_mode(0);
             // This is where you would trigger the actual drawing of the scanline
-            //self.draw_scanline();
-        }
+            crate::ppu::draw_scanline(self);         }
     }
+
+
 
     fn set_ppu_mode(&mut self, mode: u8) {
         // Write mode bits directly to memory (lower 2 bits of STAT)
@@ -1590,6 +1956,12 @@ impl CPU {
     pub fn execute(&mut self) {
         // Save whether EI was already pending before this instruction
         let was_ei_pending = self.ei_pending;
+
+        // Record trace BEFORE consuming the opcode
+        if self.tracing {
+            let line = self.format_trace_line();
+            self.trace_buffer.push(line);
+        }
 
         let opcode = self.read();
         // if ei, pause
@@ -2163,7 +2535,7 @@ impl CPU {
     }
 
     fn incbc(&mut self) {
-        let mut data = ((self.reg_b as u16) << 8 | self.reg_c as u16).wrapping_add(1);
+        let data = ((self.reg_b as u16) << 8 | self.reg_c as u16).wrapping_add(1);
         self.reg_b = (data >> 8) as u8;
         self.reg_c = data as u8;
         self.cycles += 2;
@@ -2666,7 +3038,7 @@ impl CPU {
     }
 
     fn ldbb(&mut self) {
-        self.reg_b = self.reg_b;
+        //self.reg_b = self.reg_b;
         self.cycles += 1;
     }
 
@@ -2711,7 +3083,7 @@ impl CPU {
     }
 
     fn ldcc(&mut self) {
-        self.reg_c = self.reg_c;
+        //self.reg_c = self.reg_c;
         self.cycles += 1;
     }
 
@@ -2756,7 +3128,7 @@ impl CPU {
     }
 
     fn lddd(&mut self) {
-        self.reg_d = self.reg_d;
+        //self.reg_d = self.reg_d;
         self.cycles += 1;
     }
 
@@ -2801,7 +3173,7 @@ impl CPU {
     }
 
     fn ldee(&mut self) {
-        self.reg_e = self.reg_e;
+        //self.reg_e = self.reg_e;
         self.cycles += 1;
     }
 
@@ -2846,7 +3218,7 @@ impl CPU {
     }
 
     fn ldhh(&mut self) {
-        self.reg_h = self.reg_h;
+        //self.reg_h = self.reg_h;
         self.cycles += 1;
     }
 
@@ -2891,7 +3263,7 @@ impl CPU {
     }
 
     fn ldll(&mut self) {
-        self.reg_l = self.reg_l;
+        //self.reg_l = self.reg_l;
         self.cycles += 1;
     }
 
@@ -2937,7 +3309,7 @@ impl CPU {
 
     fn halt(&mut self) {
         let ie = self.memory[0xFFFF];
-        let iflag = self.memory[0xFF0F];
+        let _iflag = self.memory[0xFF0F];
         if !self.interrupt_master_enable && ie == 0 {
             //console::log_1(&format!("HALT DEADLOCK at PC:{:04X} IE:{:02X} IF:{:02X} IME:{} Bank:{} Bank2:{} Mode:{}",
                 //self.program_counter, ie, iflag, self.interrupt_master_enable,
@@ -3000,7 +3372,7 @@ impl CPU {
     }
 
     fn ldaa(&mut self) {
-        self.reg_a = self.reg_a;
+        //self.reg_a = self.reg_a;
         self.cycles += 1;
     }
 

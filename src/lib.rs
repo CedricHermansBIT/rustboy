@@ -252,6 +252,66 @@ pub fn peek_regs() -> String {
     })
 }
 
+// ── Trace API ────────────────────────────────────────────────────────
+
+/// Toggle CPU instruction tracing on/off.
+#[wasm_bindgen]
+pub fn toggle_trace() {
+    CPU.with(|c| {
+        let cpu_opt = c.borrow();
+        if let Some(cpu_rc) = cpu_opt.as_ref() {
+            cpu_rc.borrow_mut().toggle_trace();
+        }
+    });
+}
+
+/// Returns true if tracing is currently active.
+#[wasm_bindgen]
+pub fn is_tracing() -> bool {
+    CPU.with(|c| {
+        let cpu_opt = c.borrow();
+        match cpu_opt.as_ref() {
+            Some(cpu_rc) => cpu_rc.borrow().is_tracing(),
+            None => false,
+        }
+    })
+}
+
+/// Get the full trace buffer as a single string (lines separated by \n).
+#[wasm_bindgen]
+pub fn get_trace() -> String {
+    CPU.with(|c| {
+        let cpu_opt = c.borrow();
+        match cpu_opt.as_ref() {
+            Some(cpu_rc) => cpu_rc.borrow().get_trace(),
+            None => String::new(),
+        }
+    })
+}
+
+/// Clear the trace buffer.
+#[wasm_bindgen]
+pub fn clear_trace() {
+    CPU.with(|c| {
+        let cpu_opt = c.borrow();
+        if let Some(cpu_rc) = cpu_opt.as_ref() {
+            cpu_rc.borrow_mut().clear_trace();
+        }
+    });
+}
+
+/// Get the number of lines currently in the trace buffer.
+#[wasm_bindgen]
+pub fn trace_len() -> usize {
+    CPU.with(|c| {
+        let cpu_opt = c.borrow();
+        match cpu_opt.as_ref() {
+            Some(cpu_rc) => cpu_rc.borrow().trace_buffer.len(),
+            None => 0,
+        }
+    })
+}
+
 // This is like the `main` function, except for JavaScript.
 #[wasm_bindgen(start)]
 pub fn main_js() -> Result<(), JsValue> {
