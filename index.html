@@ -183,6 +183,45 @@
       }
       #upload-btn:hover { background: rgba(120,220,120,0.12); border-color: #9be89b; }
 
+      /* Volume control */
+      #volume-control {
+        position: fixed; bottom: 14px; right: 14px;
+        display: flex; align-items: center; gap: 7px;
+        background: rgba(0,0,0,0.7); padding: 5px 12px;
+        border-radius: 20px; border: 1px solid #333;
+        z-index: 40; transition: opacity 0.3s;
+      }
+      #volume-control:hover { border-color: #555; }
+      #volume-control .vol-icon {
+        font-size: 14px; cursor: pointer; color: #999;
+        user-select: none; width: 18px; text-align: center;
+      }
+      #volume-control .vol-icon:hover { color: #9be89b; }
+      #volume-slider {
+        -webkit-appearance: none; appearance: none;
+        width: 90px; height: 4px; border-radius: 2px;
+        background: #333; outline: none; cursor: pointer;
+      }
+      #volume-slider::-webkit-slider-thumb {
+        -webkit-appearance: none; appearance: none;
+        width: 14px; height: 14px; border-radius: 50%;
+        background: #9be89b; cursor: pointer;
+        border: none; box-shadow: 0 0 4px rgba(155,232,155,0.4);
+      }
+      #volume-slider::-moz-range-thumb {
+        width: 14px; height: 14px; border-radius: 50%;
+        background: #9be89b; cursor: pointer;
+        border: none; box-shadow: 0 0 4px rgba(155,232,155,0.4);
+      }
+      #volume-slider::-webkit-slider-runnable-track {
+        height: 4px; border-radius: 2px;
+      }
+      #volume-pct {
+        font-family: 'Consolas', 'Courier New', monospace;
+        font-size: 11px; color: #888; min-width: 30px;
+        text-align: right;
+      }
+
       /* Debug HUD */
       #debug-hud {
         position: fixed; top: 8px; left: 8px;
@@ -258,6 +297,12 @@
     </div>
 
     <div id="debug-hud" class="hidden"></div>
+
+    <div id="volume-control">
+      <span class="vol-icon" id="vol-mute-btn">🔊</span>
+      <input type="range" id="volume-slider" min="0" max="100" value="30" />
+      <span id="volume-pct">30%</span>
+    </div>
 
     <div id="rom-picker">
       <h2>RustBoy</h2>
@@ -445,11 +490,14 @@
       let saveInterval = null;
 
       /* ── Audio ── */
-      let audioCtx = null, audioNode = null;
+      let audioCtx = null, audioNode = null, gainNode = null;
+      let audioVolume = 0.3; // 0.0–1.0, default 30%
+      try { const sv = localStorage.getItem('rustboy_volume'); if (sv !== null) audioVolume = parseFloat(sv); } catch(e) {}
       const AUDIO_BUF_SIZE = 8192;
       let audioLeftBuf = new Float32Array(AUDIO_BUF_SIZE);
       let audioRightBuf = new Float32Array(AUDIO_BUF_SIZE);
       let audioWritePos = 0, audioReadPos = 0, audioSamplesAvailable = 0;
+      let audioMutedBefore = 0; // stores volume before mute
       function queueAudioSamples(left, right) {
         if (!audioCtx) return;
         for (let i = 0; i < left.length; i++) {
@@ -462,10 +510,24 @@
           audioSamplesAvailable = AUDIO_BUF_SIZE;
         }
       }
+      function setVolume(v) {
+        audioVolume = Math.max(0, Math.min(1, v));
+        if (gainNode) gainNode.gain.value = audioVolume;
+        try { localStorage.setItem('rustboy_volume', audioVolume.toString()); } catch(e) {}
+        // Update UI
+        const slider = document.getElementById('volume-slider');
+        const pct = document.getElementById('volume-pct');
+        const icon = document.getElementById('vol-mute-btn');
+        slider.value = Math.round(audioVolume * 100);
+        pct.textContent = Math.round(audioVolume * 100) + '%';
+        icon.textContent = audioVolume === 0 ? '🔇' : audioVolume < 0.3 ? '🔈' : audioVolume < 0.7 ? '🔉' : '🔊';
+      }
       function initAudio() {
         if (audioCtx) return;
         try {
           audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+          gainNode = audioCtx.createGain();
+          gainNode.gain.value = audioVolume;
           audioNode = audioCtx.createScriptProcessor(2048, 0, 2);
           audioNode.onaudioprocess = function(e) {
             const L = e.outputBuffer.getChannelData(0), R = e.outputBuffer.getChannelData(1);
@@ -476,7 +538,8 @@
               } else { L[i] = 0; R[i] = 0; }
             }
           };
-          audioNode.connect(audioCtx.destination);
+          audioNode.connect(gainNode);
+          gainNode.connect(audioCtx.destination);
         } catch(e) {}
       }
 
@@ -633,6 +696,20 @@
       searchInput.addEventListener('input', () => {
         searchQuery = searchInput.value;
         filterRoms();
+      });
+
+      /* ── Volume control ── */
+      const volSlider = document.getElementById('volume-slider');
+      const volPct = document.getElementById('volume-pct');
+      const volMuteBtn = document.getElementById('vol-mute-btn');
+      // Init slider from saved volume
+      volSlider.value = Math.round(audioVolume * 100);
+      volPct.textContent = Math.round(audioVolume * 100) + '%';
+      volMuteBtn.textContent = audioVolume === 0 ? '🔇' : audioVolume < 0.3 ? '🔈' : audioVolume < 0.7 ? '🔉' : '🔊';
+      volSlider.addEventListener('input', () => { setVolume(parseInt(volSlider.value) / 100); });
+      volMuteBtn.addEventListener('click', () => {
+        if (audioVolume > 0) { audioMutedBefore = audioVolume; setVolume(0); }
+        else { setVolume(audioMutedBefore || 0.3); }
       });
 
       /* ── Speed badge ── */
