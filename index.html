@@ -5,13 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>RustBoy</title>
     <style>
+      :root {
+        --app-vw: 100vw;
+        --app-vh: 100vh;
+      }
       * { margin: 0; padding: 0; box-sizing: border-box; }
       body {
         background: #111;
         display: flex;
         justify-content: center;
         align-items: center;
-        height: 100vh;
+        width: var(--app-vw);
+        height: var(--app-vh);
+        min-height: var(--app-vh);
         overflow: hidden;
         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         color: #ccc;
@@ -25,8 +31,9 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        height: 100%;
-        max-width: 100vw;
+        width: var(--app-vw);
+        height: var(--app-vh);
+        max-width: var(--app-vw);
         overflow: hidden;
         gap: 0;
       }
@@ -448,25 +455,25 @@
       #debug-hud.hidden { display: none; }
 
       body.mobile-ui-touch #layout {
-        width: 100vw;
-        height: 100dvh;
+        width: var(--app-vw);
+        height: var(--app-vh);
       }
       body.mobile-ui-touch .side-panel { display: none; }
       body.mobile-ui-touch #screen-area {
-        width: 100vw;
-        height: 100dvh;
+        width: var(--app-vw);
+        height: var(--app-vh);
       }
       body.mobile-ui-touch #rustboy-canvas,
       body.mobile-ui-touch #vram-canvas {
-        width: min(100vw, calc(100dvh * 1.2));
+        width: min(var(--app-vw), calc(var(--app-vh) * 1.2));
         height: auto;
-        max-height: 100dvh;
+        max-height: var(--app-vh);
       }
       body.mobile-ui-touch #screen-area.vram-active #rustboy-canvas,
       body.mobile-ui-touch #screen-area.vram-active #vram-canvas {
-        width: min(50vw, calc(100dvh * 0.6));
+        width: min(calc(var(--app-vw) * 0.5), calc(var(--app-vh) * 0.6));
         height: auto;
-        max-height: 100dvh;
+        max-height: var(--app-vh);
       }
       body.mobile-ui-touch #volume-control {
         bottom: calc(12px + env(safe-area-inset-bottom, 0px));
@@ -475,13 +482,13 @@
       body.mobile-ui-touch #debug-hud { display: none !important; }
       body.mobile-ui-wide #rustboy-canvas,
       body.mobile-ui-wide #vram-canvas {
-        width: min(56vw, calc(68dvh * 1.08));
-        max-height: 68dvh;
+        width: min(calc(var(--app-vw) * 0.56), calc(var(--app-vh) * 0.68 * 1.08));
+        max-height: calc(var(--app-vh) * 0.68);
       }
       body.mobile-ui-wide #screen-area.vram-active #rustboy-canvas,
       body.mobile-ui-wide #screen-area.vram-active #vram-canvas {
-        width: min(40vw, calc(54dvh * 0.95));
-        max-height: 54dvh;
+        width: min(calc(var(--app-vw) * 0.4), calc(var(--app-vh) * 0.54 * 0.95));
+        max-height: calc(var(--app-vh) * 0.54);
       }
       body.mobile-ui-wide .touch-btn {
         min-width: 64px;
@@ -843,7 +850,17 @@
       }
       function getViewportSize() {
         const vv = window.visualViewport;
-        return { width: vv ? vv.width : window.innerWidth, height: vv ? vv.height : window.innerHeight };
+        return {
+          width: vv ? vv.width : window.innerWidth,
+          height: vv ? vv.height : window.innerHeight,
+          offsetTop: vv ? vv.offsetTop : 0,
+          offsetLeft: vv ? vv.offsetLeft : 0,
+        };
+      }
+      function syncViewportCssVars() {
+        const vp = getViewportSize();
+        document.documentElement.style.setProperty('--app-vw', `${Math.round(vp.width)}px`);
+        document.documentElement.style.setProperty('--app-vh', `${Math.round(vp.height)}px`);
       }
       function isFoldableViewport() {
         return matchesMediaSafe('(horizontal-viewport-segments: 2)')
@@ -939,6 +956,7 @@
         }
       }
       function renderTouchControls() {
+        syncViewportCssVars();
         const enabled = shouldUseTouchControls();
         const profile = enabled ? getTouchProfile() : '';
         document.body.classList.toggle('mobile-ui-touch', enabled);
@@ -1458,6 +1476,7 @@
       window.addEventListener('resize', () => renderTouchControls());
       window.addEventListener('orientationchange', () => setTimeout(renderTouchControls, 60));
       if (window.visualViewport) window.visualViewport.addEventListener('resize', () => renderTouchControls());
+      syncViewportCssVars();
       renderTouchControls();
 
       /* ═══════════════════════════════════════════════════════════════
