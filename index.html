@@ -111,30 +111,69 @@
       /* ROM picker overlay */
       #rom-picker {
         position: fixed; inset: 0;
-        background: rgba(0,0,0,0.85);
+        background: rgba(0,0,0,0.92);
         display: flex; flex-direction: column;
-        align-items: center; justify-content: center;
+        align-items: center;
         z-index: 100; color: #eee;
+        padding-top: 3vh;
       }
       #rom-picker.hidden { display: none; }
       #rom-picker h2 {
-        font-size: 1.4rem; margin-bottom: 1rem;
+        font-size: 1.4rem; margin-bottom: 0.8rem;
         color: #9be89b; text-shadow: 0 0 6px #4a4;
       }
-      #rom-list {
-        list-style: none; max-height: 70vh;
-        overflow-y: auto; width: 340px;
-      }
-      #rom-list li {
-        padding: 0.55rem 1rem; cursor: pointer;
-        border-radius: 4px; font-size: 0.95rem;
-        transition: background 0.12s;
-      }
-      #rom-list li:hover, #rom-list li.selected { background: rgba(120,220,120,0.2); }
-      #rom-list li.selected { outline: 1px solid #9be89b; }
-      #rom-picker .hint { margin-top: 1rem; font-size: 0.75rem; color: #888; }
 
-      #upload-area { margin-top: 0.8rem; width: 340px; text-align: center; }
+      /* Search bar */
+      #rom-search {
+        width: 540px; max-width: 90vw;
+        padding: 0.5rem 1rem; margin-bottom: 0.8rem;
+        background: #1a1a1a; color: #eee;
+        border: 1px solid #444; border-radius: 6px;
+        font-size: 0.95rem; font-family: inherit;
+        outline: none; transition: border-color 0.2s;
+      }
+      #rom-search:focus { border-color: #9be89b; }
+      #rom-search::placeholder { color: #666; }
+
+      #rom-list {
+        list-style: none; max-height: 65vh;
+        overflow-y: auto; width: 900px; max-width: 90vw;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+        gap: 8px; padding: 4px;
+      }
+      #rom-list::-webkit-scrollbar { width: 6px; }
+      #rom-list::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+      #rom-list li {
+        padding: 0.5rem; cursor: pointer;
+        border-radius: 6px; font-size: 0.78rem;
+        transition: background 0.12s, transform 0.1s;
+        display: flex; flex-direction: column;
+        align-items: center; text-align: center;
+        gap: 6px; border: 1px solid transparent;
+        line-height: 1.3;
+      }
+      #rom-list li:hover { background: rgba(120,220,120,0.15); transform: scale(1.03); }
+      #rom-list li.selected { background: rgba(120,220,120,0.2); border-color: #9be89b; }
+      #rom-list li .rom-img {
+        width: 120px; height: 120px; object-fit: contain;
+        border-radius: 4px; background: #0a0a0a;
+        image-rendering: pixelated;
+      }
+      #rom-list li .rom-noimg {
+        width: 120px; height: 120px; border-radius: 4px;
+        background: #1a1a1a; display: flex; align-items: center;
+        justify-content: center; font-size: 2rem; color: #333;
+      }
+      #rom-list li .rom-name {
+        word-break: break-word; color: #ccc;
+      }
+      #rom-count {
+        font-size: 0.7rem; color: #555; margin-bottom: 0.4rem;
+      }
+      #rom-picker .hint { margin-top: 0.8rem; font-size: 0.75rem; color: #888; }
+
+      #upload-area { margin-top: 0.6rem; width: 540px; max-width: 90vw; text-align: center; }
       #upload-btn {
         width: 100%; padding: 0.65rem 1rem;
         background: transparent; color: #9be89b;
@@ -222,12 +261,14 @@
 
     <div id="rom-picker">
       <h2>RustBoy</h2>
+      <input type="text" id="rom-search" placeholder="🔍 Search games..." autocomplete="off" spellcheck="false" />
+      <div id="rom-count"></div>
       <ul id="rom-list"></ul>
       <div id="upload-area">
         <button id="upload-btn">📂 Upload ROM (.gb)</button>
         <input type="file" id="rom-file-input" accept=".gb,.gbc,.bin" style="display:none" />
       </div>
-      <p class="hint">↑/↓ navigate · Enter load · Esc back · Drag & drop .gb files</p>
+      <p class="hint">Type to search · ←→↑↓ navigate · Enter load · Esc back · Drag & drop .gb files</p>
     </div>
 
     <script>
@@ -377,15 +418,10 @@
       /* ═══════════════════════════════════════════════════════════════
        *  ROM SYSTEM
        * ═══════════════════════════════════════════════════════════════ */
-      const KNOWN_ROMS = [
-        "cpu_instrs.gb","dmg_sound.gb","Dr. Mario (World).gb",
-        "Pokemon Red (UE) [S][!].gb",
-        "01-special.gb","02-interrupts.gb","03-op sp,hl.gb",
-        "04-op r,imm.gb","05-op rp.gb","06-ld r,r.gb",
-        "07-jr,jp,call,ret,rst.gb","08-misc instrs.gb",
-        "09-op r,r.gb","10-bit ops.gb","11-op a,(hl).gb",
-      ];
-      let ROMS = [], romLoaded = false;
+      let ALL_ROMS = []; // [{name, img?}, ...]
+      let ROMS = []; // filtered list of rom entry objects
+      let romLoaded = false;
+      let searchQuery = '';
 
       function toggleVramCanvas(v) {
         document.getElementById('vram-canvas').style.display = v ? 'block' : 'none';
@@ -462,17 +498,63 @@
         try { debugHud.textContent = Module._get_debug_state(); } catch(e) {}
       }
 
+      function filterRoms() {
+        const q = searchQuery.toLowerCase().trim();
+        if (!q) {
+          ROMS = [...ALL_ROMS];
+        } else {
+          ROMS = ALL_ROMS.filter(r => r.name.toLowerCase().includes(q));
+        }
+        selectedIdx = 0;
+        buildList();
+      }
+
       function buildList() {
         listEl.innerHTML = '';
-        if (!ROMS.length) {
+        const countEl = document.getElementById('rom-count');
+        if (!ROMS.length && !ALL_ROMS.length) {
           const li = document.createElement('li');
           li.textContent = 'No local ROMs found — upload one below';
-          li.style.cssText = 'color:#666;cursor:default;font-style:italic;';
+          li.style.cssText = 'color:#666;cursor:default;font-style:italic;grid-column:1/-1;';
           listEl.appendChild(li);
+          countEl.textContent = '';
+        } else if (!ROMS.length) {
+          const li = document.createElement('li');
+          li.textContent = 'No matches found';
+          li.style.cssText = 'color:#666;cursor:default;font-style:italic;grid-column:1/-1;';
+          listEl.appendChild(li);
+          countEl.textContent = `0 / ${ALL_ROMS.length} games`;
         } else {
-          ROMS.forEach((name, i) => {
+          countEl.textContent = searchQuery
+            ? `${ROMS.length} / ${ALL_ROMS.length} games`
+            : `${ALL_ROMS.length} games`;
+          ROMS.forEach((rom, i) => {
             const li = document.createElement('li');
-            li.textContent = name;
+            if (rom.img) {
+              const img = document.createElement('img');
+              img.className = 'rom-img';
+              img.loading = 'lazy';
+              img.src = 'roms/' + encodeURI(rom.img);
+              img.alt = rom.name;
+              img.onerror = function() {
+                // Replace broken image with placeholder
+                const ph = document.createElement('div');
+                ph.className = 'rom-noimg';
+                ph.textContent = '🎮';
+                this.replaceWith(ph);
+              };
+              li.appendChild(img);
+            } else {
+              const ph = document.createElement('div');
+              ph.className = 'rom-noimg';
+              ph.textContent = '🎮';
+              li.appendChild(ph);
+            }
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'rom-name';
+            // Display name without .gb extension
+            nameSpan.textContent = rom.name.replace(/\.gb$/i, '');
+            li.appendChild(nameSpan);
             li.addEventListener('click', () => { selectedIdx = i; loadSelectedRom(); });
             if (i === selectedIdx) li.classList.add('selected');
             listEl.appendChild(li);
@@ -486,14 +568,19 @@
           if (i === selectedIdx) li.scrollIntoView({ block: 'nearest' });
         });
       }
-      function openPicker() { pickerOpen = true; pickerEl.classList.remove('hidden'); refreshSelection(); }
+      function openPicker() {
+        pickerOpen = true; pickerEl.classList.remove('hidden');
+        refreshSelection();
+        // Focus search input after a tick so it's visible
+        setTimeout(() => searchInput.focus(), 50);
+      }
       function closePicker() { pickerOpen = false; pickerEl.classList.add('hidden'); }
 
       async function loadSelectedRom() {
         if (!ROMS.length) return;
         closePicker(); initAudio();
         try {
-          const resp = await fetch('roms/' + encodeURIComponent(ROMS[selectedIdx]));
+          const resp = await fetch('roms/' + encodeURIComponent(ROMS[selectedIdx].name));
           if (!resp.ok) throw new Error(resp.statusText);
           Module._load_rom_data(new Uint8Array(await resp.arrayBuffer()));
           romLoaded = true;
@@ -526,15 +613,27 @@
         if (f && Module) { const r = new FileReader(); r.onload = () => loadRomFromBuffer(r.result, f.name); r.readAsArrayBuffer(f); }
       });
 
-      async function probeRoms() {
-        const ok = [];
-        await Promise.all(KNOWN_ROMS.map(async n => {
-          try { if ((await fetch('roms/' + encodeURIComponent(n), { method: 'HEAD' })).ok) ok.push(n); } catch(e) {}
-        }));
-        ROMS = KNOWN_ROMS.filter(n => ok.includes(n));
-        selectedIdx = 0; buildList();
+      async function fetchRomList() {
+        try {
+          const resp = await fetch('roms/romlist.json');
+          if (!resp.ok) throw new Error('romlist.json not found');
+          ALL_ROMS = await resp.json();
+        } catch(e) {
+          console.warn('Could not load romlist.json:', e);
+          ALL_ROMS = [];
+        }
+        ROMS = [...ALL_ROMS];
+        selectedIdx = 0;
+        buildList();
       }
-      probeRoms();
+      fetchRomList();
+
+      // Search input handling
+      const searchInput = document.getElementById('rom-search');
+      searchInput.addEventListener('input', () => {
+        searchQuery = searchInput.value;
+        filterRoms();
+      });
 
       /* ── Speed badge ── */
       const speedBadge = document.getElementById('speed-badge');
@@ -553,6 +652,13 @@
        *  KEYBOARD DISPATCH
        * ═══════════════════════════════════════════════════════════════ */
 
+      // Detect actual grid column count from rendered layout
+      function getGridColCount() {
+        const style = getComputedStyle(listEl);
+        const cols = style.gridTemplateColumns.split(' ').length;
+        return cols > 0 ? cols : 3; // fallback to 3
+      }
+
       window.addEventListener('keydown', (e) => {
         // Rebind mode: capture next key
         if (rebindAction) {
@@ -561,15 +667,32 @@
           finishRebind(e.code); return;
         }
 
-        // ROM picker navigation (always uses arrow keys / Enter / Escape, not rebindable)
+        // ROM picker navigation (grid-aware: ↑↓ skip rows, ←→ move columns)
         if (pickerOpen) {
           if (ROMS.length > 0) {
-            if (e.code === 'ArrowDown') { selectedIdx = (selectedIdx + 1) % ROMS.length; refreshSelection(); e.preventDefault(); return; }
-            if (e.code === 'ArrowUp') { selectedIdx = (selectedIdx - 1 + ROMS.length) % ROMS.length; refreshSelection(); e.preventDefault(); return; }
+            const cols = getGridColCount();
+            if (e.code === 'ArrowDown') {
+              selectedIdx = Math.min(selectedIdx + cols, ROMS.length - 1);
+              refreshSelection(); e.preventDefault(); return;
+            }
+            if (e.code === 'ArrowUp') {
+              selectedIdx = Math.max(selectedIdx - cols, 0);
+              refreshSelection(); e.preventDefault(); return;
+            }
+            if (e.code === 'ArrowRight') {
+              selectedIdx = Math.min(selectedIdx + 1, ROMS.length - 1);
+              refreshSelection(); e.preventDefault(); return;
+            }
+            if (e.code === 'ArrowLeft') {
+              selectedIdx = Math.max(selectedIdx - 1, 0);
+              refreshSelection(); e.preventDefault(); return;
+            }
             if (e.code === 'Enter' || e.code === 'NumpadEnter') { loadSelectedRom(); e.preventDefault(); return; }
           }
           // Escape closes picker only if a ROM has been loaded before
-          if (e.code === 'Escape' && romLoaded) { closePicker(); e.preventDefault(); }
+          if (e.code === 'Escape' && romLoaded) { closePicker(); e.preventDefault(); return; }
+          // Let all other keys go to search input
+          if (document.activeElement !== searchInput) { searchInput.focus(); }
           return;
         }
 
