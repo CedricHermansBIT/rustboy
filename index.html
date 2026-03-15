@@ -1199,7 +1199,7 @@
               const img = document.createElement('img');
               img.className = 'rom-img';
               img.loading = 'lazy';
-              img.src = 'roms/' + encodeURI(rom.img);
+              img.src = 'testroms/' + encodeURI(rom.img);
               img.alt = rom.name;
               img.onerror = function() {
                 // Replace broken image with placeholder
@@ -1252,7 +1252,7 @@
         closePicker(); initAudio();
         resumeAudioContext();
         try {
-          const resp = await fetch('roms/' + encodeURIComponent(ROMS[selectedIdx].name));
+          const resp = await fetch('testroms/' + encodeURIComponent(ROMS[selectedIdx].name));
           if (!resp.ok) throw new Error(resp.statusText);
           Module._load_rom_data(new Uint8Array(await resp.arrayBuffer()));
           romLoaded = true;
@@ -1290,7 +1290,7 @@
 
       async function fetchRomList() {
         try {
-          const resp = await fetch('roms/romlist.json');
+          const resp = await fetch('testroms/romlist.json');
           if (!resp.ok) throw new Error('romlist.json not found');
           ALL_ROMS = await resp.json();
         } catch(e) {

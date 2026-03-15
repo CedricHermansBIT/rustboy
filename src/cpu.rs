@@ -54,6 +54,8 @@ pub struct CPU {
     mbc_ram_enable: bool,
     mbc1_bank2: u8,  // The 2-bit register written via 0x4000-0x5FFF
     rom_bank_mask: u16,  // Mask based on ROM size (number of banks - 1)
+    ram_bank_mask: usize, // Mask based on RAM size to prevent invalid bank access
+    rtc_registers:[u8; 5], // MBC3 Real Time Clock (S, M, H, DL, DH)
     ei_pending: bool,
     div_cycles: u32,
     pub apu: APU,
@@ -69,6 +71,9 @@ pub struct CPU {
     pub tracing: bool,
     /// Accumulated trace lines (one per instruction)
     pub trace_buffer: Vec<String>,
+    pub oam_dma_active: bool,
+    pub oam_dma_start_cycle: u32,
+    halt_bug: bool,
 }
 
 impl CPU {
@@ -108,6 +113,8 @@ impl CPU {
             mbc_ram_enable: false,
             mbc1_bank2: 0,
             rom_bank_mask: 1,  // Will be set properly in load_rom
+            ram_bank_mask: 0,
+            rtc_registers:[0; 5],
             ei_pending: false,
             div_cycles: 0,
             apu: APU::new(),
@@ -117,6 +124,9 @@ impl CPU {
             breakpoints: Vec::new(),
             tracing: false,
             trace_buffer: Vec::new(),
+            oam_dma_active: false,
+            oam_dma_start_cycle: 0,
+            halt_bug: false,
         }
     }
 
@@ -672,10 +682,19 @@ impl CPU {
         self.cartridge_type = self.memory[0x147];
         // Compute ROM bank mask: number of banks - 1
         // Each bank is 16KB, so num_banks = rom_size / 0x4000
-        let num_banks = (self.rom.len() / 0x4000).max(2) as u16;
-        self.rom_bank_mask = num_banks - 1;
-        console::log_1(&format!("Cartridge type: {:02X}, ROM size: {} KB, banks: {}, mask: {:03X}",
-            self.cartridge_type, self.rom.len() / 1024, num_banks, self.rom_bank_mask).into());
+        let num_rom_banks = (self.rom.len() / 0x4000).max(2) as u16;
+        self.rom_bank_mask = num_rom_banks.next_power_of_two() - 1;
+
+        // Compute RAM mask correctly (MBC2 has 512 bytes implicitly)
+        let mut ram_size = self.get_ram_size();
+        if self.cartridge_type == 0x05 || self.cartridge_type == 0x06 {
+            ram_size = 512;
+        }
+        let num_ram_banks = if ram_size == 0 { 0 } else { (ram_size / 0x2000).max(1) };
+        self.ram_bank_mask = if num_ram_banks > 0 { num_ram_banks.next_power_of_two() - 1 } else { 0 };
+
+        console::log_1(&format!("Cartridge type: {:02X}, ROM size: {} KB, ROM banks: {}, ROM mask: {:03X}, RAM size: {} KB, RAM banks: {}, RAM mask: {:02X}",
+            self.cartridge_type, self.rom.len() / 1024, num_rom_banks, self.rom_bank_mask, ram_size, num_ram_banks, self.ram_bank_mask).into());
 
         // Assign GBC-style color palette based on ROM title
         self.gbc_palettes = crate::ppu::gbc_palette_for_rom(&self.rom);
@@ -755,6 +774,17 @@ impl CPU {
         //if address == 0xFFFF {
             //console::log_1(&format!("IE write: {:02X} at PC:{:04X} SP:{:04X}", data, self.program_counter, self.stackpointer).into());
         //}
+        // Echo RAM mirroring: $E000-$FDFF mirrors $C000-$DDFF
+        if address >= 0xE000 && address < 0xFE00 {
+            self.memory[address - 0x2000] = data;
+            self.memory[address] = data;
+            return;
+        }
+        if address >= 0xC000 && address < 0xDE00 {
+            self.memory[address] = data;
+            self.memory[address + 0x2000] = data;
+            return;
+        }
         match address {
             0xFF50 => {
                 if data != 0 {
@@ -766,7 +796,10 @@ impl CPU {
                 self.apu.write_register(address as u16, data);
             }
             0xFF00 => self.handle_joypad(data),
-            0xFF46 => self.dma_transfer(data),
+            0xFF46 => {
+                self.memory[0xFF46] = data;
+                self.dma_transfer(data);
+            }
             0xFF04 => {
                 // Writing any value to DIV resets it to 0
                 self.memory[0xFF04] = 0;
@@ -844,88 +877,106 @@ impl CPU {
             _ => {
                 match self.cartridge_type {
                     0x0 => {
-                        // ROM only — writes to ROM area (0x0000-0x7FFF) are ignored
+                        // ROM only — writes to ROM area must be ignored!
                         if address >= 0x8000 {
                             self.memory[address] = data;
                         }
                     }
+                    // MBC1 write handler (in your big match block):
                     0x1 | 0x2 | 0x3 => {
                         if address < 0x2000 {
-                            // RAM enable
-                            self.mbc_ram_enable = data == 0x0A;
+                            self.mbc_ram_enable = (data & 0x0F) == 0x0A;
                         } else if address < 0x4000 {
-                            // ROM bank number (lower 5 bits)
+                            // Store the raw 5-bit value — no masking, no 00→01 here.
+                            // The translation is deferred to read time because the mask
+                            // must be applied BEFORE checking for zero.
                             self.rombank = (data & 0x1F) as u16;
-                            if self.rombank == 0 {
-                                self.rombank = 1;
-                            }
-
                         } else if address < 0x6000 {
-                            // 2-bit register: affects ROM upper bits OR RAM bank depending on mode
                             self.mbc1_bank2 = data & 0x3;
                         } else if address < 0x8000 {
-                            // Banking mode select (bit 0 only)
                             self.mbc_rom_mode = data & 0x01;
                         } else if address >= 0xA000 && address < 0xC000 {
-                            // RAM bank write
                             if self.mbc_ram_enable {
-                                let ram_bank = if self.mbc_rom_mode == 1 { self.mbc1_bank2 as usize } else { 0 };
-                                self.ram[ram_bank][address - 0xa000] = data;
+                                let r_bank = if self.mbc_rom_mode == 1 { self.mbc1_bank2 as usize } else { 0 };
+                                let ram_bank = r_bank & self.ram_bank_mask;
+                                self.ram[ram_bank][address - 0xA000] = data;
                             }
+                        } else {
+                            self.memory[address] = data;
+                        }
+                    }                    0x05 | 0x06 => {
+                        // MBC2 (Built-in 512x4 bit RAM)
+                        if address < 0x4000 {
+                            if (address & 0x0100) == 0 {
+                                self.mbc_ram_enable = (data & 0x0F) == 0x0A;
+                            } else {
+                                let mut bank = (data & 0x0F) as u16;
+                                if bank == 0 { bank = 1; }
+                                // Apply ROM mask immediately
+                                self.rombank = bank & self.rom_bank_mask;
+                            }
+                        } else if address < 0x8000 {
+                            // Ignore writes to ROM
+                        } else if address >= 0xA000 && address < 0xA200 {
+                            if self.mbc_ram_enable {
+                                // MBC2 RAM is only 4 bits wide. Index is always 0.
+                                self.ram[0][address - 0xA000] = data & 0x0F;
+                            }
+                        } else if address >= 0xA200 && address < 0xC000 {
+                            // Unmapped RAM area for MBC2 - ignore writes
                         } else {
                             self.memory[address] = data;
                         }
                     }
                     0x0F..=0x13 => {
-                        // MBC3 (+TIMER, +RAM, +BATTERY variants)
+                        // MBC3 (+TIMER/RTC)
                         if address < 0x2000 {
-                            // RAM and Timer enable
                             self.mbc_ram_enable = (data & 0x0F) == 0x0A;
                         } else if address < 0x4000 {
-                            // ROM bank number (7 bits)
-                            self.rombank = (data & 0x7F) as u16;
-                            if self.rombank == 0 {
-                                self.rombank = 1;
-                            }
+                            let mut bank = (data & 0x7F) as u16;
+                            if bank == 0 { bank = 1; }
+                            // Apply ROM mask immediately
+                            self.rombank = bank & self.rom_bank_mask;
                         } else if address < 0x6000 {
-                            // RAM bank number (0x00-0x03) or RTC register select (0x08-0x0C)
                             if data <= 0x03 {
-                                self.rambank = data;
+                                // Apply RAM mask immediately
+                                self.rambank = data & (self.ram_bank_mask as u8);
+                            } else if data >= 0x08 && data <= 0x0C {
+                                self.rambank = data; // RTC registers
                             }
-                            // RTC register select (0x08-0x0C) — ignored for now
                         } else if address < 0x8000 {
-                            // Latch clock data — ignored for now (RTC not implemented)
+                            // RTC latch register - ignored for now
                         } else if address >= 0xA000 && address < 0xC000 {
-                            // External RAM write
-                            if self.mbc_ram_enable && self.rambank <= 0x03 {
-                                self.ram[self.rambank as usize][address - 0xA000] = data;
+                            if self.mbc_ram_enable {
+                                if self.rambank <= 0x03 {
+                                    self.ram[self.rambank as usize][address - 0xA000] = data;
+                                } else if self.rambank >= 0x08 && self.rambank <= 0x0C {
+                                    self.rtc_registers[(self.rambank - 0x08) as usize] = data;
+                                }
                             }
                         } else {
                             self.memory[address] = data;
                         }
                     }
                     0x19..=0x1E => {
-                        // MBC5 (+RAM, +BATTERY, +RUMBLE variants)
+                        // MBC5
                         if address < 0x2000 {
-                            // RAM enable
                             self.mbc_ram_enable = (data & 0x0F) == 0x0A;
                         } else if address < 0x3000 {
-                            // ROM bank number — low 8 bits
-                            self.rombank = (self.rombank & 0x100) | data as u16;
+                            let new_bank = (self.rombank & 0x100) | data as u16;
+                            // Apply ROM mask immediately
+                            self.rombank = new_bank & self.rom_bank_mask;
                         } else if address < 0x4000 {
-                            // ROM bank number — high bit (bit 8)
-                            self.rombank = (self.rombank & 0xFF) | ((data as u16 & 0x01) << 8);
+                            let new_bank = (self.rombank & 0xFF) | ((data as u16 & 0x01) << 8);
+                            // Apply ROM mask immediately
+                            self.rombank = new_bank & self.rom_bank_mask;
                         } else if address < 0x6000 {
-                            // RAM bank number (0x00-0x0F)
-                            // For rumble carts, bit 3 is the rumble motor (ignored here)
-                            if self.cartridge_type >= 0x1C {
-                                // MBC5+Rumble: only lower 3 bits are RAM bank
-                                self.rambank = data & 0x07;
-                            } else {
-                                self.rambank = data & 0x0F;
-                            }
+                            let raw_bank = if self.cartridge_type >= 0x1C { data & 0x07 } else { data & 0x0F };
+                            // Apply RAM mask immediately
+                            self.rambank = raw_bank & (self.ram_bank_mask as u8);
+                        } else if address < 0x8000 {
+                            // Ignore writes to ROM space
                         } else if address >= 0xA000 && address < 0xC000 {
-                            // External RAM write
                             if self.mbc_ram_enable {
                                 self.ram[self.rambank as usize][address - 0xA000] = data;
                             }
@@ -934,8 +985,9 @@ impl CPU {
                         }
                     }
                     _ => {
-                        console::log_1(&format!("Unsupported cartridge type {:x}, falling back to plain write", self.cartridge_type).into());
-                        self.memory[address] = data;
+                        if address >= 0x8000 {
+                            self.memory[address] = data;
+                        }
                     }
                 }
             }
@@ -951,12 +1003,21 @@ impl CPU {
     fn dma_transfer(&mut self, data: u8) {
         let start = (data as u16) << 8;
         for i in 0..0xA0u16 {
-            let byte = self.read_byte((start + i) as usize);
+            let mut src = (start + i) as usize;
+            // On DMG, DMA source addresses $FE00-$FFFF read from WRAM ($DE00-$DFFF)
+            if src >= 0xFE00 {
+                src -= 0x2000;
+            }
+            let byte = self.read_byte(src);
             self.memory[0xFE00 + i as usize] = byte;
         }
     }
 
     pub fn read_byte(&self, address: usize) -> u8 {
+        // Echo RAM: $E000-$FDFF mirrors $C000-$DDFF
+        if address >= 0xE000 && address < 0xFE00 {
+            return self.memory[address - 0x2000];
+        }
         // Boot ROM takes priority for addresses 0x00-0xFF during boot
         if self.booting && address < 0x100 {
             return self.boot_mem[address];
@@ -997,7 +1058,6 @@ impl CPU {
         }
         match self.cartridge_type {
             0x0 => {
-                // ROM only — read from ROM for the ROM area
                 if address < 0x8000 {
                     return self.rom.get(address).copied().unwrap_or(0xFF);
                 }
@@ -1005,70 +1065,81 @@ impl CPU {
             }
             0x1 | 0x2 | 0x3 => {
                 if address < 0x4000 {
-                    // Bank 0 area
-                    if self.mbc_rom_mode == 1 {
-                        // In RAM banking mode (mode 1), bank 0 area uses upper bits
+                    // Mode 1 low-bank remapping only applies to large ROMs (>512KB, >32 banks)
+                    if self.mbc_rom_mode == 1 && self.rom_bank_mask >= 0x20 {
                         let bank = ((self.mbc1_bank2 as usize) << 5) & (self.rom_bank_mask as usize);
-                        let rom_addr = address + bank * 0x4000;
-                        return self.rom.get(rom_addr).copied().unwrap_or(0xFF);
+                        return self.rom.get(address + bank * 0x4000).copied().unwrap_or(0xFF);
                     }
                     return self.rom.get(address).copied().unwrap_or(0xFF);
-                }
-                // rombank switch
-                if address < 0x8000 {
-                    // Full bank number: upper 2 bits from mbc1_bank2, lower 5 from rombank
-                    let bank_raw = ((self.mbc1_bank2 as usize) << 5) | (self.rombank as usize);
+                } else if address < 0x8000 {
+                    // 1. Read the lower 5-bit register
+                    let mut lower_5_bits = self.rombank as usize;
+
+                    // 2. The 00 -> 01 translation applies ONLY to these 5 bits BEFORE masking
+                    if lower_5_bits == 0 {
+                        lower_5_bits = 1;
+                    }
+
+                    // 3. Combine with the upper 2 bits
+                    let bank2 = (self.mbc1_bank2 as usize) << 5;
+                    let bank_raw = bank2 | lower_5_bits;
+
+                    // 4. Finally, apply the hardware ROM mask
+                    // (Notice how you don't even need `if self.rom_bank_mask >= 0x20` here,
+                    // because bitwise ANDing a small mask naturally strips the `bank2` bits away)
                     let bank = bank_raw & (self.rom_bank_mask as usize);
-                    let rom_addr = address - 0x4000 + bank * 0x4000;
-                    return self.rom.get(rom_addr).copied().unwrap_or(0xFF);
-                }
-                // rambank switch
-                if address >= 0xA000 && address < 0xC000 {
+
+                    return self.rom.get(address - 0x4000 + bank * 0x4000).copied().unwrap_or(0xFF);
+                } else if address >= 0xA000 && address < 0xC000 {
                     if self.mbc_ram_enable {
-                        let ram_bank = if self.mbc_rom_mode == 1 { self.mbc1_bank2 as usize } else { 0 };
+                        let r_bank = if self.mbc_rom_mode == 1 { self.mbc1_bank2 as usize } else { 0 };
+                        let ram_bank = r_bank & self.ram_bank_mask;
                         return self.ram[ram_bank][address - 0xA000];
                     }
                     return 0xFF;
                 }
                 self.memory[address]
             }
-            0x0F..=0x13 => {
-                // MBC3
+            0x05 | 0x06 => {
+                // MBC2 (Pre-masked! No math required!)
                 if address < 0x4000 {
-                    // Bank 0 — always fixed
                     return self.rom.get(address).copied().unwrap_or(0xFF);
-                }
-                if address < 0x8000 {
-                    // Switchable ROM bank (7-bit bank number)
-                    let bank = if self.rombank == 0 { 1 } else { self.rombank as usize };
-                    let bank = bank & (self.rom_bank_mask as usize);
-                    let rom_addr = (address - 0x4000) + bank * 0x4000;
-                    return self.rom.get(rom_addr).copied().unwrap_or(0xFF);
-                }
-                if address >= 0xA000 && address < 0xC000 {
-                    // External RAM or RTC register read
-                    if self.mbc_ram_enable && self.rambank <= 0x03 {
-                        return self.ram[self.rambank as usize][address - 0xA000];
+                } else if address < 0x8000 {
+                    return self.rom.get(address - 0x4000 + (self.rombank as usize) * 0x4000).copied().unwrap_or(0xFF);
+                } else if address >= 0xA000 && address < 0xA200 {
+                    if self.mbc_ram_enable {
+                        // MBC2 RAM leaves top 4 bits unmapped (returns 1s)
+                        return self.ram[0][address - 0xA000] | 0xF0;
                     }
-                    // RTC registers (0x08-0x0C) — return 0 for now
+                    return 0xFF;
+                }
+                self.memory[address]
+            }
+            0x0F..=0x13 => {
+                // MBC3 (Pre-masked!)
+                if address < 0x4000 {
+                    return self.rom.get(address).copied().unwrap_or(0xFF);
+                } else if address < 0x8000 {
+                    return self.rom.get(address - 0x4000 + (self.rombank as usize) * 0x4000).copied().unwrap_or(0xFF);
+                } else if address >= 0xA000 && address < 0xC000 {
+                    if self.mbc_ram_enable {
+                        if self.rambank <= 0x03 {
+                            return self.ram[self.rambank as usize][address - 0xA000];
+                        } else if self.rambank >= 0x08 && self.rambank <= 0x0C {
+                            return self.rtc_registers[(self.rambank - 0x08) as usize];
+                        }
+                    }
                     return 0xFF;
                 }
                 self.memory[address]
             }
             0x19..=0x1E => {
-                // MBC5
+                // MBC5 (Pre-masked!)
                 if address < 0x4000 {
-                    // Bank 0 — always fixed
                     return self.rom.get(address).copied().unwrap_or(0xFF);
-                }
-                if address < 0x8000 {
-                    // Switchable ROM bank (9-bit, bank 0 is valid)
-                    let bank = (self.rombank as usize) & (self.rom_bank_mask as usize);
-                    let rom_addr = (address - 0x4000) + bank * 0x4000;
-                    return self.rom.get(rom_addr).copied().unwrap_or(0xFF);
-                }
-                if address >= 0xA000 && address < 0xC000 {
-                    // External RAM
+                } else if address < 0x8000 {
+                    return self.rom.get(address - 0x4000 + (self.rombank as usize) * 0x4000).copied().unwrap_or(0xFF);
+                } else if address >= 0xA000 && address < 0xC000 {
                     if self.mbc_ram_enable {
                         return self.ram[self.rambank as usize][address - 0xA000];
                     }
@@ -1076,9 +1147,7 @@ impl CPU {
                 }
                 self.memory[address]
             }
-            _ => {
-                self.memory[address]
-            }
+            _ => self.memory[address]
         }
     }
 
@@ -1111,6 +1180,8 @@ impl CPU {
         self.div_cycles = 0;
         self.timer_cycles = 0;
         self.program_counter = 0;
+        self.oam_dma_start_cycle = 0;
+        self.oam_dma_active= false;
         self.halt = false;
     }
 
@@ -1964,6 +2035,10 @@ impl CPU {
         }
 
         let opcode = self.read();
+        if self.halt_bug {
+            self.halt_bug = false;
+            self.program_counter = self.program_counter.wrapping_sub(1);
+        }
         // if ei, pause
         // if opcode == 0xFB {
         //     self.toggle_pause();
@@ -2242,6 +2317,7 @@ impl CPU {
                     opcode, self.program_counter.wrapping_sub(1), self.af(), self.bc(), self.de(), self.hl(), self.stackpointer);
             }
         }
+
 
         // Delayed EI: if EI was pending from a previous instruction and
         // wasn't cancelled by this instruction (e.g., DI), enable IME now
@@ -3309,28 +3385,20 @@ impl CPU {
 
     fn halt(&mut self) {
         let ie = self.memory[0xFFFF];
-        let _iflag = self.memory[0xFF0F];
-        if !self.interrupt_master_enable && ie == 0 {
-            //console::log_1(&format!("HALT DEADLOCK at PC:{:04X} IE:{:02X} IF:{:02X} IME:{} Bank:{} Bank2:{} Mode:{}",
-                //self.program_counter, ie, iflag, self.interrupt_master_enable,
-                //self.rombank, self.mbc1_bank2, self.mbc_rom_mode).into());
-            // Dump stack context
-            let sp = self.stackpointer as usize;
-            let mut stack_dump = String::new();
-            for i in 0..8 {
-                let addr = sp.wrapping_add(i);
-                if addr <= 0xFFFF {
-                    stack_dump.push_str(&format!("{:02X} ", self.read_byte(addr)));
-                }
-            }
-            //console::log_1(&format!("Stack@SP({:04X}): {}", sp, stack_dump.trim()).into());
+        let iflag = self.memory[0xFF0F];
+
+        if !self.interrupt_master_enable && (ie & iflag & 0x1F) != 0 {
+            // HALT bug: pending interrupt exists but IME is off.
+            // PC does not advance after the opcode of the next instruction.
+            self.halt_bug = true;
+            self.cycles += 1;
+            // Do NOT set self.halt — CPU keeps running, just with the PC bug
+            return;
         }
-        //console::log_1(&format!("HALT at PC:{:04X} IE:{:02X} IF:{:02X} IME:{}",
-            //self.program_counter, ie, iflag, self.interrupt_master_enable).into());
+
         self.halt = true;
         self.cycles += 1;
     }
-
     fn ldhla(&mut self) {
         self.write_byte((self.hl() )as usize, self.reg_a);
         self.cycles += 2;
@@ -3874,12 +3942,13 @@ impl CPU {
     }
 
     fn calla16(&mut self) {
-        let return_addr = self.program_counter + 2;
+        let target = self.read16();
+        let return_addr = self.program_counter;
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (return_addr >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, return_addr as u8);
-        self.program_counter = self.read16();
+        self.program_counter = target;
         self.cycles += 6;
     }
 
