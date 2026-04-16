@@ -72,7 +72,8 @@ pub struct CPU {
     /// Accumulated trace lines (one per instruction)
     pub trace_buffer: Vec<String>,
     pub oam_dma_active: bool,
-    pub oam_dma_start_cycle: u32,
+    pub oam_dma_remaining: u32,
+    oam_dma_just_started: bool,
     halt_bug: bool,
 }
 
@@ -125,7 +126,8 @@ impl CPU {
             tracing: false,
             trace_buffer: Vec::new(),
             oam_dma_active: false,
-            oam_dma_start_cycle: 0,
+            oam_dma_remaining: 0,
+            oam_dma_just_started: false,
             halt_bug: false,
         }
     }
@@ -799,6 +801,9 @@ impl CPU {
             0xFF46 => {
                 self.memory[0xFF46] = data;
                 self.dma_transfer(data);
+                self.oam_dma_active = true;
+                self.oam_dma_remaining = 160; // OAM DMA takes 160 M-cycles
+                self.oam_dma_just_started = true;
             }
             0xFF04 => {
                 // Writing any value to DIV resets it to 0
@@ -1014,6 +1019,10 @@ impl CPU {
     }
 
     pub fn read_byte(&self, address: usize) -> u8 {
+        // During OAM DMA, reads from OAM return $FF
+        if self.oam_dma_active && address >= 0xFE00 && address < 0xFEA0 {
+            return 0xFF;
+        }
         // Echo RAM: $E000-$FDFF mirrors $C000-$DDFF
         if address >= 0xE000 && address < 0xFE00 {
             return self.memory[address - 0x2000];
@@ -1180,8 +1189,9 @@ impl CPU {
         self.div_cycles = 0;
         self.timer_cycles = 0;
         self.program_counter = 0;
-        self.oam_dma_start_cycle = 0;
-        self.oam_dma_active= false;
+        self.oam_dma_remaining = 0;
+        self.oam_dma_active = false;
+        self.oam_dma_just_started = false;
         self.halt = false;
     }
 
@@ -2324,6 +2334,19 @@ impl CPU {
         if was_ei_pending && self.ei_pending {
             self.interrupt_master_enable = true;
             self.ei_pending = false;
+        }
+
+        // Tick OAM DMA remaining counter
+        if self.oam_dma_active {
+            if self.oam_dma_just_started {
+                // Don't tick on the instruction that triggered DMA
+                self.oam_dma_just_started = false;
+            } else if self.cycles >= self.oam_dma_remaining {
+                self.oam_dma_remaining = 0;
+                self.oam_dma_active = false;
+            } else {
+                self.oam_dma_remaining -= self.cycles;
+            }
         }
     }
 

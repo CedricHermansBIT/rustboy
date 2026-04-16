@@ -48,8 +48,14 @@ pub fn set_key_state(key_code: u32, is_pressed: bool) {
 /// Called from JS with the ROM bytes to load and run a new ROM
 #[wasm_bindgen]
 pub fn load_rom_data(rom_data: &[u8]) {
+    // Preserve speed from previous session
+    let prev_speed = CPU.with(|c| {
+        c.borrow().as_ref().map(|rc| rc.borrow().speed_multiplier).unwrap_or(1)
+    });
+
     let bootrom = include_bytes!("../roms/DMG_ROM.bin");
     let mut cpu = cpu::CPU::new();
+    cpu.speed_multiplier = prev_speed;
     cpu.bootload(bootrom.to_vec());
     cpu.load_rom(rom_data.to_vec());
 
@@ -351,6 +357,14 @@ fn start_emulation_loop() {
                     cpu.execute();
                 } else {
                     cpu.cycles += 1;
+                    if cpu.oam_dma_active {
+                        if cpu.oam_dma_remaining <= 1 {
+                            cpu.oam_dma_remaining = 0;
+                            cpu.oam_dma_active = false;
+                        } else {
+                            cpu.oam_dma_remaining -= 1;
+                        }
+                    }
                 }
                 let cycles = cpu.cycles;
                 let t_cycles = cycles * 4;
@@ -381,6 +395,15 @@ fn start_emulation_loop() {
                 cpu.execute();
             } else {
                 cpu.cycles += 1; // HALT consumes 1 M-cycle per iteration
+                // Tick OAM DMA during halt
+                if cpu.oam_dma_active {
+                    if cpu.oam_dma_remaining <= 1 {
+                        cpu.oam_dma_remaining = 0;
+                        cpu.oam_dma_active = false;
+                    } else {
+                        cpu.oam_dma_remaining -= 1;
+                    }
+                }
             }
             let cycles = cpu.cycles;
 
