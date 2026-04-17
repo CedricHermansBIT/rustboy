@@ -357,6 +357,7 @@ fn start_emulation_loop() {
                     cpu.execute();
                 } else {
                     cpu.cycles += 1;
+                    cpu.tick_timer_4t(); // Tick timer for HALT's 1 M-cycle
                     if cpu.oam_dma_active {
                         if cpu.oam_dma_remaining <= 1 {
                             cpu.oam_dma_remaining = 0;
@@ -395,6 +396,7 @@ fn start_emulation_loop() {
                 cpu.execute();
             } else {
                 cpu.cycles += 1; // HALT consumes 1 M-cycle per iteration
+                cpu.tick_timer_4t(); // Tick timer for HALT's 1 M-cycle
                 // Tick OAM DMA during halt
                 if cpu.oam_dma_active {
                     if cpu.oam_dma_remaining <= 1 {
