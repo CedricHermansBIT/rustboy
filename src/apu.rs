@@ -155,7 +155,7 @@ impl Channel1 {
             self.length_counter = 64;
             // If length enable is set and we're on a length-clocking step,
             // the counter is immediately decremented
-            if self.length_enabled && (frame_seq_step & 1) == 0 {
+            if self.length_enabled && (frame_seq_step & 1) != 0 {
                 self.length_counter -= 1;
             }
         }
@@ -267,7 +267,7 @@ impl Channel2 {
         self.enabled = true;
         if self.length_counter == 0 {
             self.length_counter = 64;
-            if self.length_enabled && (frame_seq_step & 1) == 0 {
+            if self.length_enabled && (frame_seq_step & 1) != 0 {
                 self.length_counter -= 1;
             }
         }
@@ -356,7 +356,7 @@ impl Channel3 {
         self.enabled = true;
         if self.length_counter == 0 {
             self.length_counter = 256;
-            if self.length_enabled && (frame_seq_step & 1) == 0 {
+            if self.length_enabled && (frame_seq_step & 1) != 0 {
                 self.length_counter -= 1;
             }
         }
@@ -481,7 +481,7 @@ impl Channel4 {
         self.enabled = true;
         if self.length_counter == 0 {
             self.length_counter = 64;
-            if self.length_enabled && (frame_seq_step & 1) == 0 {
+            if self.length_enabled && (frame_seq_step & 1) != 0 {
                 self.length_counter -= 1;
             }
         }
@@ -547,8 +547,15 @@ impl APU {
 
     /// Advance the APU by `t_cycles` T-cycles
     pub fn tick(&mut self, t_cycles: u32) {
+        // Frame sequencer cycle counter always advances (driven by DIV)
+        self.frame_seq_cycles += t_cycles;
+
         if !self.powered {
             // Still need to generate silence samples to keep audio stream alive
+            // Drain frame_seq_cycles without clocking the sequencer
+            while self.frame_seq_cycles >= 8192 {
+                self.frame_seq_cycles -= 8192;
+            }
             self.sample_timer += t_cycles as f64;
             while self.sample_timer >= CYCLES_PER_SAMPLE {
                 self.sample_timer -= CYCLES_PER_SAMPLE;
@@ -565,7 +572,6 @@ impl APU {
         self.ch4.tick(t_cycles);
 
         // Frame sequencer
-        self.frame_seq_cycles += t_cycles;
         while self.frame_seq_cycles >= 8192 {
             self.frame_seq_cycles -= 8192;
             self.clock_frame_sequencer();
@@ -666,12 +672,21 @@ impl APU {
             if was_on && !self.powered {
                 self.power_off();
             }
+            if !was_on && self.powered {
+                // Power on: reset frame sequencer step, keep cycle counter
+                self.frame_seq_step = 0;
+            }
             return;
         }
 
         // Wave RAM (0xFF30-0xFF3F) can always be written
+        // On DMG, if ch3 is enabled, writes go to the byte at current playback position
         if (0xFF30..=0xFF3F).contains(&addr) {
-            self.ch3.wave_ram[(addr - 0xFF30) as usize] = val;
+            if self.ch3.enabled {
+                self.ch3.wave_ram[(self.ch3.wave_pos / 2) as usize] = val;
+            } else {
+                self.ch3.wave_ram[(addr - 0xFF30) as usize] = val;
+            }
             return;
         }
 
@@ -728,7 +743,7 @@ impl APU {
                 // when length counter is non-zero causes an immediate clock
                 if !old_length_enabled && self.ch1.length_enabled
                     && self.ch1.length_counter > 0
-                    && (self.frame_seq_step & 1) == 0
+                    && (self.frame_seq_step & 1) != 0
                 {
                     self.ch1.length_counter -= 1;
                     if self.ch1.length_counter == 0 && (val & 0x80 == 0) {
@@ -765,9 +780,11 @@ impl APU {
                 self.ch2.frequency = (self.ch2.frequency & 0xFF) | ((val as u16 & 0x07) << 8);
                 let old_length_enabled = self.ch2.length_enabled;
                 self.ch2.length_enabled = val & 0x40 != 0;
+                // Extra length clock: enabling length on a step that doesn't clock length
+                // when length counter is non-zero causes an immediate clock
                 if !old_length_enabled && self.ch2.length_enabled
                     && self.ch2.length_counter > 0
-                    && (self.frame_seq_step & 1) == 0
+                    && (self.frame_seq_step & 1) != 0
                 {
                     self.ch2.length_counter -= 1;
                     if self.ch2.length_counter == 0 && (val & 0x80 == 0) {
@@ -806,7 +823,7 @@ impl APU {
                 self.ch3.length_enabled = val & 0x40 != 0;
                 if !old_length_enabled && self.ch3.length_enabled
                     && self.ch3.length_counter > 0
-                    && (self.frame_seq_step & 1) == 0
+                    && (self.frame_seq_step & 1) != 0
                 {
                     self.ch3.length_counter -= 1;
                     if self.ch3.length_counter == 0 && (val & 0x80 == 0) {
@@ -845,7 +862,7 @@ impl APU {
                 self.ch4.length_enabled = val & 0x40 != 0;
                 if !old_length_enabled && self.ch4.length_enabled
                     && self.ch4.length_counter > 0
-                    && (self.frame_seq_step & 1) == 0
+                    && (self.frame_seq_step & 1) != 0
                 {
                     self.ch4.length_counter -= 1;
                     if self.ch4.length_counter == 0 && (val & 0x80 == 0) {
@@ -877,9 +894,12 @@ impl APU {
 
     /// Read from an APU register (0xFF10-0xFF3F)
     pub fn read_register(&self, addr: u16) -> u8 {
-        // Wave RAM — on DMG, only readable while ch3 is disabled
+        // Wave RAM — on DMG, if ch3 is enabled, reads return the byte
+        // at the current playback position, not the addressed byte
         if (0xFF30..=0xFF3F).contains(&addr) {
-            // For simplicity, always allow reads (accurate enough for most games)
+            if self.ch3.enabled {
+                return self.ch3.wave_ram[(self.ch3.wave_pos / 2) as usize];
+            }
             return self.ch3.wave_ram[(addr - 0xFF30) as usize];
         }
 

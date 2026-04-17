@@ -393,6 +393,27 @@
       }
       #rom-picker .hint { margin-top: 0.8rem; font-size: 0.75rem; color: #888; }
 
+      /* ROM picker tabs */
+      #rom-tabs {
+        display: flex; gap: 6px;
+        margin-bottom: 0.7rem;
+        width: 540px; max-width: 90vw;
+      }
+      #rom-tabs.hidden { display: none; }
+      .rom-tab {
+        flex: 1; padding: 0.45rem 0.8rem;
+        background: #1a1a1a; color: #777;
+        border: 1px solid #333; border-radius: 6px;
+        font-size: 0.85rem; font-family: inherit;
+        cursor: pointer; text-align: center;
+        transition: background 0.15s, color 0.15s, border-color 0.15s;
+      }
+      .rom-tab:hover { background: rgba(120,220,120,0.1); color: #aaa; border-color: #555; }
+      .rom-tab.active {
+        background: rgba(120,220,120,0.15); color: #9be89b;
+        border-color: #9be89b;
+      }
+
       #upload-area { margin-top: 0.6rem; width: 540px; max-width: 90vw; text-align: center; }
       #upload-btn {
         width: 100%; padding: 0.65rem 1rem;
@@ -637,6 +658,10 @@
 
     <div id="rom-picker">
       <h2>RustBoy</h2>
+      <div id="rom-tabs" class="hidden">
+        <button class="rom-tab active" data-tab="roms">🎮 ROMs</button>
+        <button class="rom-tab" data-tab="testroms">🧪 Test ROMs</button>
+      </div>
       <input type="text" id="rom-search" placeholder="🔍 Search games..." autocomplete="off" spellcheck="false" aria-label="Search ROMs" />
       <div id="rom-count"></div>
       <ul id="rom-list"></ul>
@@ -992,8 +1017,14 @@
       /* ═══════════════════════════════════════════════════════════════
        *  ROM SYSTEM
        * ═══════════════════════════════════════════════════════════════ */
-      let ALL_ROMS = []; // [{name, img?}, ...]
-      let ROMS = []; // filtered list of rom entry objects
+      // Per-tab data: { allRoms, folder, available }
+      const ROM_TABS = {
+        roms:     { allRoms: [], folder: 'roms',     available: false },
+        testroms: { allRoms: [], folder: 'testroms', available: false },
+      };
+      let activeTab = 'roms';
+      let ALL_ROMS = []; // points to current tab's allRoms
+      let ROMS = []; // filtered list
       let romLoaded = false;
       let searchQuery = '';
 
@@ -1165,6 +1196,7 @@
 
       function filterRoms() {
         const q = searchQuery.toLowerCase().trim();
+        ALL_ROMS = ROM_TABS[activeTab].allRoms;
         if (!q) {
           ROMS = [...ALL_ROMS];
         } else {
@@ -1199,7 +1231,7 @@
               const img = document.createElement('img');
               img.className = 'rom-img';
               img.loading = 'lazy';
-              img.src = 'testroms/' + encodeURI(rom.img);
+              img.src = ROM_TABS[activeTab].folder + '/' + encodeURI(rom.img);
               img.alt = rom.name;
               img.onerror = function() {
                 // Replace broken image with placeholder
@@ -1252,7 +1284,7 @@
         closePicker(); initAudio();
         resumeAudioContext();
         try {
-          const resp = await fetch('testroms/' + encodeURIComponent(ROMS[selectedIdx].name));
+          const resp = await fetch(ROM_TABS[activeTab].folder + '/' + encodeURIComponent(ROMS[selectedIdx].name));
           if (!resp.ok) throw new Error(resp.statusText);
           Module._load_rom_data(new Uint8Array(await resp.arrayBuffer()));
           romLoaded = true;
@@ -1289,18 +1321,58 @@
       });
 
       async function fetchRomList() {
-        try {
-          const resp = await fetch('testroms/romlist.json');
-          if (!resp.ok) throw new Error('romlist.json not found');
-          ALL_ROMS = await resp.json();
-        } catch(e) {
-          console.warn('Could not load romlist.json:', e);
-          ALL_ROMS = [];
+        // Fetch both tabs in parallel
+        await Promise.all(Object.entries(ROM_TABS).map(async ([key, tab]) => {
+          try {
+            const resp = await fetch(tab.folder + '/romlist.json');
+            if (!resp.ok) throw new Error('not found');
+            tab.allRoms = await resp.json();
+            tab.available = tab.allRoms.length > 0;
+          } catch(e) {
+            console.warn('Could not load romlist.json for', key, e);
+            tab.allRoms = [];
+            tab.available = false;
+          }
+        }));
+
+        // Show tabs only if both are available
+        const tabsEl = document.getElementById('rom-tabs');
+        const availableTabs = Object.keys(ROM_TABS).filter(k => ROM_TABS[k].available);
+        if (availableTabs.length >= 2) {
+          tabsEl.classList.remove('hidden');
         }
+
+        // Pick best default tab
+        if (!ROM_TABS[activeTab].available) {
+          activeTab = availableTabs[0] || 'roms';
+        }
+        updateTabHighlight();
+
+        ALL_ROMS = ROM_TABS[activeTab].allRoms;
         ROMS = [...ALL_ROMS];
         selectedIdx = 0;
         buildList();
       }
+
+      function updateTabHighlight() {
+        document.querySelectorAll('.rom-tab').forEach(btn => {
+          btn.classList.toggle('active', btn.dataset.tab === activeTab);
+        });
+      }
+
+      // Tab click handling
+      document.getElementById('rom-tabs').addEventListener('click', (e) => {
+        const btn = e.target.closest('.rom-tab');
+        if (!btn) return;
+        const tab = btn.dataset.tab;
+        if (tab === activeTab) return;
+        activeTab = tab;
+        updateTabHighlight();
+        searchQuery = '';
+        document.getElementById('rom-search').value = '';
+        filterRoms();
+      });
+
       fetchRomList();
 
       // Search input handling

@@ -922,13 +922,12 @@ impl CPU {
                             }
                         } else if address < 0x8000 {
                             // Ignore writes to ROM
-                        } else if address >= 0xA000 && address < 0xA200 {
+                        } else if address >= 0xA000 && address < 0xC000 {
                             if self.mbc_ram_enable {
-                                // MBC2 RAM is only 4 bits wide. Index is always 0.
-                                self.ram[0][address - 0xA000] = data & 0x0F;
+                                // MBC2 RAM is only 4 bits wide, 512 bytes, mirrored throughout $A000-$BFFF
+                                let idx = (address - 0xA000) & 0x1FF;
+                                self.ram[0][idx] = data & 0x0F;
                             }
-                        } else if address >= 0xA200 && address < 0xC000 {
-                            // Unmapped RAM area for MBC2 - ignore writes
                         } else {
                             self.memory[address] = data;
                         }
@@ -1115,10 +1114,11 @@ impl CPU {
                     return self.rom.get(address).copied().unwrap_or(0xFF);
                 } else if address < 0x8000 {
                     return self.rom.get(address - 0x4000 + (self.rombank as usize) * 0x4000).copied().unwrap_or(0xFF);
-                } else if address >= 0xA000 && address < 0xA200 {
+                } else if address >= 0xA000 && address < 0xC000 {
                     if self.mbc_ram_enable {
-                        // MBC2 RAM leaves top 4 bits unmapped (returns 1s)
-                        return self.ram[0][address - 0xA000] | 0xF0;
+                        // MBC2 RAM leaves top 4 bits unmapped (returns 1s); mirrors throughout $A000-$BFFF
+                        let idx = (address - 0xA000) & 0x1FF;
+                        return self.ram[0][idx] | 0xF0;
                     }
                     return 0xFF;
                 }

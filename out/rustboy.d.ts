@@ -133,14 +133,14 @@ export interface InitOutput {
     readonly set_key_state: (a: number, b: number) => void;
     readonly toggle_trace: () => void;
     readonly trace_len: () => number;
-    readonly wasm_bindgen__closure__destroy__h30ea1fee59aedf62: (a: number, b: number) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h1be67b495a4498d7: (a: number, b: number) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__hacfed0661991feae: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
     readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+    readonly __wbindgen_destroy_closure: (a: number, b: number) => void;
     readonly __wbindgen_start: () => void;
 }
 
