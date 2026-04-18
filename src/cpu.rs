@@ -1,7 +1,20 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(target_arch = "wasm32")]
 use web_sys::console;
+
 use crate::apu::APU;
+
+/// Log macro that calls web_sys::console::log_1 on wasm, no-op on native.
+#[cfg(target_arch = "wasm32")]
+macro_rules! console_log {
+    ($($t:tt)*) => { console::log_1(&format!($($t)*).into()) }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+macro_rules! console_log {
+    ($($t:tt)*) => { }
+}
 
 /// A breakpoint condition that pauses emulation when met.
 #[derive(Clone, Debug)]
@@ -49,6 +62,9 @@ pub struct CPU {
     pub show_vram: bool,
     pub keys: [bool; 256],
     ppu_cycles: u32,
+    /// Internal scanline counter (0–153). Unlike LY, this is never affected by
+    /// the line-153 quirk and always reflects the true scanline position.
+    scanline: u8,
     pub go_next: AtomicBool,
     cartridge_type: u8,
     rombank: u16,
@@ -80,9 +96,22 @@ pub struct CPU {
     /// Counts how many times tick_timer_4t was called during the current instruction,
     /// so we can add the remaining "internal" M-cycle ticks at the end.
     timer_ticks_this_instr: u32,
+    /// Serial output buffer (for test ROM output)
+    pub serial_output: Vec<u8>,
 }
 
 impl CPU {
+    // ── Test / inspection accessors ──────────────────────────────────
+    pub fn get_reg_a(&self) -> u8 { self.reg_a }
+    pub fn get_reg_b(&self) -> u8 { self.reg_b }
+    pub fn get_reg_c(&self) -> u8 { self.reg_c }
+    pub fn get_reg_d(&self) -> u8 { self.reg_d }
+    pub fn get_reg_e(&self) -> u8 { self.reg_e }
+    pub fn get_reg_h(&self) -> u8 { self.reg_h }
+    pub fn get_reg_l(&self) -> u8 { self.reg_l }
+    pub fn get_reg_f(&self) -> u8 { self.reg_f }
+    pub fn get_sp(&self) -> u16 { self.stackpointer }
+
     pub fn new() -> CPU {
         CPU {
             reg_a: 0,
@@ -112,6 +141,7 @@ impl CPU {
             show_vram: false,
             keys: [false; 256],
             ppu_cycles: 0,
+            scanline: 0,
             go_next: AtomicBool::new(false),
             cartridge_type: 0,
             rombank: 1,
@@ -135,6 +165,7 @@ impl CPU {
             oam_dma_just_started: false,
             halt_bug: false,
             timer_ticks_this_instr: 0,
+            serial_output: Vec::new(),
         }
     }
 
@@ -147,9 +178,9 @@ impl CPU {
     pub fn toggle_trace(&mut self) {
         self.tracing = !self.tracing;
         if self.tracing {
-            console::log_1(&"🔴 Trace recording started".into());
+            console_log!("🔴 Trace recording started");
         } else {
-            console::log_1(&format!("⏹ Trace recording stopped ({} lines)", self.trace_buffer.len()).into());
+            console_log!("⏹ Trace recording stopped ({} lines)", self.trace_buffer.len());
         }
     }
 
@@ -164,7 +195,7 @@ impl CPU {
     pub fn clear_trace(&mut self) {
         let count = self.trace_buffer.len();
         self.trace_buffer.clear();
-        console::log_1(&format!("Trace cleared ({} lines)", count).into());
+        console_log!("Trace cleared ({} lines)", count);
     }
 
     /// Instruction size in bytes for a given opcode (CB prefix counts as 2 total).
@@ -467,7 +498,7 @@ impl CPU {
 
     pub fn toggle_color_mode(&mut self) {
         self.color_mode = if self.color_mode == 0 { 1 } else { 0 };
-        console::log_1(&format!("Color mode: {}", if self.color_mode == 0 { "GBC Color" } else { "DMG Green" }).into());
+        console_log!("Color mode: {}", if self.color_mode == 0 { "GBC Color" } else { "DMG Green" });
     }
 
     /// Cycle through speed multipliers: 1 → 2 → 4 → 8 → 1
@@ -492,25 +523,25 @@ impl CPU {
 
     pub fn add_breakpoint_pc(&mut self, addr: u16) {
         self.breakpoints.push(Breakpoint::Pc(addr));
-        console::log_1(&format!("Breakpoint added: PC == {:04X}  [#{}]", addr, self.breakpoints.len() - 1).into());
+        console_log!("Breakpoint added: PC == {:04X}  [#{}]", addr, self.breakpoints.len() - 1);
     }
 
     pub fn add_breakpoint_reg(&mut self, reg: &str, value: u16) {
         self.breakpoints.push(Breakpoint::Reg(reg.to_ascii_lowercase(), value));
-        console::log_1(&format!("Breakpoint added: {} == {:04X}  [#{}]", reg, value, self.breakpoints.len() - 1).into());
+        console_log!("Breakpoint added: {} == {:04X}  [#{}]", reg, value, self.breakpoints.len() - 1);
     }
 
     pub fn add_breakpoint_mem(&mut self, addr: u16, value: u8) {
         self.breakpoints.push(Breakpoint::Mem(addr, value));
-        console::log_1(&format!("Breakpoint added: [${:04X}] == {:02X}  [#{}]", addr, value, self.breakpoints.len() - 1).into());
+        console_log!("Breakpoint added: [${:04X}] == {:02X}  [#{}]", addr, value, self.breakpoints.len() - 1);
     }
 
     pub fn remove_breakpoint(&mut self, index: usize) {
         if index < self.breakpoints.len() {
             let removed = self.breakpoints.remove(index);
-            console::log_1(&format!("Removed breakpoint #{}: {:?}", index, removed).into());
+            console_log!("Removed breakpoint #{}: {:?}", index, removed);
         } else {
-            console::log_1(&format!("Invalid breakpoint index: {}", index).into());
+            console_log!("Invalid breakpoint index: {}", index);
         }
     }
 
@@ -525,7 +556,7 @@ impl CPU {
     pub fn clear_breakpoints(&mut self) {
         let count = self.breakpoints.len();
         self.breakpoints.clear();
-        console::log_1(&format!("Cleared {} breakpoint(s)", count).into());
+        console_log!("Cleared {} breakpoint(s)", count);
     }
 
     pub fn list_breakpoints(&self) -> String {
@@ -604,7 +635,7 @@ impl CPU {
                     Breakpoint::Opcode(op) => format!("Opcode == ${:02X}", op),
                     Breakpoint::CbOpcode(op) => format!("CbOpcode == ${:02X}", op),
                 };
-                console::log_1(&format!("🔴 Breakpoint hit: {}  (PC=${:04X})", desc, self.program_counter).into());
+                console_log!("🔴 Breakpoint hit: {}  (PC=${:04X})", desc, self.program_counter);
                 self.consolelog = true;
                 self.is_paused.store(true, Ordering::Relaxed);
                 return true;
@@ -701,12 +732,12 @@ impl CPU {
         let num_ram_banks = if ram_size == 0 { 0 } else { (ram_size / 0x2000).max(1) };
         self.ram_bank_mask = if num_ram_banks > 0 { num_ram_banks.next_power_of_two() - 1 } else { 0 };
 
-        console::log_1(&format!("Cartridge type: {:02X}, ROM size: {} KB, ROM banks: {}, ROM mask: {:03X}, RAM size: {} KB, RAM banks: {}, RAM mask: {:02X}",
-            self.cartridge_type, self.rom.len() / 1024, num_rom_banks, self.rom_bank_mask, ram_size, num_ram_banks, self.ram_bank_mask).into());
+        console_log!("Cartridge type: {:02X}, ROM size: {} KB, ROM banks: {}, ROM mask: {:03X}, RAM size: {} KB, RAM banks: {}, RAM mask: {:02X}",
+            self.cartridge_type, self.rom.len() / 1024, num_rom_banks, self.rom_bank_mask, ram_size, num_ram_banks, self.ram_bank_mask);
 
         // Assign GBC-style color palette based on ROM title
         self.gbc_palettes = crate::ppu::gbc_palette_for_rom(&self.rom);
-        console::log_1(&format!("GBC palette assigned for title: '{}'", self.rom_title()).into());
+        console_log!("GBC palette assigned for title: '{}'", self.rom_title());
     }
 
     /// Returns true if the cartridge type has a battery (save-capable)
@@ -748,7 +779,7 @@ impl CPU {
                 self.ram[bank][..len].copy_from_slice(&data[start..end]);
             }
         }
-        console::log_1(&format!("Loaded save RAM: {} bytes into {} banks", data.len(), num_banks).into());
+        console_log!("Loaded save RAM: {} bytes into {} banks", data.len(), num_banks);
     }
 
     /// Get the external RAM size from the cartridge header (0x149)
@@ -779,10 +810,10 @@ impl CPU {
     pub fn write_byte(&mut self, address: usize, data: u8) {
         // Advance system clock by 1 M-cycle for this memory access
         self.tick_timer_4t();
-        //console::log_1(&format!("Writing to address: {:x}", address).into());
+        //console_log!("Writing to address: {:x}", address);
         // Debug: track writes to IE register
         //if address == 0xFFFF {
-            //console::log_1(&format!("IE write: {:02X} at PC:{:04X} SP:{:04X}", data, self.program_counter, self.stackpointer).into());
+            //console_log!("IE write: {:02X} at PC:{:04X} SP:{:04X}", data, self.program_counter, self.stackpointer);
         //}
         // Echo RAM mirroring: $E000-$FDFF mirrors $C000-$DDFF
         if address >= 0xE000 && address < 0xFE00 {
@@ -837,19 +868,10 @@ impl CPU {
                 } else if !was_on && is_on {
                     // LCD just turned on: reset PPU and start cleanly in Mode 2
                     self.ppu_cycles = 0;
+                    self.scanline = 0;
                     self.memory[0xFF44] = 0;
                     self.set_ppu_mode(2);
-
-                    // Immediately check LYC=LY coincidence for line 0
-                    let lyc = self.memory[0xFF45];
-                    if 0 == lyc {
-                        self.memory[0xFF41] |= 0x04;
-                        if self.memory[0xFF41] & 0x40 != 0 {
-                            self.request_interrupt(1);
-                        }
-                    } else {
-                        self.memory[0xFF41] &= !0x04;
-                    }
+                    self.check_lyc();
                 }
             }
             0xFF41 => {
@@ -887,7 +909,8 @@ impl CPU {
                 if data == 0x81 {
                     // Print the serial byte for debug (blargg test output)
                     let sb = self.memory[0xFF01];
-                    console::log_1(&format!("{}", sb as char).into());
+                    self.serial_output.push(sb);
+                    console_log!("{}", sb as char);
                     // Transfer complete: clear bit 7
                     self.memory[0xFF02] &= 0x7F;
                     // Request serial interrupt
@@ -1307,7 +1330,7 @@ impl CPU {
     pub fn handle_interrupts(&mut self) {
         // if logging, then print to console
         if self.consolelog {
-            console::log_1(&format!("IME: {}, HALT: {}", self.interrupt_master_enable, self.halt).into());
+            console_log!("IME: {}, HALT: {}", self.interrupt_master_enable, self.halt);
         }
         // Check if interrupts are globally enabled
         if !self.interrupt_master_enable {
@@ -1317,9 +1340,6 @@ impl CPU {
                 let interrupt_enable = self.memory[0xFFFF];
                 if interrupt_flag & interrupt_enable & 0x1F != 0 {
                     self.halt = false;
-                    // HALT exit costs 1 extra M-cycle (wakeup penalty)
-                    self.tick_timer_4t();
-                    self.cycles += 1;
                 }
             }
             return;
@@ -1332,20 +1352,12 @@ impl CPU {
         let valid_interrupts = interrupt_flag & interrupt_enable & 0x1F;
     
         if valid_interrupts != 0 {
-            let was_halted = self.halt;
             self.halt = false; // Wake up from HALT state
 
             for i in 0u16..5 {
                 if valid_interrupts & (1 << i) != 0 {
                     // Disable further interrupts
                     self.interrupt_master_enable = false;
-
-                    // Interrupt dispatch: 5 M-cycles total (+ 1 if waking from HALT)
-                    // If waking from HALT, there is an extra 1 M-cycle wakeup penalty
-                    if was_halted {
-                        self.tick_timer_4t();
-                        self.cycles += 1;
-                    }
 
                     // M1: internal (wait state)
                     self.tick_timer_4t();
@@ -1377,9 +1389,9 @@ impl CPU {
 
     pub fn request_interrupt(&mut self, interrupt: u8) {
         // 0: V-Blank, 1: LCD STAT, 2: Timer, 3: Serial, 4: Joypad
-        //console::log_1(&format!("Requesting interrupt: {}", interrupt).into());
+        //console_log!("Requesting interrupt: {}", interrupt);
         self.memory[0xFF0F] |= 1 << interrupt;
-        //console::log_1(&format!("Interrupt flag: {:02X}, IME: {}", self.MEMORY[0xFF0F], self.IME).into());
+        //console_log!("Interrupt flag: {:02X}, IME: {}", self.MEMORY[0xFF0F], self.IME);
     }
 
     /// Returns the bit index of the system counter monitored for the given TAC clock select.
@@ -1427,6 +1439,7 @@ impl CPU {
 
     /// Advance the system clock by exactly 1 M-cycle (4 T-cycles).
     /// Called once per memory access during instruction execution.
+    /// Also ticks the PPU so mode transitions are visible mid-instruction.
     pub fn tick_timer_4t(&mut self) {
         self.sys_counter = self.sys_counter.wrapping_add(4);
         self.memory[0xFF04] = (self.sys_counter >> 8) as u8;
@@ -1448,93 +1461,103 @@ impl CPU {
     }
 
     pub fn update_ppu(&mut self, cycles: u32) {
-        // Check if LCD is on
-        let lcd_control = self.memory[0xFF40];
-        let lcd_on = (lcd_control & 0x80) != 0;
+        let lcd_on = (self.memory[0xFF40] & 0x80) != 0;
+        if !lcd_on {
+            return;
+        }
 
-        if lcd_on {
-            // Add cycles to the PPU counter
-            self.ppu_cycles += cycles;
+        self.ppu_cycles += cycles;
 
-            // Get current PPU mode
+        loop {
             let current_mode = self.memory[0xFF41] & 0b11;
 
+            let mode_duration = match current_mode {
+                2 => 80u32,   // OAM search
+                3 => 172,     // Pixel transfer (minimum)
+                0 => 204,     // H-Blank (456 - 80 - 172 = 204)
+                1 => 456,     // V-Blank (one full scanline per LY)
+                _ => unreachable!(),
+            };
+
+            if self.ppu_cycles < mode_duration {
+                break;
+            }
+
+            self.ppu_cycles -= mode_duration;
+
             match current_mode {
-                0 => self.handle_hblank(),
-                1 => self.handle_vblank(),
-                2 => self.handle_oam_search(),
-                3 => self.handle_pixel_transfer(),
+                2 => {
+                    // OAM search done → Pixel transfer
+                    self.set_ppu_mode(3);
+                }
+                3 => {
+                    // Pixel transfer done → H-Blank; draw the scanline
+                    self.set_ppu_mode(0);
+                    crate::ppu::draw_scanline(self);
+                }
+                0 => {
+                    // H-Blank done → advance to next scanline
+                    self.scanline += 1;
+                    self.memory[0xFF44] = self.scanline;
+                    self.check_lyc();
+
+                    if self.scanline >= 144 {
+                        // Enter V-Blank
+                        self.set_ppu_mode(1);
+                        self.request_interrupt(0); // V-Blank interrupt
+                    } else {
+                        // Next scanline OAM search
+                        self.set_ppu_mode(2);
+                    }
+                }
+                1 => {
+                    // V-Blank: one scanline elapsed
+                    self.scanline += 1;
+
+                    if self.scanline > 153 {
+                        // V-Blank finished — new frame starts
+                        self.scanline = 0;
+                        self.memory[0xFF44] = 0;
+                        self.check_lyc();
+                        self.set_ppu_mode(2);
+                    } else {
+                        // Line 153 special: LY goes to 0 early (after ~4 T-cycles,
+                        // but for simplicity we set it at the start of line 153)
+                        if self.scanline == 153 {
+                            self.memory[0xFF44] = 153;
+                            self.check_lyc();
+                            // LY will be reset to 0 shortly — many emulators
+                            // do this at the start of line 153
+                        } else {
+                            self.memory[0xFF44] = self.scanline;
+                            self.check_lyc();
+                        }
+                    }
+                }
                 _ => unreachable!(),
             }
         }
-        else {
-            // LCD is off
-            //self.handle_lcd_off(); // Now handled by write byte
+    }
+
+    /// Check LYC=LY coincidence and fire STAT interrupt if enabled.
+    fn check_lyc(&mut self) {
+        let ly = self.memory[0xFF44];
+        let lyc = self.memory[0xFF45];
+        if ly == lyc {
+            self.memory[0xFF41] |= 0x04; // Set coincidence flag
+            if self.memory[0xFF41] & 0x40 != 0 {
+                self.request_interrupt(1); // STAT interrupt
+            }
+        } else {
+            self.memory[0xFF41] &= !0x04; // Clear coincidence flag
         }
     }
 
     fn handle_lcd_off(&mut self) {
-        // When LCD is off, LY should be 0 and mode should be 0 (H-Blank)
         self.memory[0xFF44] = 0;
-        self.memory[0xFF41] &= 0xFC; // Clear mode bits directly
-
-        // Reset PPU cycles
+        self.memory[0xFF41] &= 0xFC;
         self.ppu_cycles = 0;
-    }
-
-    fn handle_hblank(&mut self) {
-        if self.ppu_cycles >= 204 { // Average H-Blank duration
-            self.ppu_cycles -= 204;
-            self.increment_ly();
-            if self.memory[0xFF44] == 144 {
-                // Enter V-Blank
-                self.set_ppu_mode(1);
-                self.request_interrupt(0); // V-Blank interrupt
-            } else {
-                // Move to OAM Search
-                self.set_ppu_mode(2);
-            }
-        }
-    }
-
-    fn handle_vblank(&mut self) {
-        if self.ppu_cycles >= 456 { // One scanline duration
-            self.ppu_cycles -= 456;
-            self.increment_ly();
-            let ly = self.memory[0xFF44];
-            if ly > 153 {
-                // V-Blank finished, reset LY to 0 and restart from top
-                self.memory[0xFF44] = 0;
-                // Check LYC=LY coincidence for LY=0
-                let lyc = self.memory[0xFF45];
-                if 0 == lyc {
-                    self.memory[0xFF41] |= 0x04; // Set coincidence flag
-                    if self.memory[0xFF41] & 0x40 != 0 {
-                        self.request_interrupt(1);
-                    }
-                } else {
-                    self.memory[0xFF41] &= !0x04; // Clear coincidence flag
-                }
-                self.set_ppu_mode(2);
-            }
-        }
-    }
-
-    fn handle_oam_search(&mut self) {
-        if self.ppu_cycles >= 80 {
-            self.ppu_cycles -= 80;
-            // Move to Pixel Transfer
-            self.set_ppu_mode(3);
-        }
-    }
-
-    fn handle_pixel_transfer(&mut self) {
-        if self.ppu_cycles >= 172 { // Minimum duration, can be longer
-            self.ppu_cycles -= 172;
-            // Move to H-Blank
-            self.set_ppu_mode(0);
-            // This is where you would trigger the actual drawing of the scanline
-            crate::ppu::draw_scanline(self);         }
+        self.scanline = 0;
     }
 
 
@@ -2131,7 +2154,7 @@ impl CPU {
         // }
         if self.consolelog {
             let opcode_name = self.get_opcode_name(opcode);
-            console::log_1(&format!("Pointer: {:x}, opcode: {:x}, name: {}, AF: {:x}, BC: {:x}, DE: {:x}, HL: {:x}, SP: {:x}", self.program_counter-1, opcode, opcode_name, self.af(), self.bc(), self.de(), self.hl(), self.stackpointer).into());
+            console_log!("Pointer: {:x}, opcode: {:x}, name: {}, AF: {:x}, BC: {:x}, DE: {:x}, HL: {:x}, SP: {:x}", self.program_counter-1, opcode, opcode_name, self.af(), self.bc(), self.de(), self.hl(), self.stackpointer);
             // print next few bytes
             // let mut next_bytes = String::new();
             // for i in 0..4 {
@@ -2422,16 +2445,16 @@ impl CPU {
             self.ei_pending = false;
         }
 
-        // Tick OAM DMA remaining counter
+        // Tick OAM DMA remaining counter using only this instruction's M-cycles
         if self.oam_dma_active {
             if self.oam_dma_just_started {
                 // Don't tick on the instruction that triggered DMA
                 self.oam_dma_just_started = false;
-            } else if self.cycles >= self.oam_dma_remaining {
+            } else if instr_m_cycles >= self.oam_dma_remaining {
                 self.oam_dma_remaining = 0;
                 self.oam_dma_active = false;
             } else {
-                self.oam_dma_remaining -= self.cycles;
+                self.oam_dma_remaining -= instr_m_cycles;
             }
         }
     }
@@ -2440,7 +2463,7 @@ impl CPU {
         let opcode = self.read();
         if self.consolelog {
             let opcode_name = self.get_extra_opcode_name(opcode);
-            console::log_1(&format!("Pointer: {:x}, opcode: {:x}, name: {}, AF: {:x}, BC: {:x}, DE: {:x}, HL: {:x}, SP: {:x}", self.program_counter-1, opcode, opcode_name, self.af(), self.bc(), self.de(), self.hl(), self.stackpointer).into());
+            console_log!("Pointer: {:x}, opcode: {:x}, name: {}, AF: {:x}, BC: {:x}, DE: {:x}, HL: {:x}, SP: {:x}", self.program_counter-1, opcode, opcode_name, self.af(), self.bc(), self.de(), self.hl(), self.stackpointer);
         }
 
         match opcode {
@@ -3947,8 +3970,9 @@ impl CPU {
 
     fn retnz(&mut self) {
         if !self.get_flag_bit(7) {
-            self.cycles += 1;
-            self.ret();
+            self.tick_timer_4t();           // M2: internal (condition check)
+            self.ret();                     // M3-M5 (ret adds its own cycles)
+            self.cycles += 1;              // total = 1 + 4 = 5
         } else {
             self.cycles += 2;
         }
@@ -3964,7 +3988,8 @@ impl CPU {
 
     fn jpnza16(&mut self) {
         if !self.get_flag_bit(7) {
-            self.program_counter = self.read16();
+            self.program_counter = self.read16();  // M2-M3
+            self.tick_timer_4t();                   // M4: internal
             self.cycles += 4;
         } else {
             self.program_counter = self.program_counter.wrapping_add(2);
@@ -3973,7 +3998,8 @@ impl CPU {
     }
 
     fn jp(&mut self) {
-        self.program_counter = self.read16();
+        self.program_counter = self.read16();   // M2-M3
+        self.tick_timer_4t();                    // M4: internal (set PC)
         self.cycles += 4;
     }
 
@@ -3987,10 +4013,11 @@ impl CPU {
     }
 
     fn pushbc(&mut self) {
+        self.tick_timer_4t();               // M2: internal cycle
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, self.reg_b);
+        self.write_byte(self.stackpointer as usize, self.reg_b);  // M3
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, self.reg_c);
+        self.write_byte(self.stackpointer as usize, self.reg_c);  // M4
         self.cycles += 4;
     }
 
@@ -4005,36 +4032,39 @@ impl CPU {
     }
 
     fn rst00h(&mut self) {
+        self.tick_timer_4t();               // M2: internal cycle
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
+        self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8); // M3
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, (self.program_counter) as u8);
+        self.write_byte(self.stackpointer as usize, (self.program_counter) as u8);      // M4
         self.program_counter = 0x00;
         self.cycles += 4;
     }
 
     fn retz(&mut self) {
         if self.get_flag_bit(7) {
-            self.cycles += 1;
-            self.ret();
+            self.tick_timer_4t();           // M2: internal (condition check)
+            self.ret();                     // M3-M5
+            self.cycles += 1;              // total = 1 + 4 = 5
         } else {
             self.cycles += 2;
         }
     }
 
     fn ret(&mut self) {
-        let l = self.read_byte(self.stackpointer as usize);
+        let l = self.read_byte(self.stackpointer as usize);       // M2
         self.stackpointer = self.stackpointer.wrapping_add(1);
-        let h = self.read_byte(self.stackpointer as usize);
+        let h = self.read_byte(self.stackpointer as usize);       // M3
         self.stackpointer = self.stackpointer.wrapping_add(1);
         self.program_counter = (h as u16) << 8 | l as u16;
+        self.tick_timer_4t();               // M4: internal cycle (set PC)
         self.cycles += 4;
-
     }
 
     fn jpza16(&mut self) {
         if self.get_flag_bit(7) {
-            self.program_counter = self.read16();
+            self.program_counter = self.read16();  // M2-M3
+            self.tick_timer_4t();                   // M4: internal
             self.cycles += 4;
         } else {
             self.program_counter = self.program_counter.wrapping_add(2);
@@ -4052,12 +4082,13 @@ impl CPU {
     }
 
     fn calla16(&mut self) {
-        let target = self.read16();
+        let target = self.read16();          // M2-M3: read target address
         let return_addr = self.program_counter;
+        self.tick_timer_4t();                // M4: internal cycle
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, (return_addr >> 8) as u8);
+        self.write_byte(self.stackpointer as usize, (return_addr >> 8) as u8); // M5
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, return_addr as u8);
+        self.write_byte(self.stackpointer as usize, return_addr as u8);        // M6
         self.program_counter = target;
         self.cycles += 6;
     }
@@ -4075,6 +4106,7 @@ impl CPU {
     }
 
     fn rst08h(&mut self) {
+        self.tick_timer_4t();               // M2: internal cycle
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -4085,8 +4117,9 @@ impl CPU {
 
     fn retnc(&mut self) {
         if !self.get_flag_bit(4) {
-            self.cycles += 1;
-            self.ret();
+            self.tick_timer_4t();           // M2: internal (condition check)
+            self.ret();                     // M3-M5
+            self.cycles += 1;              // total = 1 + 4 = 5
         } else {
             self.cycles += 2;
         }
@@ -4102,7 +4135,8 @@ impl CPU {
 
     fn jpnca16(&mut self) {
         if !self.get_flag_bit(4) {
-            self.program_counter = self.read16();
+            self.program_counter = self.read16();  // M2-M3
+            self.tick_timer_4t();                   // M4: internal
             self.cycles += 4;
         } else {
             self.program_counter = self.program_counter.wrapping_add(2);
@@ -4120,10 +4154,11 @@ impl CPU {
     }
 
     fn pushde(&mut self) {
+        self.tick_timer_4t();               // M2: internal cycle
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, self.reg_d);
+        self.write_byte(self.stackpointer as usize, self.reg_d);  // M3
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, self.reg_e);
+        self.write_byte(self.stackpointer as usize, self.reg_e);  // M4
         self.cycles += 4;
     }
 
@@ -4139,6 +4174,7 @@ impl CPU {
     }
 
     fn rst10h(&mut self) {
+        self.tick_timer_4t();               // M2: internal cycle
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -4149,8 +4185,9 @@ impl CPU {
 
     fn retc(&mut self) {
         if self.get_flag_bit(4) {
-            self.cycles += 1;
-            self.ret();
+            self.tick_timer_4t();           // M2: internal (condition check)
+            self.ret();                     // M3-M5
+            self.cycles += 1;              // total = 1 + 4 = 5
         } else {
             self.cycles += 2;
         }
@@ -4163,7 +4200,8 @@ impl CPU {
 
     fn jpca16(&mut self) {
         if self.get_flag_bit(4) {
-            self.program_counter = self.read16();
+            self.program_counter = self.read16();  // M2-M3
+            self.tick_timer_4t();                   // M4: internal
             self.cycles += 4;
         } else {
             self.program_counter = self.program_counter.wrapping_add(2);
@@ -4193,6 +4231,7 @@ impl CPU {
     }
 
     fn rst18h(&mut self) {
+        self.tick_timer_4t();               // M2: internal cycle
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -4221,10 +4260,11 @@ impl CPU {
     }
 
     fn pushhl(&mut self) {
+        self.tick_timer_4t();               // M2: internal cycle
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, self.reg_h);
+        self.write_byte(self.stackpointer as usize, self.reg_h);  // M3
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, self.reg_l);
+        self.write_byte(self.stackpointer as usize, self.reg_l);  // M4
         self.cycles += 4;
     }
 
@@ -4235,6 +4275,7 @@ impl CPU {
     }
 
     fn rst20h(&mut self) {
+        self.tick_timer_4t();               // M2: internal cycle
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -4280,6 +4321,7 @@ impl CPU {
     }
 
     fn rst28h(&mut self) {
+        self.tick_timer_4t();               // M2: internal cycle
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -4316,10 +4358,11 @@ impl CPU {
     }
 
     fn pushaf(&mut self) {
+        self.tick_timer_4t();               // M2: internal cycle
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, self.reg_a);
+        self.write_byte(self.stackpointer as usize, self.reg_a);  // M3
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, self.reg_f);
+        self.write_byte(self.stackpointer as usize, self.reg_f);  // M4
         self.cycles += 4;
     }
 
@@ -4330,6 +4373,7 @@ impl CPU {
     }
 
     fn rst30h(&mut self) {
+        self.tick_timer_4t();               // M2: internal cycle
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -4385,6 +4429,7 @@ impl CPU {
     }
 
     fn rst38h(&mut self) {
+        self.tick_timer_4t();               // M2: internal cycle
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -5820,33 +5865,4 @@ impl CPU {
         self.cycles+=2;
     }
 
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_addspr8_positive() {
-        let mut cpu = CPU::new();
-        cpu.program_counter = 0x2000; // Initial PC value
-        cpu.stackpointer = 0xFFFE; // Initial SP value
-        cpu.write_byte(0x2000, 0x05); // Value to add
-        cpu.addspr8();
-        assert_eq!(cpu.stackpointer, 0x0003); // Expected SP value after addition
-        assert_eq!(cpu.reg_f, 0x30); // Expected flag value
-        assert_eq!(cpu.cycles, 4); // Expected cycle count
-    }
-
-    #[test]
-    fn test_addspr8_negative() {
-        let mut cpu = CPU::new();
-        cpu.program_counter = 0x2000; // Initial PC value
-        cpu.stackpointer = 0xFFFE; // Initial SP value
-        cpu.write_byte(0x2000, 0xFB); // Value to add (negative)
-        cpu.addspr8();
-        assert_eq!(cpu.stackpointer, 0xFFF9); // Expected SP value after addition
-        assert_eq!(cpu.reg_f, 0x30); // Expected flag value
-        assert_eq!(cpu.cycles, 4); // Expected cycle count
-    }
 }

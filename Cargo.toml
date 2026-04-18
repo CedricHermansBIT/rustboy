@@ -8,16 +8,21 @@ repository = "https://github.com/CedricHermansBIT/rustboy"
 authors = ["Cedric Hermans"]
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["web"]
+web = ["wasm-bindgen", "js-sys", "web-sys", "console_error_panic_hook"]
 
 [dependencies]
-js-sys = "0.3.69"
-wasm-bindgen = "0.2.92"
+wasm-bindgen = { version = "0.2.92", optional = true }
+js-sys = { version = "0.3.69", optional = true }
 lazy_static = "1.5.0"
-console_error_panic_hook = "0.1.7"
+console_error_panic_hook = { version = "0.1.7", optional = true }
 
 [dependencies.web-sys]
 version = "0.3.69"
+optional = true
 features = ["console",
            "Window",
            "Document",

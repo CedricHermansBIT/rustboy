@@ -1,4 +1,5 @@
 use crate::cpu::CPU;
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::Clamped;
 
 // Default DMG-style green palette (used as fallback)
@@ -400,6 +401,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn draw_state(context: &web_sys::CanvasRenderingContext2d, cpu: &mut crate::cpu::CPU) {
     let lcd_control = cpu.memory[0xFF40];
 
@@ -502,6 +504,7 @@ fn draw_sprite(buffer: &mut [u8], sprite_x: i16, sprite_y: i16, tile_index: u8,
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn draw_vram(context: &web_sys::CanvasRenderingContext2d, cpu: &mut CPU) {
     let mut buffer = [0u8; 384 * 8 * 8];
     let tile_data = cpu.get_tile_data(0x8000);
