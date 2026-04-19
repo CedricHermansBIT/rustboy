@@ -139,8 +139,6 @@ fn run_rom(path: &str, max_cycles: u64) -> CPU {
         let cycles = cpu.cycles as u64;
         let t_cycles = (cycles * 4) as u32;
         cpu.handle_timer(t_cycles);
-        cpu.update_ppu(t_cycles);
-        cpu.update_apu(t_cycles);
         total += cycles;
         cpu.total_cycles += cycles;
         cpu.cycles = 0;

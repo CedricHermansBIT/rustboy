@@ -351,25 +351,10 @@ fn start_emulation_loop() {
                 cpu.go_next.store(false, Ordering::Relaxed);
                 // Single-step mode: execute exactly one instruction
                 cpu.handle_interrupts();
-                if !cpu.halt {
-                    cpu.execute();
-                } else {
-                    cpu.cycles += 1;
-                    cpu.tick_timer_4t(); // Tick timer for HALT's 1 M-cycle
-                    if cpu.oam_dma_active {
-                        if cpu.oam_dma_remaining <= 1 {
-                            cpu.oam_dma_remaining = 0;
-                            cpu.oam_dma_active = false;
-                        } else {
-                            cpu.oam_dma_remaining -= 1;
-                        }
-                    }
-                }
+                cpu.execute();
                 let cycles = cpu.cycles;
                 let t_cycles = cycles * 4;
                 cpu.handle_timer(t_cycles);
-                cpu.update_ppu(t_cycles as u32);
-                cpu.update_apu(t_cycles as u32);
                 cpu.total_cycles += cycles as u64;
                 cpu.cycles = 0;
             }
@@ -390,21 +375,8 @@ fn start_emulation_loop() {
             // Handle interrupts BEFORE executing the next instruction
             cpu.handle_interrupts();
 
-            if !cpu.halt {
-                cpu.execute();
-            } else {
-                cpu.cycles += 1; // HALT consumes 1 M-cycle per iteration
-                cpu.tick_timer_4t(); // Tick timer for HALT's 1 M-cycle
-                // Tick OAM DMA during halt
-                if cpu.oam_dma_active {
-                    if cpu.oam_dma_remaining <= 1 {
-                        cpu.oam_dma_remaining = 0;
-                        cpu.oam_dma_active = false;
-                    } else {
-                        cpu.oam_dma_remaining -= 1;
-                    }
-                }
-            }
+            cpu.execute();
+
             let cycles = cpu.cycles;
 
             // Convert M-cycles to T-cycles (1 M-cycle = 4 T-cycles)
@@ -414,11 +386,6 @@ fn start_emulation_loop() {
 
             cycles_this_frame += t_cycles as u32;
 
-            // PPU logic
-            cpu.update_ppu(t_cycles as u32);
-
-            // APU logic
-            cpu.update_apu(t_cycles as u32);
 
             if cpu.booting && cpu.program_counter == 0x100 {
                 cpu.booting = false;

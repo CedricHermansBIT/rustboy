@@ -62,6 +62,8 @@ pub struct CPU {
     pub show_vram: bool,
     pub keys: [bool; 256],
     ppu_cycles: u32,
+    /// PPU M-cycle countdown timer (mooneye-style). Counts down each M-cycle.
+    ppu_mcycle_countdown: u32,
     /// Internal scanline counter (0–153). Unlike LY, this is never affected by
     /// the line-153 quirk and always reflects the true scanline position.
     scanline: u8,
@@ -91,13 +93,23 @@ pub struct CPU {
     pub trace_buffer: Vec<String>,
     pub oam_dma_active: bool,
     pub oam_dma_remaining: u32,
-    oam_dma_just_started: bool,
+    pub oam_dma_delay: u8,
+    /// OAM DMA source address for per-byte transfer
+    oam_dma_source: u16,
+    /// OAM DMA byte index (0..160)
+    oam_dma_index: u8,
     halt_bug: bool,
+    /// Previous combined STAT interrupt line for rising-edge detection
+    prev_stat_line: bool,
     /// Counts how many times tick_timer_4t was called during the current instruction,
     /// so we can add the remaining "internal" M-cycle ticks at the end.
     timer_ticks_this_instr: u32,
     /// Serial output buffer (for test ROM output)
     pub serial_output: Vec<u8>,
+    /// Delayed TIMA reload countdown: set to 2 on overflow, fires at 0
+    pub tima_reload_delay: u8,
+    /// True during the M-cycle when TIMA was just reloaded from TMA (write quirk window)
+    pub tima_reloaded_this_cycle: bool,
 }
 
 impl CPU {
@@ -141,6 +153,7 @@ impl CPU {
             show_vram: false,
             keys: [false; 256],
             ppu_cycles: 0,
+            ppu_mcycle_countdown: 0,
             scanline: 0,
             go_next: AtomicBool::new(false),
             cartridge_type: 0,
@@ -162,10 +175,15 @@ impl CPU {
             trace_buffer: Vec::new(),
             oam_dma_active: false,
             oam_dma_remaining: 0,
-            oam_dma_just_started: false,
+            oam_dma_delay: 0,
+            oam_dma_source: 0,
+            oam_dma_index: 0,
             halt_bug: false,
+            prev_stat_line: false,
             timer_ticks_this_instr: 0,
             serial_output: Vec::new(),
+            tima_reload_delay: 0,
+            tima_reloaded_this_cycle: false,
         }
     }
 
@@ -815,6 +833,10 @@ impl CPU {
         //if address == 0xFFFF {
             //console_log!("IE write: {:02X} at PC:{:04X} SP:{:04X}", data, self.program_counter, self.stackpointer);
         //}
+        // Block writes to OAM during active DMA
+        if self.oam_dma_active && self.oam_dma_delay == 0 && address >= 0xFE00 && address < 0xFEA0 {
+            return;
+        }
         // Echo RAM mirroring: $E000-$FDFF mirrors $C000-$DDFF
         if address >= 0xE000 && address < 0xFE00 {
             self.memory[address - 0x2000] = data;
@@ -841,15 +863,35 @@ impl CPU {
                 self.memory[0xFF46] = data;
                 self.dma_transfer(data);
                 self.oam_dma_active = true;
-                self.oam_dma_remaining = 160; // OAM DMA takes 160 M-cycles
-                self.oam_dma_just_started = true;
+                self.oam_dma_remaining = 160;
+                self.oam_dma_delay = 2; // 1 M-cycle delay before transfer starts
             }
             0xFF04 => {
                 // Writing any value to DIV resets the entire 16-bit system counter.
                 // This can cause a falling edge on the timer bit → TIMA tick.
                 self.sys_counter = 0;
-                self.memory[0xFF04] = 0;
+                // No need to write memory[0xFF04] — peek_byte reads from sys_counter directly.
                 self.check_timer_falling_edge();
+            }
+            0xFF05 => {
+                // TIMA write quirks (matches mooneye-gb tima_write_cycle):
+                if self.tima_reloaded_this_cycle {
+                    // Ignored: if written on the exact cycle TMA was reloaded, TMA value persists
+                } else {
+                    self.memory[0xFF05] = data;
+                    if self.tima_reload_delay > 0 {
+                        // Abort the pending reload if written during the delay cycle
+                        self.tima_reload_delay = 0;
+                    }
+                }
+            }
+            0xFF06 => {
+                // TMA write quirks (matches mooneye-gb tma_write_cycle):
+                self.memory[0xFF06] = data;
+                if self.tima_reloaded_this_cycle {
+                    // If TMA is written on the exact reload cycle, TIMA catches the new value
+                    self.memory[0xFF05] = data;
+                }
             }
             0xFF07 => {
                 // TAC write — changing clock select or enable can cause a falling edge.
@@ -866,42 +908,32 @@ impl CPU {
                     // LCD just turned off
                     self.handle_lcd_off();
                 } else if !was_on && is_on {
-                    // LCD just turned on: reset PPU and start cleanly in Mode 2
-                    self.ppu_cycles = 0;
+                    // LCD just turned on (matching mooneye-gb):
+                    // Start in HBlank mode (0) with countdown = OAM duration (21 M-cycles).
+                    // When countdown reaches 0, it transitions to mode 2 (OAM scan).
                     self.scanline = 0;
                     self.memory[0xFF44] = 0;
-                    self.set_ppu_mode(2);
+                    self.ppu_cycles = 0;
+                    self.ppu_mcycle_countdown = 21; // AccessOam cycles
+                    self.set_ppu_mode(0); // Start in HBlank
+                    self.memory[0xFF41] |= 0x04; // Set COMPARE flag (mooneye sets this)
                     self.check_lyc();
                 }
             }
             0xFF41 => {
                 let read_only = self.memory[0xFF41] & 0x07;
                 self.memory[0xFF41] = (data & 0xF8) | read_only;
-
-                // If the game just enabled the LYC=LY STAT interrupt while the coincidence flag is already set, fire it immediately.
-                if (data & 0x40) != 0 && (read_only & 0x04) != 0 {
-                    self.request_interrupt(1);
-                }
+                // Let the rising-edge detector handle the interrupt
+                self.update_stat_irq_line();
             }
             0xFF44 => {
-                // Writing any value to LY resets it to 0
-                // Actually do nothing
-                //self.memory[0xFF44] = 0;
+                // Writing any value to LY resets it to 0 and rechecks LYC
+                self.memory[0xFF44] = 0;
+                self.check_lyc();
             }
             0xFF45 => {
-                // LYC=LY coincidence flag
                 self.memory[0xFF45] = data;
-
-                // Update coincidence flag instantly when LYC is written to
-                let ly = self.memory[0xFF44];
-                if ly == data {
-                    self.memory[0xFF41] |= 0x04;
-                    if self.memory[0xFF41] & 0x40 != 0 {
-                        self.request_interrupt(1);
-                    }
-                } else {
-                    self.memory[0xFF41] &= !0x04;
-                }
+                self.check_lyc();
             }
             0xFF02 => {
                 self.memory[0xFF02] = data;
@@ -1045,24 +1077,30 @@ impl CPU {
 
     fn dma_transfer(&mut self, data: u8) {
         let start = (data as u16) << 8;
-        for i in 0..0xA0u16 {
-            let mut src = (start + i) as usize;
-            // On DMG, DMA source addresses $FE00-$FFFF read from WRAM ($DE00-$DFFF)
-            if src >= 0xFE00 {
-                src -= 0x2000;
-            }
-            let byte = self.peek_byte(src);
-            self.memory[0xFE00 + i as usize] = byte;
-        }
+        self.oam_dma_source = start;
+        self.oam_dma_index = 0;
+        // Actual byte-by-byte transfer happens in tick_timer_4t
+        // oam_dma_active, oam_dma_remaining, and oam_dma_delay are set by the caller (write_byte)
     }
 
     /// Non-mutating memory read — no timer side-effects.
     /// Use for debug / tracing / DMA where the clock must not advance.
     pub fn peek_byte(&self, address: usize) -> u8 {
-        // During OAM DMA, reads from OAM return $FF
-        if self.oam_dma_active && address >= 0xFE00 && address < 0xFEA0 {
+        // During OAM DMA, reads from OAM return $FF — but only once the
+        // DMA is truly active (delay period has elapsed).  Mooneye's model:
+        //   W+0: request  (OAM accessible)
+        //   W+1: starting (OAM accessible)
+        //   W+2: active   (OAM blocked, first byte transferred next cycle)
+        if self.oam_dma_active && self.oam_dma_delay == 0 && address >= 0xFE00 && address < 0xFEA0 {
             return 0xFF;
         }
+        // Hardware register unused bits (read as 1)
+        if address == 0xFF02 { return self.memory[0xFF02] | 0x7E; } // SC
+        if address == 0xFF07 { return self.memory[0xFF07] | 0xF8; } // TAC
+        if address == 0xFF0F { return self.memory[0xFF0F] | 0xE0; } // IF
+        if address == 0xFF41 { return self.memory[0xFF41] | 0x80; } // STAT
+        if address >= 0xFF4C && address <= 0xFF7F && address != 0xFF50 { return 0xFF; }
+
         // Echo RAM: $E000-$FDFF mirrors $C000-$DDFF
         if address >= 0xE000 && address < 0xFE00 {
             return self.memory[address - 0x2000];
@@ -1243,8 +1281,14 @@ impl CPU {
         self.program_counter = 0;
         self.oam_dma_remaining = 0;
         self.oam_dma_active = false;
-        self.oam_dma_just_started = false;
+        self.oam_dma_delay = 0;
+        self.oam_dma_source = 0;
+        self.oam_dma_index = 0;
+        self.prev_stat_line = false;
+        self.ppu_mcycle_countdown = 0;
         self.halt = false;
+        self.tima_reload_delay = 0;
+        self.tima_reloaded_this_cycle = false;
     }
 
     fn hl(&self) -> u16 {
@@ -1328,57 +1372,7 @@ impl CPU {
     }
 
     pub fn handle_interrupts(&mut self) {
-        // if logging, then print to console
-        if self.consolelog {
-            console_log!("IME: {}, HALT: {}", self.interrupt_master_enable, self.halt);
-        }
-        // Check if interrupts are globally enabled
-        if !self.interrupt_master_enable {
-            // Even if IME is false, interrupts can still wake the CPU from HALT
-            if self.halt {
-                let interrupt_flag = self.memory[0xFF0F];
-                let interrupt_enable = self.memory[0xFFFF];
-                if interrupt_flag & interrupt_enable & 0x1F != 0 {
-                    self.halt = false;
-                }
-            }
-            return;
-        }
-    
-        let interrupt_flag = self.memory[0xFF0F];
-        let interrupt_enable = self.memory[0xFFFF];
 
-        // Only check bits 0-4, as these are the only valid interrupt bits
-        let valid_interrupts = interrupt_flag & interrupt_enable & 0x1F;
-    
-        if valid_interrupts != 0 {
-            self.halt = false; // Wake up from HALT state
-
-            for i in 0u16..5 {
-                if valid_interrupts & (1 << i) != 0 {
-                    // Disable further interrupts
-                    self.interrupt_master_enable = false;
-
-                    // M1: internal (wait state)
-                    self.tick_timer_4t();
-                    // M2: internal (wait state) — IF flag cleared during this cycle
-                    self.memory[0xFF0F] = interrupt_flag & !(1u8 << i);
-                    self.tick_timer_4t();
-
-                    // M3-M4: push PC onto stack (2 M-cycles via push → write_byte × 2)
-                    self.push(self.program_counter);
-
-                    // M5: read vector / set PC (1 M-cycle)
-                    self.tick_timer_4t();
-                    self.program_counter = 0x0040 + i * 0x0008;
-
-                    // Record total M-cycles for PPU/APU accounting
-                    self.cycles += 5;
-
-                    return; // Handle only one interrupt at a time
-                }
-            }
-        }
     }
 
     pub fn set_keys(&mut self, key: u32, value: bool) {
@@ -1396,6 +1390,7 @@ impl CPU {
 
     /// Returns the bit index of the system counter monitored for the given TAC clock select.
     /// TIMA increments on the falling edge of this bit (ANDed with timer enable).
+    #[inline(always)]
     fn timer_bit_for_tac(tac: u8) -> u16 {
         match tac & 0x03 {
             0 => 1 << 9,   // 4096 Hz   — bit 9  (every 1024 T-cycles)
@@ -1417,12 +1412,13 @@ impl CPU {
         (self.sys_counter & bit_mask) != 0
     }
 
-    /// Increment TIMA by one. On overflow, reload from TMA and request interrupt.
+    /// Increment TIMA by one. On overflow, set pending flag for 1-cycle delayed reload.
+    #[inline(always)]
     fn tick_tima(&mut self) {
         let tima = self.memory[0xFF05];
         if tima == 0xFF {
-            self.memory[0xFF05] = self.memory[0xFF06]; // Reload from TMA
-            self.request_interrupt(2);                  // Timer interrupt
+            self.memory[0xFF05] = 0x00;
+            self.tima_reload_delay = 1; // Wait 1 full M-cycle to reload and interrupt
         } else {
             self.memory[0xFF05] = tima.wrapping_add(1);
         }
@@ -1439,12 +1435,173 @@ impl CPU {
 
     /// Advance the system clock by exactly 1 M-cycle (4 T-cycles).
     /// Called once per memory access during instruction execution.
-    /// Also ticks the PPU so mode transitions are visible mid-instruction.
+    /// Ticks timer, PPU, APU, and OAM DMA so all components stay in sync.
+    #[inline(always)]
     pub fn tick_timer_4t(&mut self) {
+        // 1. Process delayed TIMA reload (exactly 1 M-cycle after overflow)
+        self.tima_reloaded_this_cycle = false;
+        if self.tima_reload_delay > 0 {
+            self.tima_reload_delay -= 1;
+            if self.tima_reload_delay == 0 {
+                self.memory[0xFF05] = self.memory[0xFF06]; // Reload from TMA
+                self.request_interrupt(2);                  // Timer interrupt
+                self.tima_reloaded_this_cycle = true;
+            }
+        }
+
+        // 2. Tick system counter and check for timer falling edge
+        //    Note: DIV (0xFF04) is read directly from sys_counter in peek_byte,
+        //    so we don't need to write it to memory here.
         self.sys_counter = self.sys_counter.wrapping_add(4);
-        self.memory[0xFF04] = (self.sys_counter >> 8) as u8;
-        self.check_timer_falling_edge();
         self.timer_ticks_this_instr += 1;
+
+        // Only check falling edge if timer is enabled (TAC bit 2),
+        // or if there was a previous high bit that could produce a falling edge
+        // when the counter wraps.
+        let tac = self.memory[0xFF07];
+        if tac & 0x04 != 0 {
+            let bit_mask = Self::timer_bit_for_tac(tac);
+            let new_bit = (self.sys_counter & bit_mask) != 0;
+            if self.prev_timer_bit && !new_bit {
+                self.tick_tima();
+            }
+            self.prev_timer_bit = new_bit;
+        } else if self.prev_timer_bit {
+            // Timer just got disabled or counter reset — clear the bit
+            self.prev_timer_bit = false;
+        }
+
+        // 3. Tick PPU by 1 M-cycle
+        self.ppu_tick_mcycle();
+
+        // 4. Tick APU by 4 T-cycles
+        self.apu.tick(4);
+
+        // 5. Tick OAM DMA (with proper 1-cycle delay and byte-by-byte copy)
+        if self.oam_dma_active {
+            if self.oam_dma_delay > 0 {
+                self.oam_dma_delay -= 1;
+            } else if self.oam_dma_remaining > 0 {
+                // Copy one byte per M-cycle
+                let source_addr = self.oam_dma_source.wrapping_add(self.oam_dma_index as u16);
+                let byte = self.peek_byte(source_addr as usize);
+                self.memory[0xFE00 + self.oam_dma_index as usize] = byte;
+
+                self.oam_dma_index += 1;
+                self.oam_dma_remaining -= 1;
+
+                if self.oam_dma_remaining == 0 {
+                    self.oam_dma_active = false;
+                }
+            }
+        }
+    }
+
+    /// Advance the PPU by exactly 1 M-cycle.
+    /// Uses a countdown timer like mooneye-gb: each mode has an M-cycle count
+    /// that decrements once per call. Mode transitions happen when it reaches 0.
+    ///
+    /// M-cycle durations (matching mooneye-gb):
+    ///   Mode 2 (OAM scan)   = 21 M-cycles  (84 T-cycles)
+    ///   Mode 3 (pixel xfer) = 43 M-cycles  (172 T-cycles) + scroll adjust
+    ///   Mode 0 (HBlank)     = 50 M-cycles  (200 T-cycles) - scroll adjust
+    ///   Mode 1 (VBlank)     = 114 M-cycles (456 T-cycles) per line
+    fn ppu_tick_mcycle(&mut self) {
+        let lcd_on = (self.memory[0xFF40] & 0x80) != 0;
+        if !lcd_on {
+            return;
+        }
+
+        // Decrement the M-cycle countdown
+        if self.ppu_mcycle_countdown > 0 {
+            self.ppu_mcycle_countdown -= 1;
+        }
+
+        // Line 153 LY quirk: LY is only 153 for 1 M-cycle, then resets to 0
+        // for the remaining 113 M-cycles of that line.
+        if self.scanline == 153 && self.ppu_mcycle_countdown == 112 {
+            self.memory[0xFF44] = 0;
+            self.check_lyc();
+        }
+
+        let current_mode = self.memory[0xFF41] & 0b11;
+
+        // HBlank STAT interrupt fires 1 M-cycle BEFORE the actual mode switch
+        // (when countdown reaches 1 during mode 3).
+        // The update_stat_irq_line() handles the early_hblank condition internally.
+        if self.ppu_mcycle_countdown == 1 && current_mode == 3 {
+            self.update_stat_irq_line();
+        }
+
+        if self.ppu_mcycle_countdown > 0 {
+            return;
+        }
+
+        // Mode transition
+        match current_mode {
+            2 => {
+                // OAM scan done → Pixel transfer (mode 3)
+                let scroll_adjust = self.ppu_scroll_adjust();
+                self.ppu_mcycle_countdown = 43 + scroll_adjust;
+                self.set_ppu_mode(3);
+            }
+            3 => {
+                // Pixel transfer done → HBlank (mode 0); draw the scanline
+                let scroll_adjust = self.ppu_scroll_adjust();
+                self.ppu_mcycle_countdown = 50 - scroll_adjust;
+                crate::ppu::draw_scanline(self);
+                self.set_ppu_mode(0);
+            }
+            0 => {
+                // HBlank done → advance to next scanline
+                self.scanline += 1;
+                self.memory[0xFF44] = self.scanline;
+                self.check_lyc();
+
+                if self.scanline >= 144 {
+                    // Enter VBlank
+                    self.ppu_mcycle_countdown = 114;
+                    self.set_ppu_mode(1);
+                    self.request_interrupt(0); // V-Blank interrupt
+                } else {
+                    // Next OAM scan
+                    self.ppu_mcycle_countdown = 21;
+                    self.set_ppu_mode(2);
+                }
+            }
+            1 => {
+                // VBlank: one scanline elapsed
+                self.scanline += 1;
+
+                if self.scanline > 153 {
+                    // VBlank finished → new frame
+                    self.scanline = 0;
+                    self.memory[0xFF44] = 0;
+                    self.check_lyc();
+                    self.ppu_mcycle_countdown = 21;
+                    self.set_ppu_mode(2);
+                } else {
+                    if self.scanline == 153 {
+                        self.memory[0xFF44] = 153;
+                    } else {
+                        self.memory[0xFF44] = self.scanline;
+                    }
+                    self.check_lyc();
+                    self.ppu_mcycle_countdown = 114;
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Compute scroll_x-based mode 3 cycle adjustment (matching mooneye-gb).
+    fn ppu_scroll_adjust(&self) -> u32 {
+        let scx = self.memory[0xFF43] % 8;
+        match scx {
+            5..=7 => 2,
+            1..=4 => 1,
+            _ => 0,
+        }
     }
 
     pub fn handle_timer(&mut self, _t_cycles: u32) {
@@ -1452,112 +1609,40 @@ impl CPU {
         // This method is kept for API compatibility but does nothing.
     }
 
-    pub fn update_apu(&mut self, t_cycles: u32) {
-        self.apu.tick(t_cycles);
+    pub fn update_apu(&mut self, _t_cycles: u32) {
+        // APU is now ticked per-M-cycle inside tick_timer_4t.
+        // This method is kept for API compatibility but does nothing.
     }
 
     pub fn get_audio_buffer(&mut self) -> Vec<f32> {
         self.apu.drain_samples()
     }
 
-    pub fn update_ppu(&mut self, cycles: u32) {
-        let lcd_on = (self.memory[0xFF40] & 0x80) != 0;
-        if !lcd_on {
-            return;
-        }
-
-        self.ppu_cycles += cycles;
-
-        loop {
-            let current_mode = self.memory[0xFF41] & 0b11;
-
-            let mode_duration = match current_mode {
-                2 => 80u32,   // OAM search
-                3 => 172,     // Pixel transfer (minimum)
-                0 => 204,     // H-Blank (456 - 80 - 172 = 204)
-                1 => 456,     // V-Blank (one full scanline per LY)
-                _ => unreachable!(),
-            };
-
-            if self.ppu_cycles < mode_duration {
-                break;
-            }
-
-            self.ppu_cycles -= mode_duration;
-
-            match current_mode {
-                2 => {
-                    // OAM search done → Pixel transfer
-                    self.set_ppu_mode(3);
-                }
-                3 => {
-                    // Pixel transfer done → H-Blank; draw the scanline
-                    self.set_ppu_mode(0);
-                    crate::ppu::draw_scanline(self);
-                }
-                0 => {
-                    // H-Blank done → advance to next scanline
-                    self.scanline += 1;
-                    self.memory[0xFF44] = self.scanline;
-                    self.check_lyc();
-
-                    if self.scanline >= 144 {
-                        // Enter V-Blank
-                        self.set_ppu_mode(1);
-                        self.request_interrupt(0); // V-Blank interrupt
-                    } else {
-                        // Next scanline OAM search
-                        self.set_ppu_mode(2);
-                    }
-                }
-                1 => {
-                    // V-Blank: one scanline elapsed
-                    self.scanline += 1;
-
-                    if self.scanline > 153 {
-                        // V-Blank finished — new frame starts
-                        self.scanline = 0;
-                        self.memory[0xFF44] = 0;
-                        self.check_lyc();
-                        self.set_ppu_mode(2);
-                    } else {
-                        // Line 153 special: LY goes to 0 early (after ~4 T-cycles,
-                        // but for simplicity we set it at the start of line 153)
-                        if self.scanline == 153 {
-                            self.memory[0xFF44] = 153;
-                            self.check_lyc();
-                            // LY will be reset to 0 shortly — many emulators
-                            // do this at the start of line 153
-                        } else {
-                            self.memory[0xFF44] = self.scanline;
-                            self.check_lyc();
-                        }
-                    }
-                }
-                _ => unreachable!(),
-            }
-        }
+    pub fn update_ppu(&mut self, _cycles: u32) {
+        // PPU is now ticked per-M-cycle inside tick_timer_4t via ppu_tick_4t.
+        // This method is kept for API compatibility but does nothing.
     }
 
-    /// Check LYC=LY coincidence and fire STAT interrupt if enabled.
+    /// Check LYC=LY coincidence (matching mooneye's check_compare_interrupt).
     fn check_lyc(&mut self) {
         let ly = self.memory[0xFF44];
         let lyc = self.memory[0xFF45];
         if ly == lyc {
             self.memory[0xFF41] |= 0x04; // Set coincidence flag
-            if self.memory[0xFF41] & 0x40 != 0 {
-                self.request_interrupt(1); // STAT interrupt
-            }
         } else {
             self.memory[0xFF41] &= !0x04; // Clear coincidence flag
         }
+        // Re-evaluate STAT line after changing the coincidence flag
+        self.update_stat_irq_line();
     }
 
     fn handle_lcd_off(&mut self) {
         self.memory[0xFF44] = 0;
         self.memory[0xFF41] &= 0xFC;
         self.ppu_cycles = 0;
+        self.ppu_mcycle_countdown = 0;
         self.scanline = 0;
+        self.prev_stat_line = false;
     }
 
 
@@ -1566,42 +1651,45 @@ impl CPU {
         // Write mode bits directly to memory (lower 2 bits of STAT)
         self.memory[0xFF41] = (self.memory[0xFF41] & 0b11111100) | (mode & 0x03);
 
-        // Check if we need to request STAT interrupt
-        // Only do this if the LCD is on
+        // Evaluate STAT line instead of direct interrupt requests
         if (self.memory[0xFF40] & 0x80) != 0 {
-            // Mode 0 (H-Blank) → bit 3
-            // Mode 1 (V-Blank) → bit 4
-            // Mode 2 (OAM search) → bit 5
-            // Mode 3 has NO STAT interrupt enable bit
-            let stat = self.memory[0xFF41];
-            let fire = match mode {
-                0 => stat & 0x08 != 0,
-                1 => stat & 0x10 != 0,
-                2 => stat & 0x20 != 0,
-                _ => false,
-            };
-            if fire {
-                self.request_interrupt(1); // STAT interrupt
-            }
+            self.update_stat_irq_line();
         }
     }
 
+    /// Evaluate the combined STAT interrupt line and fire on rising edge.
+    /// All STAT conditions combine into a single wire; interrupt fires only on 0→1 transition.
+    fn update_stat_irq_line(&mut self) {
+        let stat = self.memory[0xFF41];
+        let mode = stat & 0x03;
+        let ly = self.memory[0xFF44];
+        let lyc = self.memory[0xFF45];
+
+        // Early HBlank trigger during mode 3 (last M-cycle before mode 0)
+        let early_hblank = mode == 3 && self.ppu_mcycle_countdown == 1;
+        let hblank_trigger = (mode == 0 || early_hblank) && (stat & 0x08 != 0);
+
+        // DMG Quirk: During VBlank, OAM STAT (bit 5) can also trigger the line
+        let vblank_trigger = mode == 1 && ((stat & 0x10 != 0) || (stat & 0x20 != 0));
+
+        // Combine all STAT conditions into a single logical wire
+        let line = hblank_trigger
+            || vblank_trigger
+            || (mode == 2 && stat & 0x20 != 0)
+            || (ly == lyc && stat & 0x40 != 0);
+
+        // Rising edge detector → request interrupt
+        if line && !self.prev_stat_line {
+            self.request_interrupt(1);
+        }
+        self.prev_stat_line = line;
+    }
+
     fn increment_ly(&mut self) {
-        // Only increment LY if the LCD is on
         if (self.memory[0xFF40] & 0x80) != 0 {
             let ly = self.memory[0xFF44].wrapping_add(1);
             self.memory[0xFF44] = ly;
-
-            // Check LYC=LY coincidence
-            let lyc = self.memory[0xFF45];
-            if ly == lyc {
-                self.memory[0xFF41] |= 0x04; // Set coincidence flag (bit 2)
-                if self.memory[0xFF41] & 0x40 != 0 {
-                    self.request_interrupt(1); // STAT interrupt
-                }
-            } else {
-                self.memory[0xFF41] &= !0x04; // Clear coincidence flag
-            }
+            self.check_lyc();
         }
     }
 
@@ -2127,49 +2215,88 @@ impl CPU {
     }
 
     pub fn execute(&mut self) {
-        // Save whether EI was already pending before this instruction
         let was_ei_pending = self.ei_pending;
-
-        // Reset per-instruction timer tick counter and save cycles baseline.
-        // self.cycles may already include cycles from handle_interrupts,
-        // so we snapshot it to compute only THIS instruction's M-cycles.
         self.timer_ticks_this_instr = 0;
         let cycles_before = self.cycles;
 
-        // Record trace BEFORE consuming the opcode
+        // If halted, spin 1 M-cycle without fetching/executing instructions.
+        if self.halt {
+            self.tick_timer_4t();
+            self.cycles += 1;
+
+            // Check if an interrupt fired during this tick to wake up
+            let valid_interrupts = self.memory[0xFF0F] & self.memory[0xFFFF] & 0x1F;
+            if valid_interrupts != 0 {
+                self.halt = false;
+            }
+
+            if was_ei_pending && self.ei_pending {
+                self.interrupt_master_enable = true;
+                self.ei_pending = false;
+            }
+            return;
+        }
+
+        // M1: Fetch opcode (This ticks the timer and components by 1 M-cycle!)
+        let opcode = self.read_byte(self.program_counter as usize);
+
+        // Check if an interrupt triggered during M1
+        let valid_interrupts = self.memory[0xFF0F] & self.memory[0xFFFF] & 0x1F;
+        if self.interrupt_master_enable && valid_interrupts != 0 {
+            // Abort instruction, handle interrupt (5 M-cycles total dispatch)
+            self.interrupt_master_enable = false;
+            self.halt_bug = false;
+            self.ei_pending = false;
+
+            // M2 & M3: internal wait states
+            self.tick_timer_4t();
+            self.tick_timer_4t();
+
+            // M4 & M5: push PC onto stack (2 writes = 2 ticks)
+            self.push(self.program_counter);
+
+            // Re-evaluate highest priority interrupt to allow hijacking
+            let current_valid = self.memory[0xFF0F] & self.memory[0xFFFF] & 0x1F;
+            let mut final_i = 0;
+            for j in 0..5 {
+                if current_valid & (1 << j) != 0 {
+                    final_i = j;
+                    break;
+                }
+            }
+
+            // Clear the serviced interrupt flag
+            self.memory[0xFF0F] &= !(1u8 << final_i);
+
+            self.program_counter = 0x0040 + (final_i as u16) * 0x0008;
+            self.cycles += 5; // M1 + 4 dispatch cycles
+
+            // Handle any remaining un-ticked internal M-cycles
+            let instr_m_cycles = self.cycles - cycles_before;
+            if instr_m_cycles > self.timer_ticks_this_instr {
+                let remaining = instr_m_cycles - self.timer_ticks_this_instr;
+                for _ in 0..remaining {
+                    self.tick_timer_4t();
+                }
+            }
+            return;
+        }
+
+        // Normal execution continues...
         if self.tracing {
             let line = self.format_trace_line();
             self.trace_buffer.push(line);
         }
 
-        let opcode = self.read();
+        self.program_counter = self.program_counter.wrapping_add(1);
         if self.halt_bug {
             self.halt_bug = false;
             self.program_counter = self.program_counter.wrapping_sub(1);
         }
-        // if ei, pause
-        // if opcode == 0xFB {
-        //     self.toggle_pause();
-        //     self.toggle_consolelog();
-        // }
+
         if self.consolelog {
             let opcode_name = self.get_opcode_name(opcode);
             console_log!("Pointer: {:x}, opcode: {:x}, name: {}, AF: {:x}, BC: {:x}, DE: {:x}, HL: {:x}, SP: {:x}", self.program_counter-1, opcode, opcode_name, self.af(), self.bc(), self.de(), self.hl(), self.stackpointer);
-            // print next few bytes
-            // let mut next_bytes = String::new();
-            // for i in 0..4 {
-            //     next_bytes.push_str(&format!("{:02x} ", self.read_byte(self.PC as usize + i)));
-            // }
-            // console::log_1(&next_bytes.into());
-            // print memory as hexdump, every 0x10 bytes
-            // let mut hexdump = String::new();
-            // for i in 0..0x100 {
-            //     if i % 0x10 == 0 {
-            //         hexdump.push_str(&format!("\n{:04x} ", i));
-            //     }
-            //     hexdump.push_str(&format!("{:02x} ", self.read_byte(i)));
-            // }
-            // console::log_1(&hexdump.into());
         }
 
         match opcode {
@@ -2443,19 +2570,6 @@ impl CPU {
         if was_ei_pending && self.ei_pending {
             self.interrupt_master_enable = true;
             self.ei_pending = false;
-        }
-
-        // Tick OAM DMA remaining counter using only this instruction's M-cycles
-        if self.oam_dma_active {
-            if self.oam_dma_just_started {
-                // Don't tick on the instruction that triggered DMA
-                self.oam_dma_just_started = false;
-            } else if instr_m_cycles >= self.oam_dma_remaining {
-                self.oam_dma_remaining = 0;
-                self.oam_dma_active = false;
-            } else {
-                self.oam_dma_remaining -= instr_m_cycles;
-            }
         }
     }
 
@@ -2746,6 +2860,7 @@ impl CPU {
         let data = ((self.reg_b as u16) << 8 | self.reg_c as u16).wrapping_add(1);
         self.reg_b = (data >> 8) as u8;
         self.reg_c = data as u8;
+        self.tick_timer_4t();                  // M2: internal
         self.cycles += 2;
     }
 
@@ -2796,6 +2911,7 @@ impl CPU {
         self.set_flag_bit(4, result > 0xffff);
         self.reg_h = (result >> 8) as u8;
         self.reg_l = result as u8;
+        self.tick_timer_4t();                  // M2: internal
         self.cycles += 2;
     }
 
@@ -2808,8 +2924,8 @@ impl CPU {
         let bc = self.bc().wrapping_sub(1);
         self.reg_b = (bc >> 8) as u8;
         self.reg_c = bc as u8;
+        self.tick_timer_4t();                  // M2: internal
         self.cycles += 2;
-
     }
 
     fn incc(&mut self) {
@@ -2866,6 +2982,7 @@ impl CPU {
         let de = self.de().wrapping_add(1);
         self.reg_d = (de >> 8) as u8;
         self.reg_e = de as u8;
+        self.tick_timer_4t();                  // M2: internal
         self.cycles += 2;
     }
 
@@ -2903,6 +3020,7 @@ impl CPU {
 
     fn jr(&mut self) {
         let offset = self.read() as i8;
+        self.tick_timer_4t();                  // M3: internal (apply offset)
         self.program_counter = (self.program_counter as i32 + offset as i32) as u16;
         self.cycles += 3;
     }
@@ -2916,6 +3034,7 @@ impl CPU {
         self.set_flag_bit(4, result > 0xffff);
         self.reg_h = (result >> 8) as u8;
         self.reg_l = result as u8;
+        self.tick_timer_4t();                  // M2: internal
         self.cycles += 2;
     }
 
@@ -2929,6 +3048,7 @@ impl CPU {
         let result = de.wrapping_sub(1);
         self.reg_d = (result >> 8) as u8;
         self.reg_e = result as u8;
+        self.tick_timer_4t();                  // M2: internal
         self.cycles += 2;
     }
 
@@ -2964,13 +3084,13 @@ impl CPU {
     }
 
     fn jrnz(&mut self) {
-        if self.get_flag_bit(7) {
-            self.program_counter = self.program_counter.wrapping_add(1);
-            self.cycles += 2;
-        } else {
-            let offset = self.read() as i8;
+        let offset = self.read() as i8;
+        if !self.get_flag_bit(7) {
+            self.tick_timer_4t();               // internal cycle: apply offset
             self.program_counter = (self.program_counter as i32 + offset as i32) as u16;
             self.cycles += 3;
+        } else {
+            self.cycles += 2;
         }
     }
 
@@ -2994,6 +3114,7 @@ impl CPU {
         hl = hl.wrapping_add(1);
         self.reg_h = (hl >> 8) as u8;
         self.reg_l = hl as u8;
+        self.tick_timer_4t();                  // M2: internal
         self.cycles += 2;
     }
 
@@ -3043,12 +3164,12 @@ impl CPU {
     }
 
     fn jrz(&mut self) {
+        let offset = self.read() as i8;
         if self.get_flag_bit(7) {
-            let offset = self.read() as i8;
+            self.tick_timer_4t();               // internal cycle: apply offset
             self.program_counter = (self.program_counter as i32 + offset as i32) as u16;
             self.cycles += 3;
         } else {
-            self.program_counter = self.program_counter.wrapping_add(1);
             self.cycles += 2;
         }
     }
@@ -3061,6 +3182,7 @@ impl CPU {
         self.set_flag_bit(4, result > 0xffff);
         self.reg_h = (result >> 8) as u8;
         self.reg_l = result as u8;
+        self.tick_timer_4t();                  // M2: internal
         self.cycles += 2;
     }
 
@@ -3077,6 +3199,7 @@ impl CPU {
         hl = hl.wrapping_sub(1);
         self.reg_h = (hl >> 8) as u8;
         self.reg_l = hl as u8;
+        self.tick_timer_4t();                  // M2: internal
         self.cycles += 2;
     }
 
@@ -3106,13 +3229,13 @@ impl CPU {
     }
 
     fn jrncr8(&mut self) {
-        if self.get_flag_bit(4) {
-            self.program_counter = self.program_counter.wrapping_add(1);
-            self.cycles += 2;
-        } else {
-            let offset = self.read() as i8;
+        let offset = self.read() as i8;
+        if !self.get_flag_bit(4) {
+            self.tick_timer_4t();               // internal cycle: apply offset
             self.program_counter = (self.program_counter as i32 + offset as i32) as u16;
             self.cycles += 3;
+        } else {
+            self.cycles += 2;
         }
     }
 
@@ -3133,6 +3256,7 @@ impl CPU {
 
     fn incsp(&mut self) {
         self.stackpointer = self.stackpointer.wrapping_add(1);
+        self.tick_timer_4t();                  // M2: internal
         self.cycles += 2;
     }
 
@@ -3167,12 +3291,12 @@ impl CPU {
     }
 
     fn jrcr8(&mut self) {
+        let offset = self.read() as i8;
         if self.get_flag_bit(4) {
-            let offset = self.read() as i8;
+            self.tick_timer_4t();               // internal cycle: apply offset
             self.program_counter = (self.program_counter as i32 + offset as i32) as u16;
             self.cycles += 3;
         } else {
-            self.program_counter = self.program_counter.wrapping_add(1);
             self.cycles += 2;
         }
     }
@@ -3194,6 +3318,7 @@ impl CPU {
         // Update the H and L registers
         self.reg_h = (result >> 8) as u8;
         self.reg_l = result as u8;
+        self.tick_timer_4t();                  // M2: internal
         self.cycles += 2;
     }
 
@@ -3207,6 +3332,7 @@ impl CPU {
 
     fn decsp(&mut self) {
         self.stackpointer = self.stackpointer.wrapping_sub(1);
+        self.tick_timer_4t();                  // M2: internal
         self.cycles += 2;
     }
 
@@ -3969,8 +4095,8 @@ impl CPU {
     }
 
     fn retnz(&mut self) {
+        self.tick_timer_4t();               // M2: internal (condition check)
         if !self.get_flag_bit(7) {
-            self.tick_timer_4t();           // M2: internal (condition check)
             self.ret();                     // M3-M5 (ret adds its own cycles)
             self.cycles += 1;              // total = 1 + 4 = 5
         } else {
@@ -3987,12 +4113,12 @@ impl CPU {
     }
 
     fn jpnza16(&mut self) {
+        let addr = self.read16();              // M2-M3: always read address
         if !self.get_flag_bit(7) {
-            self.program_counter = self.read16();  // M2-M3
-            self.tick_timer_4t();                   // M4: internal
+            self.tick_timer_4t();              // M4: internal
+            self.program_counter = addr;
             self.cycles += 4;
         } else {
-            self.program_counter = self.program_counter.wrapping_add(2);
             self.cycles += 3;
         }
     }
@@ -4007,7 +4133,7 @@ impl CPU {
         if !self.get_flag_bit(7) {
             self.calla16();
         } else {
-            self.program_counter = self.program_counter.wrapping_add(2);
+            self.read16();                     // M2-M3: always read address
             self.cycles += 3;
         }
     }
@@ -4042,8 +4168,8 @@ impl CPU {
     }
 
     fn retz(&mut self) {
+        self.tick_timer_4t();               // M2: internal (condition check)
         if self.get_flag_bit(7) {
-            self.tick_timer_4t();           // M2: internal (condition check)
             self.ret();                     // M3-M5
             self.cycles += 1;              // total = 1 + 4 = 5
         } else {
@@ -4062,12 +4188,12 @@ impl CPU {
     }
 
     fn jpza16(&mut self) {
+        let addr = self.read16();              // M2-M3: always read address
         if self.get_flag_bit(7) {
-            self.program_counter = self.read16();  // M2-M3
-            self.tick_timer_4t();                   // M4: internal
+            self.tick_timer_4t();              // M4: internal
+            self.program_counter = addr;
             self.cycles += 4;
         } else {
-            self.program_counter = self.program_counter.wrapping_add(2);
             self.cycles += 3;
         }
     }
@@ -4076,7 +4202,7 @@ impl CPU {
         if self.get_flag_bit(7) {
             self.calla16();
         } else {
-            self.program_counter = self.program_counter.wrapping_add(2);
+            self.read16();                     // M2-M3: always read address
             self.cycles += 3;
         }
     }
@@ -4116,8 +4242,8 @@ impl CPU {
     }
 
     fn retnc(&mut self) {
+        self.tick_timer_4t();               // M2: internal (condition check)
         if !self.get_flag_bit(4) {
-            self.tick_timer_4t();           // M2: internal (condition check)
             self.ret();                     // M3-M5
             self.cycles += 1;              // total = 1 + 4 = 5
         } else {
@@ -4134,12 +4260,12 @@ impl CPU {
     }
 
     fn jpnca16(&mut self) {
+        let addr = self.read16();              // M2-M3: always read address
         if !self.get_flag_bit(4) {
-            self.program_counter = self.read16();  // M2-M3
-            self.tick_timer_4t();                   // M4: internal
+            self.tick_timer_4t();              // M4: internal
+            self.program_counter = addr;
             self.cycles += 4;
         } else {
-            self.program_counter = self.program_counter.wrapping_add(2);
             self.cycles += 3;
         }
     }
@@ -4148,7 +4274,7 @@ impl CPU {
         if !self.get_flag_bit(4) {
             self.calla16();
         } else {
-            self.program_counter = self.program_counter.wrapping_add(2);
+            self.read16();                     // M2-M3: always read address
             self.cycles += 3;
         }
     }
@@ -4184,8 +4310,8 @@ impl CPU {
     }
 
     fn retc(&mut self) {
+        self.tick_timer_4t();               // M2: internal (condition check)
         if self.get_flag_bit(4) {
-            self.tick_timer_4t();           // M2: internal (condition check)
             self.ret();                     // M3-M5
             self.cycles += 1;              // total = 1 + 4 = 5
         } else {
@@ -4199,12 +4325,12 @@ impl CPU {
     }
 
     fn jpca16(&mut self) {
+        let addr = self.read16();              // M2-M3: always read address
         if self.get_flag_bit(4) {
-            self.program_counter = self.read16();  // M2-M3
-            self.tick_timer_4t();                   // M4: internal
+            self.tick_timer_4t();              // M4: internal
+            self.program_counter = addr;
             self.cycles += 4;
         } else {
-            self.program_counter = self.program_counter.wrapping_add(2);
             self.cycles += 3;
         }
     }
@@ -4213,7 +4339,7 @@ impl CPU {
         if self.get_flag_bit(4) {
             self.calla16();
         } else {
-            self.program_counter = self.program_counter.wrapping_add(2);
+            self.read16();                     // M2-M3: always read address
             self.cycles += 3;
         }
     }
@@ -4287,7 +4413,7 @@ impl CPU {
     fn addspr8(&mut self) {
         // Add the signed value e8 to SP.
         // Flags are based on unsigned addition of low byte of SP and unsigned e8
-        let b = self.read();
+        let b = self.read();                   // M2: read immediate
         let offset = b as i8 as i16 as u16;
 
         // Clear Z and N flags
@@ -4299,6 +4425,8 @@ impl CPU {
         self.set_flag_bit(5, (self.stackpointer & 0xF) + (b as u16 & 0xF) > 0xF);
 
         self.stackpointer = self.stackpointer.wrapping_add(offset);
+        self.tick_timer_4t();                  // M3: internal
+        self.tick_timer_4t();                  // M4: internal
         self.cycles += 4;
     }
 
@@ -4399,11 +4527,13 @@ impl CPU {
         let hl = self.stackpointer.wrapping_add(offset);
         self.reg_h = (hl >> 8) as u8;
         self.reg_l = hl as u8;
+        self.tick_timer_4t();                  // M3: internal
         self.cycles += 3;
     }
 
     fn ldsphl(&mut self) {
         self.stackpointer = self.hl();
+        self.tick_timer_4t();                  // M2: internal
         self.cycles += 2;
     }
 

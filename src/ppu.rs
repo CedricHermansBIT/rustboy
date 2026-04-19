@@ -398,6 +398,84 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                 }
             }
         }
+
+        // 3. DRAW SPRITES FOR THIS LINE (per-scanline, with 10-sprite limit)
+        if lcd_control & 0x02 != 0 {
+            let sprite_height: i16 = if lcd_control & 0x04 != 0 { 16 } else { 8 };
+            let obp0 = cpu.memory[0xFF48];
+            let obp1 = cpu.memory[0xFF49];
+            let ly_i16 = ly as i16;
+
+            // Collect sprites that intersect this scanline (max 10, in OAM order)
+            let mut line_sprites: [(u8, i16); 10] = [(0, 0); 10]; // (oam_index, sprite_x)
+            let mut count = 0usize;
+
+            for i in 0..40u8 {
+                let base = 0xFE00 + (i as usize) * 4;
+                let sprite_y = cpu.memory[base] as i16 - 16;
+                if ly_i16 >= sprite_y && ly_i16 < sprite_y + sprite_height {
+                    let sprite_x = cpu.memory[base + 1] as i16 - 8;
+                    line_sprites[count] = (i, sprite_x);
+                    count += 1;
+                    if count >= 10 { break; }
+                }
+            }
+
+            // DMG priority: lower X = higher priority; ties broken by OAM order.
+            // Sort by X coordinate (stable sort preserves OAM order for equal X).
+            // We draw in REVERSE priority order so highest-priority sprite is drawn last.
+            let sprites = &mut line_sprites[..count];
+            sprites.sort_by(|a, b| a.1.cmp(&b.1));
+
+            // Draw in reverse order (lowest priority first → highest priority last)
+            for idx in (0..count).rev() {
+                let (oam_idx, _sprite_x) = sprites[idx];
+                let base = 0xFE00 + (oam_idx as usize) * 4;
+                let sprite_y = cpu.memory[base] as i16 - 16;
+                let sprite_x = cpu.memory[base + 1] as i16 - 8;
+                let mut tile_index = cpu.memory[base + 2];
+                let attributes = cpu.memory[base + 3];
+
+                let obp = if attributes & 0x10 != 0 { obp1 } else { obp0 };
+                let pal_type = if attributes & 0x10 != 0 { PAL_OBJ1 } else { PAL_OBJ0 };
+                let flip_x = attributes & 0x20 != 0;
+                let flip_y = attributes & 0x40 != 0;
+                let bg_priority = attributes & 0x80 != 0;
+
+                // Determine which row of the sprite to draw
+                let mut row = (ly_i16 - sprite_y) as u8;
+                if sprite_height == 16 {
+                    tile_index &= 0xFE; // Top tile is even, bottom is odd
+                    if flip_y { row = 15 - row; }
+                    if row >= 8 {
+                        tile_index |= 0x01;
+                        row -= 8;
+                    }
+                } else {
+                    if flip_y { row = 7 - row; }
+                }
+
+                let sprite_addr = 0x8000 + (tile_index as usize) * 16 + (row as usize) * 2;
+                let b1 = cpu.memory[sprite_addr];
+                let b2 = cpu.memory[sprite_addr + 1];
+
+                for px in 0..8u8 {
+                    let screen_x = sprite_x as i32 + px as i32;
+                    if screen_x < 0 || screen_x >= 160 { continue; }
+
+                    let dx = if flip_x { 7 - px } else { px };
+                    let raw = get_color_index(b1, b2, dx);
+                    if raw == 0 { continue; } // Transparent
+
+                    let buffer_idx = ly as usize * 160 + screen_x as usize;
+                    let bg_raw = (cpu.frame_buffer[buffer_idx] >> 4) & 0x03;
+                    if bg_priority && bg_raw != 0 { continue; }
+
+                    let ci = apply_dmg_palette(raw, obp);
+                    cpu.frame_buffer[buffer_idx] = pack_pixel(ci, pal_type, raw);
+                }
+            }
+        }
     }
 }
 
@@ -405,38 +483,10 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
 pub fn draw_state(context: &web_sys::CanvasRenderingContext2d, cpu: &mut crate::cpu::CPU) {
     let lcd_control = cpu.memory[0xFF40];
 
-    // Only draw sprites and push to canvas if the LCD is on
+    // Only push to canvas if the LCD is on
     if lcd_control & 0x80 == 0x80 {
-        let mode = (lcd_control >> 2) & 0x01;
-        let obp0 = cpu.memory[0xFF48];
-        let obp1 = cpu.memory[0xFF49];
-
-        // DRAW SPRITES (Reverse order for correct priority)
-        for i in (0..40).rev() {
-            // Read sprite data directly from memory
-            let sprite_base = 0xFE00 + (i * 4);
-            let sprite_y = cpu.memory[sprite_base] as i16 - 16;
-            let sprite_x = cpu.memory[sprite_base + 1] as i16 - 8;
-            let tile_index = cpu.memory[sprite_base + 2];
-            let attributes = cpu.memory[sprite_base + 3];
-
-            let obp = if attributes & 0x10 != 0 { obp1 } else { obp0 };
-            let pal_type = if attributes & 0x10 != 0 { PAL_OBJ1 } else { PAL_OBJ0 };
-
-            if mode == 0 {
-                if sprite_x >= -7 && sprite_x < 160 && sprite_y >= -7 && sprite_y < 144 {
-                    draw_sprite(&mut cpu.frame_buffer, sprite_x, sprite_y, tile_index, attributes, &cpu.memory, obp, pal_type);
-                }
-            } else {
-                if sprite_x >= -7 && sprite_x < 160 && sprite_y >= -15 && sprite_y < 144 {
-                    let mut top_idx = tile_index & 0xFE;
-                    let mut bot_idx = tile_index | 0x01;
-                    if attributes & 0x40 != 0 { std::mem::swap(&mut top_idx, &mut bot_idx); }
-                    draw_sprite(&mut cpu.frame_buffer, sprite_x, sprite_y, top_idx, attributes, &cpu.memory, obp, pal_type);
-                    draw_sprite(&mut cpu.frame_buffer, sprite_x, sprite_y + 8, bot_idx, attributes, &cpu.memory, obp, pal_type);
-                }
-            }
-        }
+        // Sprites are already rendered per-scanline in draw_scanline().
+        // Just convert the frame buffer to RGBA and push to canvas.
 
         // CONVERT TO RGBA AND PUSH TO CANVAS
         let palettes = if cpu.color_mode == 0 {
@@ -465,44 +515,6 @@ pub fn draw_state(context: &web_sys::CanvasRenderingContext2d, cpu: &mut crate::
     }
 }
 
-// Note: CPU argument is changed to `memory: &[u8; 0x10000]`
-fn draw_sprite(buffer: &mut [u8], sprite_x: i16, sprite_y: i16, tile_index: u8,
-               attributes: u8, memory: &[u8; 0x10000], obp: u8, pal_type: u8) {
-    let flip_x = attributes & 0x20 == 0x20;
-    let flip_y = attributes & 0x40 == 0x40;
-    let priority = attributes & 0x80 == 0x80;
-    let sprite_addr = 0x8000 + (tile_index as usize * 16);
-    let sprite_data = &memory[sprite_addr..sprite_addr + 16];
-
-    for y in 0..8u8 {
-        for x in 0..8u8 {
-            let dx = if flip_x { 7 - x } else { x };
-            let dy = if flip_y { 7 - y } else { y };
-            let buffer_x = sprite_x as i32 + x as i32;
-            let buffer_y = sprite_y as i32 + y as i32;
-
-            if buffer_x < 0 || buffer_x >= 160 || buffer_y < 0 || buffer_y >= 144 {
-                continue;
-            }
-
-            let buffer_index = (buffer_y * 160 + buffer_x) as usize;
-
-            let b1 = sprite_data[dy as usize * 2];
-            let b2 = sprite_data[dy as usize * 2 + 1];
-            let raw = get_color_index(b1, b2, dx);
-
-            if raw == 0 { continue; }
-
-            let ci = apply_dmg_palette(raw, obp);
-
-            // Look up the raw color we packed into bits 4 and 5
-            let bg_raw = (buffer[buffer_index] >> 4) & 0x03;
-            if priority && bg_raw != 0 { continue; }
-
-            buffer[buffer_index] = pack_pixel(ci, pal_type, raw);
-        }
-    }
-}
 
 #[cfg(target_arch = "wasm32")]
 pub fn draw_vram(context: &web_sys::CanvasRenderingContext2d, cpu: &mut CPU) {
