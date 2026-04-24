@@ -298,6 +298,11 @@ struct Channel3 {
     wave_pos: u8,
 
     wave_ram: [u8; 16], // 32 x 4-bit samples stored in 16 bytes
+
+    // DMG wave RAM access timing: tracks cycles since last wave RAM read by APU
+    // Only within ~2 T-cycles after an APU access can the CPU access wave RAM
+    // while CH3 is active (otherwise reads return 0xFF, writes are ignored).
+    last_wave_read_cycles: i32, // cycles since last APU wave RAM access; -1 = not recently accessed
 }
 
 impl Channel3 {
@@ -312,14 +317,20 @@ impl Channel3 {
             timer: 0,
             wave_pos: 0,
             wave_ram: [0; 16],
+            last_wave_read_cycles: -1,
         }
     }
 
     fn tick(&mut self, cycles: u32) {
+        if self.last_wave_read_cycles >= 0 {
+            self.last_wave_read_cycles += cycles as i32;
+        }
         self.timer -= cycles as i32;
         while self.timer <= 0 {
             self.timer += ((2048 - self.frequency as i32) * 2) as i32;
             self.wave_pos = (self.wave_pos + 1) & 31;
+            // APU just read from wave RAM
+            self.last_wave_read_cycles = 0;
         }
     }
 
@@ -353,6 +364,21 @@ impl Channel3 {
     }
 
     fn trigger(&mut self, frame_seq_step: u8) {
+        // DMG bug: triggering while enabled corrupts wave RAM.
+        // The byte at the current wave position is copied into the first 4 bytes
+        // based on wave_pos alignment.
+        if self.enabled {
+            let pos_byte = self.wave_pos / 2;
+            // If the APU accessed wave RAM very recently (within ~2 cycles), the
+            // current byte is latched and written to wave_ram[0].
+            // Approximate: always apply when re-triggering while enabled (DMG only).
+            let latched = self.wave_ram[pos_byte as usize];
+            // The corruption: the latched byte is written to the beginning of wave RAM
+            // aligned to a 4-byte boundary based on wave_pos.
+            let dest = ((pos_byte / 4) * 4) as usize;
+            self.wave_ram[dest] = latched;
+        }
+
         self.enabled = true;
         if self.length_counter == 0 {
             self.length_counter = 256;
@@ -360,8 +386,9 @@ impl Channel3 {
                 self.length_counter -= 1;
             }
         }
-        self.timer = ((2048 - self.frequency as i32) * 2) as i32;
+        self.timer = ((2048 - self.frequency as i32) * 2) as i32 + 6; // +6 T-cycle delay on DMG
         self.wave_pos = 0;
+        self.last_wave_read_cycles = -1;
 
         if !self.dac_enabled {
             self.enabled = false;
@@ -680,9 +707,11 @@ impl APU {
         }
 
         // Wave RAM (0xFF30-0xFF3F) can always be written
-        // On DMG, if ch3 is enabled, writes go to the byte at current playback position
+        // On DMG, if ch3 is enabled, writes only succeed within ~2 T-cycles
+        // after the APU last accessed wave RAM, and go to the current playback position.
         if (0xFF30..=0xFF3F).contains(&addr) {
             if self.ch3.enabled {
+                // DMG: only within timing window; approximate by always redirecting to wave_pos
                 self.ch3.wave_ram[(self.ch3.wave_pos / 2) as usize] = val;
             } else {
                 self.ch3.wave_ram[(addr - 0xFF30) as usize] = val;
@@ -894,11 +923,15 @@ impl APU {
 
     /// Read from an APU register (0xFF10-0xFF3F)
     pub fn read_register(&self, addr: u16) -> u8 {
-        // Wave RAM — on DMG, if ch3 is enabled, reads return the byte
-        // at the current playback position, not the addressed byte
+        // Wave RAM — on DMG, if ch3 is enabled, reads only succeed within ~2 T-cycles
+        // after the APU accessed wave RAM; otherwise returns 0xFF.
         if (0xFF30..=0xFF3F).contains(&addr) {
             if self.ch3.enabled {
-                return self.ch3.wave_ram[(self.ch3.wave_pos / 2) as usize];
+                // DMG timing: only valid within ~2 T-cycles of APU wave read
+                if self.ch3.last_wave_read_cycles >= 0 && self.ch3.last_wave_read_cycles <= 2 {
+                    return self.ch3.wave_ram[(self.ch3.wave_pos / 2) as usize];
+                }
+                return 0xFF;
             }
             return self.ch3.wave_ram[(addr - 0xFF30) as usize];
         }

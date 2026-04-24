@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use web_sys::console;
 
 use crate::apu::APU;
+use crate::debug_tracer::InstructionTracer;
 
 /// Log macro that calls web_sys::console::log_1 on wasm, no-op on native.
 #[cfg(target_arch = "wasm32")]
@@ -91,6 +92,8 @@ pub struct CPU {
     pub tracing: bool,
     /// Accumulated trace lines (one per instruction)
     pub trace_buffer: Vec<String>,
+    /// Optional instruction-level cycle tracer (for debugging test failures)
+    pub instruction_tracer: InstructionTracer,
     pub oam_dma_active: bool,
     pub oam_dma_remaining: u32,
     pub oam_dma_delay: u8,
@@ -173,6 +176,7 @@ impl CPU {
             breakpoints: Vec::new(),
             tracing: false,
             trace_buffer: Vec::new(),
+            instruction_tracer: InstructionTracer::new(),
             oam_dma_active: false,
             oam_dma_remaining: 0,
             oam_dma_delay: 0,
@@ -216,7 +220,88 @@ impl CPU {
         console_log!("Trace cleared ({} lines)", count);
     }
 
-    /// Instruction size in bytes for a given opcode (CB prefix counts as 2 total).
+    // ── Instruction-Level Cycle Tracer ──────────────────────────────────
+
+    /// Enable or disable instruction-level tracing (separate from simple trace)
+    pub fn set_instruction_tracing(&mut self, enabled: bool) {
+        self.instruction_tracer.set_enabled(enabled);
+        if enabled {
+            console_log!("🔵 Instruction-level tracing enabled");
+        } else {
+            console_log!("⏹ Instruction-level tracing disabled ({} traces)", self.instruction_tracer.traces.len());
+        }
+    }
+
+    /// Get the last N instruction traces
+    pub fn get_last_traces(&self, n: usize) -> Vec<String> {
+        self.instruction_tracer.get_last_n_traces(n)
+    }
+
+    /// Export all captured traces as a string
+    pub fn export_instruction_traces(&self) -> String {
+        self.instruction_tracer.export_as_string()
+    }
+
+    /// Export all captured traces as CSV
+    pub fn export_instruction_traces_csv(&self) -> String {
+        self.instruction_tracer.export_as_csv()
+    }
+
+    /// Get statistics about the trace
+    pub fn get_trace_statistics(&self) -> String {
+        self.instruction_tracer.get_statistics()
+    }
+
+    /// Get the number of captured traces
+    pub fn trace_count(&self) -> usize {
+        self.instruction_tracer.traces.len()
+    }
+
+    /// Internal: Capture current instruction in tracer
+    fn capture_instruction_trace(&mut self, opcode: u8, is_cb: bool) {
+        if !self.instruction_tracer.enabled {
+            return;
+        }
+
+        let mnemonic = if is_cb {
+            self.get_extra_opcode_name(opcode).to_string()
+        } else {
+            self.get_opcode_name(opcode).to_string()
+        };
+
+        // Capture instruction data
+        let pc = self.program_counter;
+        let regs = [
+            self.get_reg_a(),
+            self.get_reg_b(),
+            self.get_reg_c(),
+            self.get_reg_d(),
+            self.get_reg_e(),
+            self.get_reg_h(),
+            self.get_reg_l(),
+            self.get_reg_f(),
+        ];
+        let sp = self.get_sp();
+        let m_cycles = self.cycles;
+        let ime = self.interrupt_master_enable;
+
+        // Now we can call the immutable capture_instruction
+        self.instruction_tracer.capture_instruction_final(
+            self.instruction_tracer.instr_count,
+            self.instruction_tracer.prev_cycles,
+            pc,
+            opcode,
+            is_cb,
+            &mnemonic,
+            regs,
+            sp,
+            m_cycles,
+            ime,
+        );
+
+        self.instruction_tracer.instr_count += 1;
+        self.instruction_tracer.prev_cycles += m_cycles as u64;
+    }
     fn opcode_size(opcode: u8) -> u8 {
         match opcode {
             // 1-byte instructions
@@ -869,20 +954,33 @@ impl CPU {
             0xFF04 => {
                 // Writing any value to DIV resets the entire 16-bit system counter.
                 // This can cause a falling edge on the timer bit → TIMA tick.
+                // The write_byte already called tick_timer_4t() at the start,
+                // so the falling edge after reset is now checked.
+                let old_bit = self.timer_output_bit();
                 self.sys_counter = 0;
                 // No need to write memory[0xFF04] — peek_byte reads from sys_counter directly.
-                self.check_timer_falling_edge();
+                // After reset, check if there was a falling edge (old=1, new=0)
+                if old_bit {
+                    self.tick_tima();
+                }
+                self.prev_timer_bit = false;
             }
             0xFF05 => {
                 // TIMA write quirks (matches mooneye-gb tima_write_cycle):
+                // During the reload cycle, writing to TIMA has special behavior:
+                // - If written on the exact cycle TMA was reloaded → write is ignored
+                //   and the TMA value remains in TIMA
+                // - If written during the M-cycle after overflow (tima_reload_delay > 0),
+                //   it aborts the pending reload
                 if self.tima_reloaded_this_cycle {
-                    // Ignored: if written on the exact cycle TMA was reloaded, TMA value persists
-                } else {
+                    // Ignored: TIMA already has the TMA value
+                } else if self.tima_reload_delay > 0 {
+                    // Abort the pending reload
+                    self.tima_reload_delay = 0;
                     self.memory[0xFF05] = data;
-                    if self.tima_reload_delay > 0 {
-                        // Abort the pending reload if written during the delay cycle
-                        self.tima_reload_delay = 0;
-                    }
+                } else {
+                    // Normal write
+                    self.memory[0xFF05] = data;
                 }
             }
             0xFF06 => {
@@ -895,9 +993,26 @@ impl CPU {
             }
             0xFF07 => {
                 // TAC write — changing clock select or enable can cause a falling edge.
-                // The old timer output bit is already in self.prev_timer_bit.
+                // The write_byte already called tick_timer_4t() at the start.
+                // We need to check the falling edge for the OLD TAC configuration,
+                // not after writing the new one.
+                let old_tac = self.memory[0xFF07];
+                let old_bit = if (old_tac & 0x04) != 0 {
+                    let bit_mask = Self::timer_bit_for_tac(old_tac);
+                    (self.sys_counter & bit_mask) != 0
+                } else {
+                    false
+                };
+
+                // Now write the new TAC
                 self.memory[0xFF07] = data;
-                self.check_timer_falling_edge();
+
+                // Check for falling edge based on old TAC bit vs. new TAC bit
+                let new_bit = self.timer_output_bit();
+                if old_bit && !new_bit {
+                    self.tick_tima();
+                }
+                self.prev_timer_bit = new_bit;
             }
             0xFF40 => {
                 let was_on = (self.memory[0xFF40] & 0x80) != 0;
@@ -2504,7 +2619,10 @@ impl CPU {
             0xc9 => self.ret(),
             0xca => self.jpza16(),
             0xcb => {
-                self.execute_cb();
+                let cb_opcode = self.read();
+                self.execute_cb_with_opcode(cb_opcode);
+                // Capture CB instruction trace AFTER execution
+                self.capture_instruction_trace(cb_opcode, true);
             },
             0xcc => self.callza16(),
             0xcd => self.calla16(),
@@ -2553,6 +2671,11 @@ impl CPU {
             }
         }
 
+        // Capture instruction trace (if enabled) for non-CB instructions
+        // CB instructions are captured separately in execute_cb_with_opcode
+        if opcode != 0xCB {
+            self.capture_instruction_trace(opcode, false);
+        }
 
         // Tick the timer for any "internal" M-cycles that didn't involve
         // a memory access (and thus weren't covered by read_byte / write_byte).
@@ -2575,6 +2698,10 @@ impl CPU {
 
     fn execute_cb(&mut self) {
         let opcode = self.read();
+        self.execute_cb_with_opcode(opcode);
+    }
+
+    fn execute_cb_with_opcode(&mut self, opcode: u8) {
         if self.consolelog {
             let opcode_name = self.get_extra_opcode_name(opcode);
             console_log!("Pointer: {:x}, opcode: {:x}, name: {}, AF: {:x}, BC: {:x}, DE: {:x}, HL: {:x}, SP: {:x}", self.program_counter-1, opcode, opcode_name, self.af(), self.bc(), self.de(), self.hl(), self.stackpointer);
