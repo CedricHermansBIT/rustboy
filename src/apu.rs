@@ -303,6 +303,7 @@ struct Channel3 {
     // Only within ~2 T-cycles after an APU access can the CPU access wave RAM
     // while CH3 is active (otherwise reads return 0xFF, writes are ignored).
     last_wave_read_cycles: i32, // cycles since last APU wave RAM access; -1 = not recently accessed
+    last_wave_read_index: u8,   // latched wave RAM byte index from the last APU fetch
 }
 
 impl Channel3 {
@@ -318,10 +319,14 @@ impl Channel3 {
             wave_pos: 0,
             wave_ram: [0; 16],
             last_wave_read_cycles: -1,
+            last_wave_read_index: 0,
         }
     }
 
     fn tick(&mut self, cycles: u32) {
+        if !self.enabled {
+            return;
+        }
         if self.last_wave_read_cycles >= 0 {
             self.last_wave_read_cycles += cycles as i32;
         }
@@ -330,6 +335,7 @@ impl Channel3 {
             self.timer += ((2048 - self.frequency as i32) * 2) as i32;
             self.wave_pos = (self.wave_pos + 1) & 31;
             // APU just read from wave RAM
+            self.last_wave_read_index = self.wave_pos / 2;
             self.last_wave_read_cycles = 0;
         }
     }
@@ -363,20 +369,25 @@ impl Channel3 {
         }
     }
 
-    fn trigger(&mut self, frame_seq_step: u8) {
+    fn trigger(&mut self, frame_seq_step: u8, cgb_mode: bool) {
         // DMG bug: triggering while enabled corrupts wave RAM.
-        // The byte at the current wave position is copied into the first 4 bytes
-        // based on wave_pos alignment.
-        if self.enabled {
-            let pos_byte = self.wave_pos / 2;
-            // If the APU accessed wave RAM very recently (within ~2 cycles), the
-            // current byte is latched and written to wave_ram[0].
-            // Approximate: always apply when re-triggering while enabled (DMG only).
-            let latched = self.wave_ram[pos_byte as usize];
-            // The corruption: the latched byte is written to the beginning of wave RAM
-            // aligned to a 4-byte boundary based on wave_pos.
-            let dest = ((pos_byte / 4) * 4) as usize;
-            self.wave_ram[dest] = latched;
+        // If current byte index is 0..=3, that byte is copied to wave_ram[0].
+        // Otherwise, the 4-byte aligned block containing current byte is copied
+        // into wave_ram[0..4].
+        if self.enabled && !cgb_mode {
+            let pos_byte = self.last_wave_read_index as usize;
+            if pos_byte < 4 {
+                self.wave_ram[0] = self.wave_ram[pos_byte];
+            } else {
+                let src = pos_byte & !0x03;
+                let block = [
+                    self.wave_ram[src],
+                    self.wave_ram[src + 1],
+                    self.wave_ram[src + 2],
+                    self.wave_ram[src + 3],
+                ];
+                self.wave_ram[0..4].copy_from_slice(&block);
+            }
         }
 
         self.enabled = true;
@@ -386,9 +397,11 @@ impl Channel3 {
                 self.length_counter -= 1;
             }
         }
-        self.timer = ((2048 - self.frequency as i32) * 2) as i32 + 6; // +6 T-cycle delay on DMG
+        // DMG retrigger has an extra startup delay before normal period stepping.
+        self.timer = ((2048 - self.frequency as i32) * 2) as i32 + 6;
         self.wave_pos = 0;
         self.last_wave_read_cycles = -1;
+        self.last_wave_read_index = 0;
 
         if !self.dac_enabled {
             self.enabled = false;
@@ -528,6 +541,7 @@ impl Channel4 {
 
 pub struct APU {
     powered: bool,
+    cgb_mode: bool,
 
     ch1: Channel1,
     ch2: Channel2,
@@ -556,6 +570,7 @@ impl APU {
     pub fn new() -> Self {
         APU {
             powered: true,
+            cgb_mode: false,
             ch1: Channel1::new(),
             ch2: Channel2::new(),
             ch3: Channel3::new(),
@@ -570,6 +585,10 @@ impl APU {
             sample_timer: 0.0,
             sample_buffer: Vec::with_capacity(2048),
         }
+    }
+
+    pub fn set_cgb_mode(&mut self, cgb_mode: bool) {
+        self.cgb_mode = cgb_mode;
     }
 
     /// Advance the APU by `t_cycles` T-cycles
@@ -706,13 +725,17 @@ impl APU {
             return;
         }
 
-        // Wave RAM (0xFF30-0xFF3F) can always be written
-        // On DMG, if ch3 is enabled, writes only succeed within ~2 T-cycles
-        // after the APU last accessed wave RAM, and go to the current playback position.
+        // Wave RAM (0xFF30-0xFF3F) can always be written.
+        // When CH3 is active, access rules differ by model:
+        // - CGB: any wave RAM address maps to the current playback byte.
+        // - DMG: writes only work in a narrow timing window after APU wave fetch.
         if (0xFF30..=0xFF3F).contains(&addr) {
             if self.ch3.enabled {
-                // DMG: only within timing window; approximate by always redirecting to wave_pos
-                self.ch3.wave_ram[(self.ch3.wave_pos / 2) as usize] = val;
+                if self.cgb_mode {
+                    self.ch3.wave_ram[self.ch3.last_wave_read_index as usize] = val;
+                } else if self.ch3.last_wave_read_cycles >= 0 && self.ch3.last_wave_read_cycles <= 4 {
+                    self.ch3.wave_ram[self.ch3.last_wave_read_index as usize] = val;
+                }
             } else {
                 self.ch3.wave_ram[(addr - 0xFF30) as usize] = val;
             }
@@ -860,7 +883,7 @@ impl APU {
                     }
                 }
                 if val & 0x80 != 0 {
-                    self.ch3.trigger(self.frame_seq_step);
+                    self.ch3.trigger(self.frame_seq_step, self.cgb_mode);
                 }
             }
 
@@ -923,13 +946,17 @@ impl APU {
 
     /// Read from an APU register (0xFF10-0xFF3F)
     pub fn read_register(&self, addr: u16) -> u8 {
-        // Wave RAM — on DMG, if ch3 is enabled, reads only succeed within ~2 T-cycles
-        // after the APU accessed wave RAM; otherwise returns 0xFF.
+        // Wave RAM access while CH3 is active differs by model:
+        // - CGB: any wave RAM address reads current playback byte.
+        // - DMG: only readable in a narrow timing window; otherwise 0xFF.
         if (0xFF30..=0xFF3F).contains(&addr) {
             if self.ch3.enabled {
-                // DMG timing: only valid within ~2 T-cycles of APU wave read
-                if self.ch3.last_wave_read_cycles >= 0 && self.ch3.last_wave_read_cycles <= 2 {
-                    return self.ch3.wave_ram[(self.ch3.wave_pos / 2) as usize];
+                if self.cgb_mode {
+                    return self.ch3.wave_ram[self.ch3.last_wave_read_index as usize];
+                }
+                // DMG timing window (expanded to 4T due CPU memory-access stepping granularity)
+                if self.ch3.last_wave_read_cycles >= 0 && self.ch3.last_wave_read_cycles <= 4 {
+                    return self.ch3.wave_ram[self.ch3.last_wave_read_index as usize];
                 }
                 return 0xFF;
             }

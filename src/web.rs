@@ -51,7 +51,7 @@ pub fn load_rom_data(rom_data: &[u8]) {
         c.borrow().as_ref().map(|rc| rc.borrow().speed_multiplier).unwrap_or(1)
     });
 
-    let bootrom = include_bytes!("../roms/DMG_ROM.bin");
+    let bootrom = include_bytes!("../roms/dmg_boot.bin");
     let mut cpu = cpu::CPU::new();
     cpu.speed_multiplier = prev_speed;
     cpu.bootload(bootrom.to_vec());
