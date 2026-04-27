@@ -1,7 +1,6 @@
 /* @ts-self-types="./rustboy.d.ts" */
 
 /**
- * Add a breakpoint based on CB-prefixed instruction opcode (e.g., 0x7C for BIT 7,H)
  * @param {number} opcode
  */
 export function add_breakpoint_cb_opcode(opcode) {
@@ -9,7 +8,6 @@ export function add_breakpoint_cb_opcode(opcode) {
 }
 
 /**
- * Add a breakpoint that triggers when memory at `addr` equals `value`.
  * @param {number} addr
  * @param {number} value
  */
@@ -18,7 +16,6 @@ export function add_breakpoint_mem(addr, value) {
 }
 
 /**
- * Add a breakpoint based on instruction opcode (e.g., 0xDA for JP C,a16)
  * @param {number} opcode
  */
 export function add_breakpoint_opcode(opcode) {
@@ -26,8 +23,6 @@ export function add_breakpoint_opcode(opcode) {
 }
 
 /**
- * Add a breakpoint that triggers when PC reaches the given address.
- * Address is in decimal; use JS `0x1234` for hex.
  * @param {number} addr
  */
 export function add_breakpoint_pc(addr) {
@@ -35,8 +30,6 @@ export function add_breakpoint_pc(addr) {
 }
 
 /**
- * Add a breakpoint that triggers when a register equals a value.
- * reg: "a","b","c","d","e","h","l","f","af","bc","de","hl","sp","pc"
  * @param {string} reg
  * @param {number} value
  */
@@ -46,22 +39,15 @@ export function add_breakpoint_reg(reg, value) {
     wasm.add_breakpoint_reg(ptr0, len0, value);
 }
 
-/**
- * Clear all breakpoints.
- */
 export function clear_breakpoints() {
     wasm.clear_breakpoints();
 }
 
-/**
- * Clear the trace buffer.
- */
 export function clear_trace() {
     wasm.clear_trace();
 }
 
 /**
- * Returns current CPU debug state as a string (called from JS)
  * @returns {string}
  */
 export function get_debug_state() {
@@ -78,7 +64,6 @@ export function get_debug_state() {
 }
 
 /**
- * Returns the current emulation speed multiplier (1, 2, 4, or 8)
  * @returns {number}
  */
 export function get_speed() {
@@ -87,7 +72,6 @@ export function get_speed() {
 }
 
 /**
- * Get the full trace buffer as a single string (lines separated by \n).
  * @returns {string}
  */
 export function get_trace() {
@@ -104,7 +88,6 @@ export function get_trace() {
 }
 
 /**
- * Returns true if tracing is currently active.
  * @returns {boolean}
  */
 export function is_tracing() {
@@ -113,7 +96,6 @@ export function is_tracing() {
 }
 
 /**
- * List all breakpoints (returns string for console display).
  * @returns {string}
  */
 export function list_breakpoints() {
@@ -130,7 +112,6 @@ export function list_breakpoints() {
 }
 
 /**
- * Called from JS with the ROM bytes to load and run a new ROM
  * @param {Uint8Array} rom_data
  */
 export function load_rom_data(rom_data) {
@@ -144,7 +125,6 @@ export function main_js() {
 }
 
 /**
- * Read a single byte at the given address (respects MBC banking).
  * @param {number} addr
  * @returns {number}
  */
@@ -154,7 +134,6 @@ export function peek(addr) {
 }
 
 /**
- * Print all register values.
  * @returns {string}
  */
 export function peek_regs() {
@@ -171,7 +150,6 @@ export function peek_regs() {
 }
 
 /**
- * Hex-dump `len` bytes starting at `start`. Max 256 bytes.
  * @param {number} start
  * @param {number} len
  * @returns {string}
@@ -190,16 +168,12 @@ export function peek_slice(start, len) {
 }
 
 /**
- * Remove a breakpoint by index.
  * @param {number} index
  */
 export function remove_breakpoint(index) {
     wasm.remove_breakpoint(index);
 }
 
-/**
- * Save the current game's external RAM to persistent storage
- */
 export function save_game() {
     wasm.save_game();
 }
@@ -212,15 +186,11 @@ export function set_key_state(key_code, is_pressed) {
     wasm.set_key_state(key_code, is_pressed);
 }
 
-/**
- * Toggle CPU instruction tracing on/off.
- */
 export function toggle_trace() {
     wasm.toggle_trace();
 }
 
 /**
- * Get the number of lines currently in the trace buffer.
  * @returns {number}
  */
 export function trace_len() {
@@ -405,7 +375,7 @@ function __wbg_get_imports() {
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 40, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 41, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h251cbffc22d1a62b);
             return ret;
         },

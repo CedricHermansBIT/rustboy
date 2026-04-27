@@ -1,110 +1,48 @@
 /* tslint:disable */
 /* eslint-disable */
 
-/**
- * Add a breakpoint based on CB-prefixed instruction opcode (e.g., 0x7C for BIT 7,H)
- */
 export function add_breakpoint_cb_opcode(opcode: number): void;
 
-/**
- * Add a breakpoint that triggers when memory at `addr` equals `value`.
- */
 export function add_breakpoint_mem(addr: number, value: number): void;
 
-/**
- * Add a breakpoint based on instruction opcode (e.g., 0xDA for JP C,a16)
- */
 export function add_breakpoint_opcode(opcode: number): void;
 
-/**
- * Add a breakpoint that triggers when PC reaches the given address.
- * Address is in decimal; use JS `0x1234` for hex.
- */
 export function add_breakpoint_pc(addr: number): void;
 
-/**
- * Add a breakpoint that triggers when a register equals a value.
- * reg: "a","b","c","d","e","h","l","f","af","bc","de","hl","sp","pc"
- */
 export function add_breakpoint_reg(reg: string, value: number): void;
 
-/**
- * Clear all breakpoints.
- */
 export function clear_breakpoints(): void;
 
-/**
- * Clear the trace buffer.
- */
 export function clear_trace(): void;
 
-/**
- * Returns current CPU debug state as a string (called from JS)
- */
 export function get_debug_state(): string;
 
-/**
- * Returns the current emulation speed multiplier (1, 2, 4, or 8)
- */
 export function get_speed(): number;
 
-/**
- * Get the full trace buffer as a single string (lines separated by \n).
- */
 export function get_trace(): string;
 
-/**
- * Returns true if tracing is currently active.
- */
 export function is_tracing(): boolean;
 
-/**
- * List all breakpoints (returns string for console display).
- */
 export function list_breakpoints(): string;
 
-/**
- * Called from JS with the ROM bytes to load and run a new ROM
- */
 export function load_rom_data(rom_data: Uint8Array): void;
 
 export function main_js(): void;
 
-/**
- * Read a single byte at the given address (respects MBC banking).
- */
 export function peek(addr: number): number;
 
-/**
- * Print all register values.
- */
 export function peek_regs(): string;
 
-/**
- * Hex-dump `len` bytes starting at `start`. Max 256 bytes.
- */
 export function peek_slice(start: number, len: number): string;
 
-/**
- * Remove a breakpoint by index.
- */
 export function remove_breakpoint(index: number): void;
 
-/**
- * Save the current game's external RAM to persistent storage
- */
 export function save_game(): void;
 
 export function set_key_state(key_code: number, is_pressed: boolean): void;
 
-/**
- * Toggle CPU instruction tracing on/off.
- */
 export function toggle_trace(): void;
 
-/**
- * Get the number of lines currently in the trace buffer.
- */
 export function trace_len(): number;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;

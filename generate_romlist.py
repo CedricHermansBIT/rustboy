@@ -6,7 +6,7 @@ import json
 import os
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-roms_dir = os.path.join(script_dir, "testroms")
+roms_dir = os.path.join(script_dir, "roms")
 images_dir = os.path.join(roms_dir, "images")
 
 entries = []
@@ -18,7 +18,7 @@ for root, dirs, files in os.walk(roms_dir):
         continue
 
     for f in sorted(files):
-        if f.lower().endswith(".gb"):
+        if f.lower().endswith(".gb") or f.lower().endswith(".gbc"):
             # Get the path relative to roms_dir (e.g., "Action/game.gb")
             full_path = os.path.join(root, f)
             rel_rom_path = os.path.relpath(full_path, roms_dir)

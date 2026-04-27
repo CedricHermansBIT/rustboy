@@ -6,7 +6,6 @@ use web_sys::console;
 use crate::apu::APU;
 use crate::debug_tracer::InstructionTracer;
 
-/// Log macro that calls web_sys::console::log_1 on wasm, no-op on native.
 #[cfg(target_arch = "wasm32")]
 macro_rules! console_log {
     ($($t:tt)*) => { console::log_1(&format!($($t)*).into()) }
@@ -17,19 +16,12 @@ macro_rules! console_log {
     ($($t:tt)*) => { }
 }
 
-/// A breakpoint condition that pauses emulation when met.
 #[derive(Clone, Debug)]
 pub enum Breakpoint {
-    /// Break when PC equals this address
     Pc(u16),
-    /// Break when a register equals a specific value.
-    /// The register is identified by name: "a","b","c","d","e","h","l","f","sp"
     Reg(String, u16),
-    /// Break when memory at a given address equals a value
     Mem(u16, u8),
-    /// Break when the CPU is about to execute a specific opcode
     Opcode(u8),
-    /// Break when a specific CB-prefixed opcode is about to execute (0xCB + byte)
     CbOpcode(u8),
 }
 
@@ -46,27 +38,23 @@ pub struct CPU {
     pub program_counter: u16,
     pub interrupt_master_enable: bool,
     boot_mem: [u8; 0x10000],
+    boot_rom_len: usize,
     pub booting: bool,
     pub memory: [u8; 0x10000],
-    pub frame_buffer: [u8; 160 * 144],
+    pub frame_buffer:[u32; 160 * 144],
     rom: Vec<u8>,
     ram: [[u8; 0x2000]; 16],
     pub halt: bool,
     pub cycles: u32,
     pub total_cycles: u64,
     pub is_paused: AtomicBool,
-    /// 16-bit system clock (DIV is bits 8-15, timer uses falling-edge detection)
     pub sys_counter: u16,
-    /// Previous value of (selected_timer_bit AND timer_enable) for falling-edge detection
     prev_timer_bit: bool,
     consolelog: bool,
     pub show_vram: bool,
     pub keys: [bool; 256],
     ppu_cycles: u32,
-    /// PPU M-cycle countdown timer (mooneye-style). Counts down each M-cycle.
     ppu_mcycle_countdown: u32,
-    /// Internal scanline counter (0–153). Unlike LY, this is never affected by
-    /// the line-153 quirk and always reflects the true scanline position.
     scanline: u8,
     pub go_next: AtomicBool,
     cartridge_type: u8,
@@ -74,50 +62,54 @@ pub struct CPU {
     rambank: u8,
     mbc_rom_mode: u8,
     mbc_ram_enable: bool,
-    mbc1_bank2: u8,  // The 2-bit register written via 0x4000-0x5FFF
-    rom_bank_mask: u16,  // Mask based on ROM size (number of banks - 1)
-    ram_bank_mask: usize, // Mask based on RAM size to prevent invalid bank access
-    rtc_registers:[u8; 5], // MBC3 Real Time Clock (S, M, H, DL, DH)
+    mbc1_bank2: u8,
+    rom_bank_mask: u16,
+    ram_bank_mask: usize,
+    rtc_registers:[u8; 5],
     ei_pending: bool,
     pub apu: APU,
-    /// GBC-style color palettes: [BG, OBP0, OBP1], each is 4 RGBA colors
     pub gbc_palettes: [[[u8; 4]; 4]; 3],
-    /// 0 = GBC color mode, 1 = classic DMG green
     pub color_mode: u8,
-    /// Emulation speed multiplier (1 = normal, 2 = 2×, etc.)
     pub speed_multiplier: u32,
-    /// Active breakpoints
     pub breakpoints: Vec<Breakpoint>,
-    /// When true, each instruction appends a trace line to trace_buffer
     pub tracing: bool,
-    /// Accumulated trace lines (one per instruction)
     pub trace_buffer: Vec<String>,
-    /// Optional instruction-level cycle tracer (for debugging test failures)
     pub instruction_tracer: InstructionTracer,
     pub oam_dma_active: bool,
     pub oam_dma_remaining: u32,
     pub oam_dma_delay: u8,
-    /// OAM DMA source address for per-byte transfer
     oam_dma_source: u16,
-    /// OAM DMA byte index (0..160)
     oam_dma_index: u8,
     halt_bug: bool,
-    /// Previous combined STAT interrupt line for rising-edge detection
     prev_stat_line: bool,
-    /// Counts how many times tick_timer_4t was called during the current instruction,
-    /// so we can add the remaining "internal" M-cycle ticks at the end.
     timer_ticks_this_instr: u32,
-    /// Serial output buffer (for test ROM output)
     pub serial_output: Vec<u8>,
-    /// Delayed TIMA reload countdown: set to 2 on overflow, fires at 0
     pub tima_reload_delay: u8,
-    /// True during the M-cycle when TIMA was just reloaded from TMA (write quirk window)
     pub tima_reloaded_this_cycle: bool,
     pub is_lcd_turning_on: bool,
+
+    // CGB specific fields
+    pub is_cgb: bool,
+    pub double_speed: bool,
+    pub key1: u8,
+    pub vram_bank: u8,
+    pub wram_bank: u8,
+    pub cgb_wram: [[u8; 0x1000]; 8],
+    pub cgb_vram: [[u8; 0x2000]; 2],
+    pub bgpi: u8,
+    pub cgb_bg_palettes:[u8; 64],
+    pub obpi: u8,
+    pub cgb_obj_palettes:[u8; 64],
+    pub hdma_src: u16,
+    pub hdma_dst: u16,
+    pub hdma_len: u8,
+    pub hdma_active: bool,
+    pub ppu_t_cycle_accum: u32,
+    pub dma_pause_mcycles: u32,
+    pub window_line_counter: u8,
 }
 
 impl CPU {
-    // ── Test / inspection accessors ──────────────────────────────────
     pub fn get_reg_a(&self) -> u8 { self.reg_a }
     pub fn get_reg_b(&self) -> u8 { self.reg_b }
     pub fn get_reg_c(&self) -> u8 { self.reg_c }
@@ -141,7 +133,8 @@ impl CPU {
             stackpointer: 0,
             program_counter: 0,
             interrupt_master_enable: false,
-            boot_mem: [0; 0x10000],
+            boot_mem:[0; 0x10000],
+            boot_rom_len: 0,
             booting: true,
             memory: [0; 0x10000],
             frame_buffer: [0; 160*144],
@@ -155,7 +148,7 @@ impl CPU {
             prev_timer_bit: false,
             consolelog: false,
             show_vram: false,
-            keys: [false; 256],
+            keys:[false; 256],
             ppu_cycles: 0,
             ppu_mcycle_countdown: 0,
             scanline: 0,
@@ -166,7 +159,7 @@ impl CPU {
             mbc_rom_mode: 0,
             mbc_ram_enable: false,
             mbc1_bank2: 0,
-            rom_bank_mask: 1,  // Will be set properly in load_rom
+            rom_bank_mask: 1,
             ram_bank_mask: 0,
             rtc_registers:[0; 5],
             ei_pending: false,
@@ -190,6 +183,33 @@ impl CPU {
             tima_reload_delay: 0,
             tima_reloaded_this_cycle: false,
             is_lcd_turning_on: false,
+            is_cgb: false,
+            double_speed: false,
+            key1: 0,
+            vram_bank: 0,
+            wram_bank: 1,
+            cgb_wram: [[0; 0x1000]; 8],
+            cgb_vram: [[0; 0x2000]; 2],
+            bgpi: 0,
+            cgb_bg_palettes: [0; 64],
+            obpi: 0,
+            cgb_obj_palettes: [0; 64],
+            hdma_src: 0,
+            hdma_dst: 0,
+            hdma_len: 0xFF,
+            hdma_active: false,
+            ppu_t_cycle_accum: 0,
+            dma_pause_mcycles: 0,
+            window_line_counter: 0,
+        }
+    }
+
+    pub fn check_boot_finish(&mut self) {
+        if self.booting && self.boot_rom_len <= 0x100 && self.program_counter == 0x100 {
+            self.booting = false;
+            if self.is_cgb {
+                self.reg_a = 0x11;
+            }
         }
     }
 
@@ -197,12 +217,10 @@ impl CPU {
         self.consolelog = !self.consolelog;
     }
 
-    // ── Tracing ─────────────────────────────────────────────────────────
-
     pub fn toggle_trace(&mut self) {
         self.tracing = !self.tracing;
         if self.tracing {
-            console_log!("🔴 Trace recording started");
+            console_log!(" Trace recording started");
         } else {
             console_log!("⏹ Trace recording stopped ({} lines)", self.trace_buffer.len());
         }
@@ -222,44 +240,35 @@ impl CPU {
         console_log!("Trace cleared ({} lines)", _count);
     }
 
-    // ── Instruction-Level Cycle Tracer ──────────────────────────────────
-
-    /// Enable or disable instruction-level tracing (separate from simple trace)
     pub fn set_instruction_tracing(&mut self, enabled: bool) {
         self.instruction_tracer.set_enabled(enabled);
         if enabled {
-            console_log!("🔵 Instruction-level tracing enabled");
+            console_log!(" Instruction-level tracing enabled");
         } else {
             console_log!("⏹ Instruction-level tracing disabled ({} traces)", self.instruction_tracer.traces.len());
         }
     }
 
-    /// Get the last N instruction traces
     pub fn get_last_traces(&self, n: usize) -> Vec<String> {
         self.instruction_tracer.get_last_n_traces(n)
     }
 
-    /// Export all captured traces as a string
     pub fn export_instruction_traces(&self) -> String {
         self.instruction_tracer.export_as_string()
     }
 
-    /// Export all captured traces as CSV
     pub fn export_instruction_traces_csv(&self) -> String {
         self.instruction_tracer.export_as_csv()
     }
 
-    /// Get statistics about the trace
     pub fn get_trace_statistics(&self) -> String {
         self.instruction_tracer.get_statistics()
     }
 
-    /// Get the number of captured traces
     pub fn trace_count(&self) -> usize {
         self.instruction_tracer.traces.len()
     }
 
-    /// Internal: Capture current instruction in tracer
     fn capture_instruction_trace(&mut self, opcode: u8, is_cb: bool) {
         if !self.instruction_tracer.enabled {
             return;
@@ -271,87 +280,62 @@ impl CPU {
             self.get_opcode_name(opcode).to_string()
         };
 
-        // Capture instruction data
         let pc = self.program_counter;
-        let regs = [
-            self.get_reg_a(),
-            self.get_reg_b(),
-            self.get_reg_c(),
-            self.get_reg_d(),
-            self.get_reg_e(),
-            self.get_reg_h(),
-            self.get_reg_l(),
-            self.get_reg_f(),
+        let regs =[
+            self.get_reg_a(), self.get_reg_b(), self.get_reg_c(), self.get_reg_d(),
+            self.get_reg_e(), self.get_reg_h(), self.get_reg_l(), self.get_reg_f(),
         ];
         let sp = self.get_sp();
         let m_cycles = self.cycles;
         let ime = self.interrupt_master_enable;
 
-        // Now we can call the immutable capture_instruction
         self.instruction_tracer.capture_instruction_final(
             self.instruction_tracer.instr_count,
             self.instruction_tracer.prev_cycles,
-            pc,
-            opcode,
-            is_cb,
-            &mnemonic,
-            regs,
-            sp,
-            m_cycles,
-            ime,
+            pc, opcode, is_cb, &mnemonic, regs, sp, m_cycles, ime,
         );
 
         self.instruction_tracer.instr_count += 1;
         self.instruction_tracer.prev_cycles += m_cycles as u64;
     }
+
     fn opcode_size(opcode: u8) -> u8 {
         match opcode {
-            // 1-byte instructions
             0x00 | 0x02 | 0x03..=0x05 | 0x07 | 0x09..=0x0B | 0x0C..=0x0D | 0x0F |
             0x12..=0x15 | 0x17 | 0x19..=0x1D | 0x1F |
             0x22..=0x25 | 0x27 | 0x29..=0x2D | 0x2F |
             0x32..=0x35 | 0x37 | 0x39..=0x3D | 0x3F |
-            0x40..=0x7F |
-            0x80..=0xBF |
-            0xC0 | 0xC1 | 0xC5 | 0xC7 | 0xC8 | 0xC9 |
-            0xCF |
+            0x40..=0x7F | 0x80..=0xBF |
+            0xC0 | 0xC1 | 0xC5 | 0xC7 | 0xC8 | 0xC9 | 0xCF |
             0xD0 | 0xD1 | 0xD5 | 0xD7 | 0xD8 | 0xD9 | 0xDF |
             0xE1 | 0xE2 | 0xE5 | 0xE7 | 0xE9 | 0xEF |
             0xF1 | 0xF2 | 0xF3 | 0xF5 | 0xF7 | 0xF9 | 0xFB | 0xFF => 1,
-            // 2-byte instructions (immediate byte or relative offset)
             0x06 | 0x0E | 0x10 | 0x16 | 0x18 | 0x1E |
             0x20 | 0x26 | 0x28 | 0x2E | 0x30 | 0x36 | 0x38 | 0x3E |
             0xC6 | 0xCE | 0xD6 | 0xDE | 0xE0 | 0xE6 | 0xE8 | 0xEE |
             0xF0 | 0xF6 | 0xF8 | 0xFE => 2,
-            // CB prefix: 2 bytes total
             0xCB => 2,
-            // 3-byte instructions (immediate 16-bit)
             0x01 | 0x08 | 0x11 | 0x21 | 0x31 |
             0xC2 | 0xC3 | 0xC4 | 0xCA | 0xCC | 0xCD |
-            0xD2 | 0xD4 | 0xDA | 0xDC |
-            0xEA | 0xFA => 3,
+            0xD2 | 0xD4 | 0xDA | 0xDC | 0xEA | 0xFA => 3,
             _ => 1,
         }
     }
 
-    /// Format one trace line at the current PC, BEFORE the instruction is consumed.
-    /// Format: A:XX F:ZNHC BC:XXXX DE:XXXX HL:XXXX SP:XXXX PC:XXXX |[BB]0xXXXX: xx xx xx  name
     fn format_trace_line(&self) -> String {
         let pc = self.program_counter;
         let opcode = self.peek_byte(pc as usize);
         let size = Self::opcode_size(opcode);
 
         let flags = format!("{}{}{}{}",
-            if self.reg_f & 0x80 != 0 { 'Z' } else { '-' },
-            if self.reg_f & 0x40 != 0 { 'N' } else { '-' },
-            if self.reg_f & 0x20 != 0 { 'H' } else { '-' },
-            if self.reg_f & 0x10 != 0 { 'C' } else { '-' },
+                            if self.reg_f & 0x80 != 0 { 'Z' } else { '-' },
+                            if self.reg_f & 0x40 != 0 { 'N' } else { '-' },
+                            if self.reg_f & 0x20 != 0 { 'H' } else { '-' },
+                            if self.reg_f & 0x10 != 0 { 'C' } else { '-' },
         );
 
-        // Determine which ROM bank this PC is in
         let bank: u8 = if pc < 0x4000 { 0x00 } else if pc < 0x8000 { self.rombank as u8 } else { 0x00 };
 
-        // Collect instruction bytes
         let mut hex_bytes = String::new();
         for i in 0..size {
             let b = self.peek_byte(pc.wrapping_add(i as u16) as usize);
@@ -359,7 +343,6 @@ impl CPU {
             hex_bytes.push_str(&format!("{:02x}", b));
         }
 
-        // Read immediate operands
         let imm8 = if size >= 2 { self.peek_byte(pc.wrapping_add(1) as usize) } else { 0 };
         let imm16 = if size >= 3 {
             let lo = self.peek_byte(pc.wrapping_add(1) as usize) as u16;
@@ -367,7 +350,6 @@ impl CPU {
             (hi << 8) | lo
         } else { 0 };
 
-        // Get opcode name with resolved operands
         let name = if opcode == 0xCB {
             let cb_op = self.peek_byte(pc.wrapping_add(1) as usize);
             Self::cb_opcode_name_static(cb_op).to_string()
@@ -377,70 +359,41 @@ impl CPU {
 
         format!(
             "A:{:02X} F:{} BC:{:04x} DE:{:04x} HL:{:04x} SP:{:04x} PC:{:04x} |[{:02x}]0x{:04x}: {:10}{}",
-            self.reg_a, flags,
-            self.bc(), self.de(), self.hl(),
-            self.stackpointer, pc,
-            bank, pc,
-            hex_bytes, name,
+            self.reg_a, flags, self.bc(), self.de(), self.hl(),
+            self.stackpointer, pc, bank, pc, hex_bytes, name,
         )
     }
 
-    /// Resolve immediate operands into the disassembly string.
     fn resolve_operands(opcode: u8, imm8: u8, imm16: u16) -> String {
-        // Signed relative offset for JR instructions
         let rel = imm8 as i8;
         match opcode {
-            // 2-byte with d8 (unsigned immediate)
-            0x06 => format!("ld b,{}", imm8),
-            0x0e => format!("ld c,{}", imm8),
-            0x16 => format!("ld d,{}", imm8),
-            0x1e => format!("ld e,{}", imm8),
-            0x26 => format!("ld h,{}", imm8),
-            0x2e => format!("ld l,{}", imm8),
-            0x36 => format!("ld [hl],{}", imm8),
-            0x3e => format!("ld a,{}", imm8),
-            0xc6 => format!("add a,{}", imm8),
-            0xce => format!("adc a,{}", imm8),
-            0xd6 => format!("sub a,{}", imm8),
-            0xde => format!("sbc a,{}", imm8),
-            0xe6 => format!("and {}", imm8),
-            0xee => format!("xor {}", imm8),
-            0xf6 => format!("or {}", imm8),
-            0xfe => format!("cp a,{}", imm8),
-            // 2-byte with a8 (high-page offset)
+            0x06 => format!("ld b,{}", imm8), 0x0e => format!("ld c,{}", imm8),
+            0x16 => format!("ld d,{}", imm8), 0x1e => format!("ld e,{}", imm8),
+            0x26 => format!("ld h,{}", imm8), 0x2e => format!("ld l,{}", imm8),
+            0x36 => format!("ld [hl],{}", imm8), 0x3e => format!("ld a,{}", imm8),
+            0xc6 => format!("add a,{}", imm8), 0xce => format!("adc a,{}", imm8),
+            0xd6 => format!("sub a,{}", imm8), 0xde => format!("sbc a,{}", imm8),
+            0xe6 => format!("and {}", imm8), 0xee => format!("xor {}", imm8),
+            0xf6 => format!("or {}", imm8), 0xfe => format!("cp a,{}", imm8),
             0xe0 => format!("ldh [${:02x}],a", 0xFF00u16 | imm8 as u16),
             0xf0 => format!("ldh a,[${:02x}]", 0xFF00u16 | imm8 as u16),
-            // 2-byte with r8 (relative jumps)
             0x18 => format!("jr {}{}", if rel >= 0 { "+" } else { "" }, rel),
             0x20 => format!("jr nz,{}{}", if rel >= 0 { "+" } else { "" }, rel),
             0x28 => format!("jr z,{}{}", if rel >= 0 { "+" } else { "" }, rel),
             0x30 => format!("jr nc,{}{}", if rel >= 0 { "+" } else { "" }, rel),
             0x38 => format!("jr c,{}{}", if rel >= 0 { "+" } else { "" }, rel),
-            // 2-byte SP offset
             0xe8 => format!("add sp,{}{}", if rel >= 0 { "+" } else { "" }, rel),
             0xf8 => format!("ld hl,sp{}{}", if rel >= 0 { "+" } else { "" }, rel),
-            // 2-byte STOP
             0x10 => "stop".to_string(),
-            // 3-byte with d16 (16-bit immediate)
-            0x01 => format!("ld bc,{}", imm16),
-            0x11 => format!("ld de,{}", imm16),
-            0x21 => format!("ld hl,{}", imm16),
-            0x31 => format!("ld sp,{}", imm16),
-            // 3-byte with a16 (absolute address)
+            0x01 => format!("ld bc,{}", imm16), 0x11 => format!("ld de,{}", imm16),
+            0x21 => format!("ld hl,{}", imm16), 0x31 => format!("ld sp,{}", imm16),
             0x08 => format!("ld [${:04x}],sp", imm16),
-            0xc2 => format!("jp nz,${:04x}", imm16),
-            0xc3 => format!("jp ${:04x}", imm16),
-            0xc4 => format!("call nz,${:04x}", imm16),
-            0xca => format!("jp z,${:04x}", imm16),
-            0xcc => format!("call z,${:04x}", imm16),
-            0xcd => format!("call ${:04x}", imm16),
-            0xd2 => format!("jp nc,${:04x}", imm16),
-            0xd4 => format!("call nc,${:04x}", imm16),
-            0xda => format!("jp c,${:04x}", imm16),
-            0xdc => format!("call c,${:04x}", imm16),
-            0xea => format!("ld [${:04x}],a", imm16),
-            0xfa => format!("ld a,[${:04x}]", imm16),
-            // All other opcodes (1-byte, no immediate) — use static name
+            0xc2 => format!("jp nz,${:04x}", imm16), 0xc3 => format!("jp ${:04x}", imm16),
+            0xc4 => format!("call nz,${:04x}", imm16), 0xca => format!("jp z,${:04x}", imm16),
+            0xcc => format!("call z,${:04x}", imm16), 0xcd => format!("call ${:04x}", imm16),
+            0xd2 => format!("jp nc,${:04x}", imm16), 0xd4 => format!("call nc,${:04x}", imm16),
+            0xda => format!("jp c,${:04x}", imm16), 0xdc => format!("call c,${:04x}", imm16),
+            0xea => format!("ld[${:04x}],a", imm16), 0xfa => format!("ld a,[${:04x}]", imm16),
             _ => Self::opcode_name_static(opcode).to_string(),
         }
     }
@@ -462,9 +415,9 @@ impl CPU {
             0x26 => "ld h,d8", 0x27 => "daa", 0x28 => "jr z,r8",
             0x29 => "add hl,hl", 0x2a => "ld a,[hl+]", 0x2b => "dec hl",
             0x2c => "inc l", 0x2d => "dec l", 0x2e => "ld l,d8", 0x2f => "cpl",
-            0x30 => "jr nc,r8", 0x31 => "ld sp,d16", 0x32 => "ld [hl-],a",
+            0x30 => "jr nc,r8", 0x31 => "ld sp,d16", 0x32 => "ld[hl-],a",
             0x33 => "inc sp", 0x34 => "inc [hl]", 0x35 => "dec [hl]",
-            0x36 => "ld [hl],d8", 0x37 => "scf", 0x38 => "jr c,r8",
+            0x36 => "ld[hl],d8", 0x37 => "scf", 0x38 => "jr c,r8",
             0x39 => "add hl,sp", 0x3a => "ld a,[hl-]", 0x3b => "dec sp",
             0x3c => "inc a", 0x3d => "dec a", 0x3e => "ld a,d8", 0x3f => "ccf",
             0x40 => "ld b,b", 0x41 => "ld b,c", 0x42 => "ld b,d", 0x43 => "ld b,e",
@@ -479,8 +432,8 @@ impl CPU {
             0x64 => "ld h,h", 0x65 => "ld h,l", 0x66 => "ld h,[hl]", 0x67 => "ld h,a",
             0x68 => "ld l,b", 0x69 => "ld l,c", 0x6a => "ld l,d", 0x6b => "ld l,e",
             0x6c => "ld l,h", 0x6d => "ld l,l", 0x6e => "ld l,[hl]", 0x6f => "ld l,a",
-            0x70 => "ld [hl],b", 0x71 => "ld [hl],c", 0x72 => "ld [hl],d", 0x73 => "ld [hl],e",
-            0x74 => "ld [hl],h", 0x75 => "ld [hl],l", 0x76 => "halt", 0x77 => "ld [hl],a",
+            0x70 => "ld [hl],b", 0x71 => "ld [hl],c", 0x72 => "ld [hl],d", 0x73 => "ld[hl],e",
+            0x74 => "ld [hl],h", 0x75 => "ld [hl],l", 0x76 => "halt", 0x77 => "ld[hl],a",
             0x78 => "ld a,b", 0x79 => "ld a,c", 0x7a => "ld a,d", 0x7b => "ld a,e",
             0x7c => "ld a,h", 0x7d => "ld a,l", 0x7e => "ld a,[hl]", 0x7f => "ld a,a",
             0x80 => "add a,b", 0x81 => "add a,c", 0x82 => "add a,d", 0x83 => "add a,e",
@@ -492,7 +445,7 @@ impl CPU {
             0x98 => "sbc a,b", 0x99 => "sbc a,c", 0x9a => "sbc a,d", 0x9b => "sbc a,e",
             0x9c => "sbc a,h", 0x9d => "sbc a,l", 0x9e => "sbc a,[hl]", 0x9f => "sbc a,a",
             0xa0 => "and b", 0xa1 => "and c", 0xa2 => "and d", 0xa3 => "and e",
-            0xa4 => "and h", 0xa5 => "and l", 0xa6 => "and [hl]", 0xa7 => "and a",
+            0xa4 => "and h", 0xa5 => "and l", 0xa6 => "and[hl]", 0xa7 => "and a",
             0xa8 => "xor b", 0xa9 => "xor c", 0xaa => "xor d", 0xab => "xor e",
             0xac => "xor h", 0xad => "xor l", 0xae => "xor [hl]", 0xaf => "xor a",
             0xb0 => "or b", 0xb1 => "or c", 0xb2 => "or d", 0xb3 => "or e",
@@ -606,7 +559,6 @@ impl CPU {
         console_log!("Color mode: {}", if self.color_mode == 0 { "GBC Color" } else { "DMG Green" });
     }
 
-    /// Cycle through speed multipliers: 1 → 2 → 4 → 8 → 1
     pub fn cycle_speed(&mut self) {
         self.speed_multiplier = match self.speed_multiplier {
             1 => 2,
@@ -624,8 +576,6 @@ impl CPU {
         self.speed_multiplier
     }
 
-    // ── Breakpoints ──────────────────────────────────────────────────────
-
     pub fn add_breakpoint_pc(&mut self, addr: u16) {
         self.breakpoints.push(Breakpoint::Pc(addr));
         console_log!("Breakpoint added: PC == {:04X}  [#{}]", addr, self.breakpoints.len() - 1);
@@ -633,12 +583,12 @@ impl CPU {
 
     pub fn add_breakpoint_reg(&mut self, reg: &str, value: u16) {
         self.breakpoints.push(Breakpoint::Reg(reg.to_ascii_lowercase(), value));
-        console_log!("Breakpoint added: {} == {:04X}  [#{}]", reg, value, self.breakpoints.len() - 1);
+        console_log!("Breakpoint added: {} == {:04X}[#{}]", reg, value, self.breakpoints.len() - 1);
     }
 
     pub fn add_breakpoint_mem(&mut self, addr: u16, value: u8) {
         self.breakpoints.push(Breakpoint::Mem(addr, value));
-        console_log!("Breakpoint added: [${:04X}] == {:02X}  [#{}]", addr, value, self.breakpoints.len() - 1);
+        console_log!("Breakpoint added:[${:04X}] == {:02X}  [#{}]", addr, value, self.breakpoints.len() - 1);
     }
 
     pub fn remove_breakpoint(&mut self, index: usize) {
@@ -683,7 +633,6 @@ impl CPU {
         out
     }
 
-    /// Returns the register value for the given name, or None.
     fn get_reg_value(&self, name: &str) -> Option<u16> {
         match name {
             "a" => Some(self.reg_a as u16),
@@ -704,7 +653,6 @@ impl CPU {
         }
     }
 
-    /// Check all breakpoints against current state. Returns true if any hit.
     pub fn check_breakpoints(&mut self) -> bool {
         if self.breakpoints.is_empty() {
             return false;
@@ -740,7 +688,7 @@ impl CPU {
                     Breakpoint::Opcode(op) => format!("Opcode == ${:02X}", op),
                     Breakpoint::CbOpcode(op) => format!("CbOpcode == ${:02X}", op),
                 };
-                console_log!("🔴 Breakpoint hit: {}  (PC=${:04X})", desc, self.program_counter);
+                console_log!(" Breakpoint hit: {}  (PC=${:04X})", desc, self.program_counter);
                 self.consolelog = true;
                 self.is_paused.store(true, Ordering::Relaxed);
                 return true;
@@ -749,27 +697,19 @@ impl CPU {
         false
     }
 
-    // ── Memory / register inspection ─────────────────────────────────────
-
-    /// Read a single byte via the full read_byte dispatch (respects MBC banking).
     pub fn peek(&self, addr: u16) -> u8 {
         self.peek_byte(addr as usize)
     }
 
-    /// Hex-dump a range of memory. Returns a formatted string like a traditional
-    /// hex viewer: address | hex bytes | ASCII.  Uses read_byte so banked ROM is
-    /// visible.  Max 256 bytes per call to keep output sane.
     pub fn peek_slice(&self, start: u16, len: u16) -> String {
         let len = len.min(256);
         let mut out = String::new();
         let mut addr = start;
         let end = start.wrapping_add(len);
         while addr != end {
-            // Address column
             out.push_str(&format!("{:04X} | ", addr));
             let row_end = addr.wrapping_add(16).min(end);
             let row_len = row_end.wrapping_sub(addr);
-            // Hex bytes
             let row_start = addr;
             for i in 0..16u16 {
                 if i < row_len {
@@ -779,7 +719,6 @@ impl CPU {
                 }
             }
             out.push_str("| ");
-            // ASCII column
             for i in 0..row_len {
                 let b = self.peek_byte(row_start.wrapping_add(i) as usize);
                 out.push(if b >= 0x20 && b < 0x7F { b as char } else { '.' });
@@ -790,13 +729,12 @@ impl CPU {
         out
     }
 
-    /// Return a compact string of all register values + flags.
     pub fn peek_regs(&self) -> String {
         let flags = format!("{}{}{}{}",
-            if self.reg_f & 0x80 != 0 { 'Z' } else { '-' },
-            if self.reg_f & 0x40 != 0 { 'N' } else { '-' },
-            if self.reg_f & 0x20 != 0 { 'H' } else { '-' },
-            if self.reg_f & 0x10 != 0 { 'C' } else { '-' },
+                            if self.reg_f & 0x80 != 0 { 'Z' } else { '-' },
+                            if self.reg_f & 0x40 != 0 { 'N' } else { '-' },
+                            if self.reg_f & 0x20 != 0 { 'H' } else { '-' },
+                            if self.reg_f & 0x10 != 0 { 'C' } else { '-' },
         );
         format!(
             "A:{:02X}  F:{:02X} [{}]\nB:{:02X}  C:{:02X}  BC:{:04X}\nD:{:02X}  E:{:02X}  DE:{:04X}\nH:{:02X}  L:{:02X}  HL:{:04X}\nSP:{:04X}  PC:{:04X}\nIME:{}  HALT:{}  ROM:{:03X}  RAM:{:02X}",
@@ -810,28 +748,39 @@ impl CPU {
     }
 
     pub fn bootload(&mut self, data: Vec<u8>) {
+        self.boot_rom_len = data.len().min(self.boot_mem.len());
         for i in 0..data.len() {
             self.boot_mem[i] = data[i];
         }
     }
-    
+
+    #[inline]
+    fn boot_rom_maps_address(&self, address: usize) -> bool {
+        if !self.booting {
+            return false;
+        }
+
+        if self.boot_rom_len <= 0x100 {
+            return address < self.boot_rom_len;
+        }
+
+        address < 0x100 || (0x200..self.boot_rom_len).contains(&address)
+    }
+
     pub fn load_rom(&mut self, data: Vec<u8>) {
-        // Copy first 32KB (or less) into memory for direct access
         let copy_len = data.len().min(0x8000);
         for i in 0..copy_len {
             self.memory[i] = data[i];
         }
-        // Store full ROM for bank switching
         self.rom = data;
-        let cgb_capable = self.rom.get(0x143).map(|v| (v & 0x80) != 0).unwrap_or(false);
-        self.apu.set_cgb_mode(cgb_capable);
+        let cgb_flag = self.rom.get(0x143).copied().unwrap_or(0);
+        self.is_cgb = cgb_flag == 0x80 || cgb_flag == 0xC0;
+
+        self.apu.set_cgb_mode(self.is_cgb);
         self.cartridge_type = self.memory[0x147];
-        // Compute ROM bank mask: number of banks - 1
-        // Each bank is 16KB, so num_banks = rom_size / 0x4000
         let num_rom_banks = (self.rom.len() / 0x4000).max(2) as u16;
         self.rom_bank_mask = num_rom_banks.next_power_of_two() - 1;
 
-        // Compute RAM mask correctly (MBC2 has 512 bytes implicitly)
         let mut ram_size = self.get_ram_size();
         if self.cartridge_type == 0x05 || self.cartridge_type == 0x06 {
             ram_size = 512;
@@ -839,20 +788,17 @@ impl CPU {
         let num_ram_banks = if ram_size == 0 { 0 } else { (ram_size / 0x2000).max(1) };
         self.ram_bank_mask = if num_ram_banks > 0 { num_ram_banks.next_power_of_two() - 1 } else { 0 };
 
-        console_log!("Cartridge type: {:02X}, ROM size: {} KB, ROM banks: {}, ROM mask: {:03X}, RAM size: {} KB, RAM banks: {}, RAM mask: {:02X}",
-            self.cartridge_type, self.rom.len() / 1024, num_rom_banks, self.rom_bank_mask, ram_size, num_ram_banks, self.ram_bank_mask);
+        console_log!("Cartridge type: {:02X}, ROM size: {} KB, ROM banks: {}, ROM mask: {:03X}, RAM size: {} KB, RAM banks: {}, RAM mask: {:02X}, CGB: {}",
+            self.cartridge_type, self.rom.len() / 1024, num_rom_banks, self.rom_bank_mask, ram_size, num_ram_banks, self.ram_bank_mask, self.is_cgb);
 
-        // Assign GBC-style color palette based on ROM title
         self.gbc_palettes = crate::ppu::gbc_palette_for_rom(&self.rom);
         console_log!("GBC palette assigned for title: '{}'", self.rom_title());
     }
 
-    /// Returns true if the cartridge type has a battery (save-capable)
     pub fn has_battery(&self) -> bool {
         matches!(self.cartridge_type, 0x03 | 0x06 | 0x09 | 0x0D | 0x0F | 0x10 | 0x13 | 0x1B | 0x1E)
     }
 
-    /// Get the ROM title from the cartridge header (0x134-0x143)
     pub fn rom_title(&self) -> String {
         let mut title = String::new();
         for i in 0x134..=0x143 {
@@ -863,7 +809,6 @@ impl CPU {
         title.trim().to_string()
     }
 
-    /// Export external RAM as a flat byte vector (for saving)
     pub fn export_save_ram(&self) -> Vec<u8> {
         let ram_size = self.get_ram_size();
         let num_banks = (ram_size / 0x2000).max(1);
@@ -874,7 +819,6 @@ impl CPU {
         data
     }
 
-    /// Import external RAM from a flat byte vector (for loading saves)
     pub fn import_save_ram(&mut self, data: &[u8]) {
         let ram_size = self.get_ram_size();
         let num_banks = (ram_size / 0x2000).max(1);
@@ -889,16 +833,15 @@ impl CPU {
         console_log!("Loaded save RAM: {} bytes into {} banks", data.len(), num_banks);
     }
 
-    /// Get the external RAM size from the cartridge header (0x149)
     fn get_ram_size(&self) -> usize {
         match self.rom.get(0x149).copied().unwrap_or(0) {
             0x00 => 0,
-            0x01 => 0x800,    // 2 KB (unused officially but some carts use it)
-            0x02 => 0x2000,   // 8 KB  (1 bank)
-            0x03 => 0x8000,   // 32 KB (4 banks)
-            0x04 => 0x20000,  // 128 KB (16 banks)
-            0x05 => 0x10000,  // 64 KB (8 banks)
-            _ => 0x2000,      // Default to 1 bank
+            0x01 => 0x800,
+            0x02 => 0x2000,
+            0x03 => 0x8000,
+            0x04 => 0x20000,
+            0x05 => 0x10000,
+            _ => 0x2000,
         }
     }
 
@@ -915,15 +858,8 @@ impl CPU {
     }
 
     pub fn write_byte(&mut self, address: usize, data: u8) {
-        // Advance system clock by 1 M-cycle for this memory access
         self.tick_timer_4t();
-        //console_log!("Writing to address: {:x}", address);
-        // Debug: track writes to IE register
-        //if address == 0xFFFF {
-            //console_log!("IE write: {:02X} at PC:{:04X} SP:{:04X}", data, self.program_counter, self.stackpointer);
-        //}
-        // Block writes to OAM during active DMA
-        // Block writes to OAM/VRAM during specific PPU modes
+
         if address >= 0xFE00 && address < 0xFEA0 {
             if self.oam_dma_active && self.oam_dma_delay == 0 {
                 return;
@@ -942,7 +878,93 @@ impl CPU {
                 }
             }
         }
-        // Echo RAM mirroring: $E000-$FDFF mirrors $C000-$DDFF
+
+        if self.is_cgb {
+            match address {
+                0xFF4D => {
+                    self.key1 = (self.key1 & 0x80) | (data & 0x01);
+                    return;
+                }
+                0xFF4F => {
+                    self.vram_bank = data & 0x01;
+                    return;
+                }
+                0xFF51 => {
+                    self.hdma_src = (self.hdma_src & 0x00FF) | ((data as u16) << 8);
+                    return;
+                }
+                0xFF52 => {
+                    self.hdma_src = (self.hdma_src & 0xFF00) | (data as u16 & 0xF0);
+                    return;
+                }
+                0xFF53 => {
+                    self.hdma_dst = (self.hdma_dst & 0x00FF) | (((data & 0x1F) as u16) << 8);
+                    return;
+                }
+                0xFF54 => {
+                    self.hdma_dst = (self.hdma_dst & 0xFF00) | (data as u16 & 0xF0);
+                    return;
+                }
+                0xFF55 => {
+                    self.start_hdma(data);
+                    return;
+                }
+                0xFF68 => {
+                    self.bgpi = data;
+                    return;
+                }
+                0xFF69 => {
+                    let idx = (self.bgpi & 0x3F) as usize;
+                    self.cgb_bg_palettes[idx] = data;
+                    if self.bgpi & 0x80 != 0 {
+                        self.bgpi = (self.bgpi & 0x80) | ((self.bgpi + 1) & 0x3F);
+                    }
+                    return;
+                }
+                0xFF6A => {
+                    self.obpi = data;
+                    return;
+                }
+                0xFF6B => {
+                    let idx = (self.obpi & 0x3F) as usize;
+                    self.cgb_obj_palettes[idx] = data;
+                    if self.obpi & 0x80 != 0 {
+                        self.obpi = (self.obpi & 0x80) | ((self.obpi + 1) & 0x3F);
+                    }
+                    return;
+                }
+                0xFF70 => {
+                    let mut b = data & 0x07;
+                    if b == 0 { b = 1; }
+                    self.wram_bank = b;
+                    return;
+                }
+                _ => {}
+            }
+
+            if address >= 0x8000 && address < 0xA000 {
+                self.cgb_vram[self.vram_bank as usize][address - 0x8000] = data;
+                return;
+            }
+            if address >= 0xC000 && address < 0xD000 {
+                self.cgb_wram[0][address - 0xC000] = data;
+                return;
+            }
+            if address >= 0xD000 && address < 0xE000 {
+                self.cgb_wram[self.wram_bank as usize][address - 0xD000] = data;
+                return;
+            }
+            if address >= 0xE000 && address < 0xFE00 {
+                let echo_addr = address - 0x2000;
+                if echo_addr < 0xD000 {
+                    self.cgb_wram[0][echo_addr - 0xC000] = data;
+                } else {
+                    self.cgb_wram[self.wram_bank as usize][echo_addr - 0xD000] = data;
+                }
+                return;
+            }
+        }
+
         if address >= 0xE000 && address < 0xFE00 {
             self.memory[address - 0x2000] = data;
             self.memory[address] = data;
@@ -960,7 +982,6 @@ impl CPU {
                 }
             }
             0xFF10..=0xFF3F => {
-                // APU registers
                 self.apu.write_register(address as u16, data);
             }
             0xFF00 => self.handle_joypad(data),
@@ -969,53 +990,32 @@ impl CPU {
                 self.dma_transfer(data);
                 self.oam_dma_active = true;
                 self.oam_dma_remaining = 161;
-                self.oam_dma_delay = 2; // 1 M-cycle delay before transfer starts
+                self.oam_dma_delay = 2;
             }
             0xFF04 => {
-                // Writing any value to DIV resets the entire 16-bit system counter.
-                // This can cause a falling edge on the timer bit → TIMA tick.
-                // The write_byte already called tick_timer_4t() at the start,
-                // so the falling edge after reset is now checked.
                 let old_bit = self.timer_output_bit();
                 self.sys_counter = 0;
-                // No need to write memory[0xFF04] — peek_byte reads from sys_counter directly.
-                // After reset, check if there was a falling edge (old=1, new=0)
                 if old_bit {
                     self.tick_tima();
                 }
                 self.prev_timer_bit = false;
             }
             0xFF05 => {
-                // TIMA write quirks (matches mooneye-gb tima_write_cycle):
-                // During the reload cycle, writing to TIMA has special behavior:
-                // - If written on the exact cycle TMA was reloaded → write is ignored
-                //   and the TMA value remains in TIMA
-                // - If written during the M-cycle after overflow (tima_reload_delay > 0),
-                //   it aborts the pending reload
                 if self.tima_reloaded_this_cycle {
-                    // Ignored: TIMA already has the TMA value
                 } else if self.tima_reload_delay > 0 {
-                    // Abort the pending reload
                     self.tima_reload_delay = 0;
                     self.memory[0xFF05] = data;
                 } else {
-                    // Normal write
                     self.memory[0xFF05] = data;
                 }
             }
             0xFF06 => {
-                // TMA write quirks (matches mooneye-gb tma_write_cycle):
                 self.memory[0xFF06] = data;
                 if self.tima_reloaded_this_cycle {
-                    // If TMA is written on the exact reload cycle, TIMA catches the new value
                     self.memory[0xFF05] = data;
                 }
             }
             0xFF07 => {
-                // TAC write — changing clock select or enable can cause a falling edge.
-                // The write_byte already called tick_timer_4t() at the start.
-                // We need to check the falling edge for the OLD TAC configuration,
-                // not after writing the new one.
                 let old_tac = self.memory[0xFF07];
                 let old_bit = if (old_tac & 0x04) != 0 {
                     let bit_mask = Self::timer_bit_for_tac(old_tac);
@@ -1024,10 +1024,8 @@ impl CPU {
                     false
                 };
 
-                // Now write the new TAC
                 self.memory[0xFF07] = data;
 
-                // Check for falling edge based on old TAC bit vs. new TAC bit
                 let new_bit = self.timer_output_bit();
                 if old_bit && !new_bit {
                     self.tick_tima();
@@ -1044,10 +1042,11 @@ impl CPU {
                 } else if !was_on && is_on {
                     self.scanline = 0;
                     self.memory[0xFF44] = 0;
+                    self.window_line_counter = 0;
                     self.ppu_cycles = 0;
                     self.ppu_mcycle_countdown = 1;
                     self.is_lcd_turning_on = true;
-                    self.set_ppu_mode(0); // Start in Dummy Mode 0
+                    self.set_ppu_mode(0);
                     self.check_lyc();
                 }
             }
@@ -1057,8 +1056,6 @@ impl CPU {
                 let read_only = old_stat & 0x07;
 
                 if lcd_on {
-                    // DMG STAT write bug: the STAT line is temporarily pulled high
-                    // if ANY of the underlying conditions are active, regardless of enable bit.
                     let mode = old_stat & 0x03;
                     let ly = self.memory[0xFF44];
                     let lyc = self.memory[0xFF45];
@@ -1074,7 +1071,6 @@ impl CPU {
                 self.update_stat_irq_line();
             }
             0xFF44 => {
-                // Writing any value to LY resets it to 0 and rechecks LYC
                 self.memory[0xFF44] = 0;
                 self.check_lyc();
             }
@@ -1084,15 +1080,11 @@ impl CPU {
             }
             0xFF02 => {
                 self.memory[0xFF02] = data;
-                // Serial transfer: when bit 7 is set with internal clock (bit 0)
                 if data == 0x81 {
-                    // Print the serial byte for debug (blargg test output)
                     let sb = self.memory[0xFF01];
                     self.serial_output.push(sb);
                     console_log!("{}", sb as char);
-                    // Transfer complete: clear bit 7
                     self.memory[0xFF02] &= 0x7F;
-                    // Request serial interrupt
                     self.request_interrupt(3);
                 }
             }
@@ -1100,19 +1092,14 @@ impl CPU {
             _ => {
                 match self.cartridge_type {
                     0x0 => {
-                        // ROM only — writes to ROM area must be ignored!
                         if address >= 0x8000 {
                             self.memory[address] = data;
                         }
                     }
-                    // MBC1 write handler (in your big match block):
                     0x1 | 0x2 | 0x3 => {
                         if address < 0x2000 {
                             self.mbc_ram_enable = (data & 0x0F) == 0x0A;
                         } else if address < 0x4000 {
-                            // Store the raw 5-bit value — no masking, no 00→01 here.
-                            // The translation is deferred to read time because the mask
-                            // must be applied BEFORE checking for zero.
                             self.rombank = (data & 0x1F) as u16;
                         } else if address < 0x6000 {
                             self.mbc1_bank2 = data & 0x3;
@@ -1128,21 +1115,17 @@ impl CPU {
                             self.memory[address] = data;
                         }
                     }                    0x05 | 0x06 => {
-                        // MBC2 (Built-in 512x4 bit RAM)
                         if address < 0x4000 {
                             if (address & 0x0100) == 0 {
                                 self.mbc_ram_enable = (data & 0x0F) == 0x0A;
                             } else {
                                 let mut bank = (data & 0x0F) as u16;
                                 if bank == 0 { bank = 1; }
-                                // Apply ROM mask immediately
                                 self.rombank = bank & self.rom_bank_mask;
                             }
                         } else if address < 0x8000 {
-                            // Ignore writes to ROM
                         } else if address >= 0xA000 && address < 0xC000 {
                             if self.mbc_ram_enable {
-                                // MBC2 RAM is only 4 bits wide, 512 bytes, mirrored throughout $A000-$BFFF
                                 let idx = (address - 0xA000) & 0x1FF;
                                 self.ram[0][idx] = data & 0x0F;
                             }
@@ -1151,23 +1134,20 @@ impl CPU {
                         }
                     }
                     0x0F..=0x13 => {
-                        // MBC3 (+TIMER/RTC)
                         if address < 0x2000 {
                             self.mbc_ram_enable = (data & 0x0F) == 0x0A;
                         } else if address < 0x4000 {
                             let mut bank = (data & 0x7F) as u16;
                             if bank == 0 { bank = 1; }
-                            // Apply ROM mask immediately
                             self.rombank = bank & self.rom_bank_mask;
                         } else if address < 0x6000 {
                             if data <= 0x03 {
-                                // Apply RAM mask immediately
                                 self.rambank = data & (self.ram_bank_mask as u8);
                             } else if data >= 0x08 && data <= 0x0C {
-                                self.rambank = data; // RTC registers
+                                self.rambank = data;
                             }
                         } else if address < 0x8000 {
-                            // RTC latch register - ignored for now
+                            // RTC latch register
                         } else if address >= 0xA000 && address < 0xC000 {
                             if self.mbc_ram_enable {
                                 if self.rambank <= 0x03 {
@@ -1181,23 +1161,17 @@ impl CPU {
                         }
                     }
                     0x19..=0x1E => {
-                        // MBC5
                         if address < 0x2000 {
                             self.mbc_ram_enable = (data & 0x0F) == 0x0A;
                         } else if address < 0x3000 {
                             let new_bank = (self.rombank & 0x100) | data as u16;
-                            // Apply ROM mask immediately
                             self.rombank = new_bank & self.rom_bank_mask;
                         } else if address < 0x4000 {
                             let new_bank = (self.rombank & 0xFF) | ((data as u16 & 0x01) << 8);
-                            // Apply ROM mask immediately
                             self.rombank = new_bank & self.rom_bank_mask;
                         } else if address < 0x6000 {
                             let raw_bank = if self.cartridge_type >= 0x1C { data & 0x07 } else { data & 0x0F };
-                            // Apply RAM mask immediately
                             self.rambank = raw_bank & (self.ram_bank_mask as u8);
-                        } else if address < 0x8000 {
-                            // Ignore writes to ROM space
                         } else if address >= 0xA000 && address < 0xC000 {
                             if self.mbc_ram_enable {
                                 self.ram[self.rambank as usize][address - 0xA000] = data;
@@ -1217,8 +1191,6 @@ impl CPU {
     }
 
     fn handle_joypad(&mut self, data: u8) {
-        // Only bits 4-5 are writable (P14/P15 select lines)
-        // Bits 6-7 are unused and always read as 1
         self.memory[0xFF00] = (data & 0x30) | 0xC0;
     }
 
@@ -1226,18 +1198,47 @@ impl CPU {
         let start = (data as u16) << 8;
         self.oam_dma_source = start;
         self.oam_dma_index = 0;
-        // Actual byte-by-byte transfer happens in tick_timer_4t
-        // oam_dma_active, oam_dma_remaining, and oam_dma_delay are set by the caller (write_byte)
     }
 
-    /// Non-mutating memory read — no timer side-effects.
-    /// Use for debug / tracing / DMA where the clock must not advance.
+    fn start_hdma(&mut self, data: u8) {
+        if !self.hdma_active && (data & 0x80) == 0 {
+            // General Purpose DMA
+            let blocks = (data & 0x7F) as u16 + 1;
+            for _ in 0..blocks {
+                self.do_hdma_block();
+            }
+            self.hdma_active = false;
+            self.hdma_len = 0xFF;
+        } else if (data & 0x80) != 0 {
+            // HBlank DMA Start
+            self.hdma_len = data & 0x7F;
+            self.hdma_active = true;
+        } else if self.hdma_active && (data & 0x80) == 0 {
+            // Cancel HBlank DMA
+            self.hdma_active = false;
+            self.hdma_len |= 0x80;
+        }
+    }
+
+    fn do_hdma_block(&mut self) {
+        let src = (self.hdma_src & 0xFFF0) as usize;
+        let dst = ((self.hdma_dst & 0x1FF0) | 0x8000) as usize;
+
+        for i in 0..16 {
+            let val = self.peek_byte(src + i);
+            self.cgb_vram[self.vram_bank as usize][(dst + i) - 0x8000] = val;
+        }
+
+        self.hdma_src = self.hdma_src.wrapping_add(16);
+        self.hdma_dst = self.hdma_dst.wrapping_add(16);
+        if self.hdma_dst >= 0xA000 {
+            self.hdma_dst = 0x8000;
+        }
+
+        self.dma_pause_mcycles += if self.double_speed { 16 } else { 8 };
+    }
+
     pub fn peek_byte(&self, address: usize) -> u8 {
-        // During OAM DMA, reads from OAM return $FF — but only once the
-        // DMA is truly active (delay period has elapsed).  Mooneye's model:
-        //   W+0: request  (OAM accessible)
-        //   W+1: starting (OAM accessible)
-        //   W+2: active   (OAM blocked, first byte transferred next cycle)
         if address >= 0xFE00 && address < 0xFEA0 {
             if self.oam_dma_active && self.oam_dma_delay == 0 {
                 return 0xFF;
@@ -1256,32 +1257,61 @@ impl CPU {
                 }
             }
         }
-        // Hardware register unused bits (read as 1)
-        if address == 0xFF02 { return self.memory[0xFF02] | 0x7E; } // SC
-        if address == 0xFF07 { return self.memory[0xFF07] | 0xF8; } // TAC
-        if address == 0xFF0F { return self.memory[0xFF0F] | 0xE0; } // IF
-        if address == 0xFF41 { return self.memory[0xFF41] | 0x80; } // STAT
-        if address >= 0xFF4C && address <= 0xFF7F && address != 0xFF50 { return 0xFF; }
 
-        // Echo RAM: $E000-$FDFF mirrors $C000-$DDFF
+        if address == 0xFF02 { return self.memory[0xFF02] | 0x7E; }
+        if address == 0xFF07 { return self.memory[0xFF07] | 0xF8; }
+        if address == 0xFF0F { return self.memory[0xFF0F] | 0xE0; }
+        if address == 0xFF41 { return self.memory[0xFF41] | 0x80; }
+
+        if self.is_cgb {
+            if address >= 0xFF4C && address <= 0xFF7F && address != 0xFF50 {
+                match address {
+                    0xFF4D => return (self.key1 & 0x7E) | (if self.double_speed { 0x80 } else { 0 }) | (self.key1 & 0x01) | 0x7E,
+                    0xFF4F => return self.vram_bank | 0xFE,
+                    0xFF51..=0xFF54 => return 0xFF,
+                    0xFF55 => return if self.hdma_active { self.hdma_len & 0x7F } else { 0xFF },
+                    0xFF68 => return self.bgpi | 0x40,
+                    0xFF69 => return self.cgb_bg_palettes[(self.bgpi & 0x3F) as usize],
+                    0xFF6A => return self.obpi | 0x40,
+                    0xFF6B => return self.cgb_obj_palettes[(self.obpi & 0x3F) as usize],
+                    0xFF70 => return self.wram_bank | 0xF8,
+                    _ => {}
+                }
+            }
+
+            if address >= 0x8000 && address < 0xA000 {
+                return self.cgb_vram[self.vram_bank as usize][address - 0x8000];
+            }
+            if address >= 0xC000 && address < 0xD000 {
+                return self.cgb_wram[0][address - 0xC000];
+            }
+            if address >= 0xD000 && address < 0xE000 {
+                return self.cgb_wram[self.wram_bank as usize][address - 0xD000];
+            }
+            if address >= 0xE000 && address < 0xFE00 {
+                let echo_addr = address - 0x2000;
+                if echo_addr < 0xD000 {
+                    return self.cgb_wram[0][echo_addr - 0xC000];
+                } else {
+                    return self.cgb_wram[self.wram_bank as usize][echo_addr - 0xD000];
+                }
+            }
+        }
+
         if address >= 0xE000 && address < 0xFE00 {
             return self.memory[address - 0x2000];
         }
-        // Boot ROM takes priority for addresses 0x00-0xFF during boot
-        if self.booting && address < 0x100 {
+        if self.boot_rom_maps_address(address) {
             return self.boot_mem[address];
         }
         if address == 0xFF00 {
             let select = self.memory[0xFF00];
-            let p14 = select & 0x10 == 0; // direction keys
-            let p15 = select & 0x20 == 0; // button keys
+            let p14 = select & 0x10 == 0;
+            let p15 = select & 0x20 == 0;
 
-            let mut result: u8 = 0x0F; // all unpressed (active low)
+            let mut result: u8 = 0x0F;
 
             if p14 {
-                // P14 selected (low) - direction keys
-                // Bit 0: Right, Bit 1: Left, Bit 2: Up, Bit 3: Down
-                // Active low: 0 = pressed
                 let right = !self.keys[39] as u8;
                 let left = !self.keys[37] as u8;
                 let up = !self.keys[38] as u8;
@@ -1289,9 +1319,6 @@ impl CPU {
                 result &= (down << 3) | (up << 2) | (left << 1) | right;
             }
             if p15 {
-                // P15 selected (low) - button keys
-                // Bit 0: A, Bit 1: B, Bit 2: Select, Bit 3: Start
-                // Active low: 0 = pressed
                 let a = !self.keys[65] as u8;
                 let b = !self.keys[66] as u8;
                 let select_btn = !self.keys[16] as u8;
@@ -1301,11 +1328,9 @@ impl CPU {
 
             return (select & 0x30) | 0xC0 | result;
         }
-        // DIV register is the upper 8 bits of the 16-bit system counter
         if address == 0xFF04 {
             return (self.sys_counter >> 8) as u8;
         }
-        // APU registers
         if address >= 0xFF10 && address <= 0xFF3F {
             return self.apu.read_register(address as u16);
         }
@@ -1318,28 +1343,18 @@ impl CPU {
             }
             0x1 | 0x2 | 0x3 => {
                 if address < 0x4000 {
-                    // Mode 1 low-bank remapping only applies to large ROMs (>512KB, >32 banks)
                     if self.mbc_rom_mode == 1 && self.rom_bank_mask >= 0x20 {
                         let bank = ((self.mbc1_bank2 as usize) << 5) & (self.rom_bank_mask as usize);
                         return self.rom.get(address + bank * 0x4000).copied().unwrap_or(0xFF);
                     }
                     return self.rom.get(address).copied().unwrap_or(0xFF);
                 } else if address < 0x8000 {
-                    // 1. Read the lower 5-bit register
                     let mut lower_5_bits = self.rombank as usize;
-
-                    // 2. The 00 -> 01 translation applies ONLY to these 5 bits BEFORE masking
                     if lower_5_bits == 0 {
                         lower_5_bits = 1;
                     }
-
-                    // 3. Combine with the upper 2 bits
                     let bank2 = (self.mbc1_bank2 as usize) << 5;
                     let bank_raw = bank2 | lower_5_bits;
-
-                    // 4. Finally, apply the hardware ROM mask
-                    // (Notice how you don't even need `if self.rom_bank_mask >= 0x20` here,
-                    // because bitwise ANDing a small mask naturally strips the `bank2` bits away)
                     let bank = bank_raw & (self.rom_bank_mask as usize);
 
                     return self.rom.get(address - 0x4000 + bank * 0x4000).copied().unwrap_or(0xFF);
@@ -1354,14 +1369,12 @@ impl CPU {
                 self.memory[address]
             }
             0x05 | 0x06 => {
-                // MBC2 (Pre-masked! No math required!)
                 if address < 0x4000 {
                     return self.rom.get(address).copied().unwrap_or(0xFF);
                 } else if address < 0x8000 {
                     return self.rom.get(address - 0x4000 + (self.rombank as usize) * 0x4000).copied().unwrap_or(0xFF);
                 } else if address >= 0xA000 && address < 0xC000 {
                     if self.mbc_ram_enable {
-                        // MBC2 RAM leaves top 4 bits unmapped (returns 1s); mirrors throughout $A000-$BFFF
                         let idx = (address - 0xA000) & 0x1FF;
                         return self.ram[0][idx] | 0xF0;
                     }
@@ -1370,7 +1383,6 @@ impl CPU {
                 self.memory[address]
             }
             0x0F..=0x13 => {
-                // MBC3 (Pre-masked!)
                 if address < 0x4000 {
                     return self.rom.get(address).copied().unwrap_or(0xFF);
                 } else if address < 0x8000 {
@@ -1388,7 +1400,6 @@ impl CPU {
                 self.memory[address]
             }
             0x19..=0x1E => {
-                // MBC5 (Pre-masked!)
                 if address < 0x4000 {
                     return self.rom.get(address).copied().unwrap_or(0xFF);
                 } else if address < 0x8000 {
@@ -1405,8 +1416,6 @@ impl CPU {
         }
     }
 
-    /// Ticking memory read — advances the system clock by 1 M-cycle (4 T-cycles).
-    /// Used during instruction execution for every real memory access.
     pub fn read_byte(&mut self, address: usize) -> u8 {
         self.tick_timer_4t();
         self.peek_byte(address)
@@ -1427,7 +1436,7 @@ impl CPU {
     }
 
     pub fn reset(&mut self) {
-        self.reg_a = 0;
+        self.reg_a = if self.is_cgb { 0x11 } else { 0x01 };
         self.reg_b = 0;
         self.reg_c = 0;
         self.reg_d = 0;
@@ -1452,6 +1461,14 @@ impl CPU {
         self.tima_reload_delay = 0;
         self.tima_reloaded_this_cycle = false;
         self.is_lcd_turning_on = false;
+        self.double_speed = false;
+        self.key1 = 0;
+        self.vram_bank = 0;
+        self.wram_bank = 1;
+        self.hdma_active = false;
+        self.ppu_t_cycle_accum = 0;
+        self.dma_pause_mcycles = 0;
+        self.window_line_counter = 0;
     }
 
     fn hl(&self) -> u16 {
@@ -1480,12 +1497,11 @@ impl CPU {
         let tac = self.peek_byte(0xFF07);
         let tima = self.peek_byte(0xFF05);
         let flags = format!("{}{}{}{}",
-            if self.reg_f & 0x80 != 0 { 'Z' } else { '-' },
-            if self.reg_f & 0x40 != 0 { 'N' } else { '-' },
-            if self.reg_f & 0x20 != 0 { 'H' } else { '-' },
-            if self.reg_f & 0x10 != 0 { 'C' } else { '-' },
+                            if self.reg_f & 0x80 != 0 { 'Z' } else { '-' },
+                            if self.reg_f & 0x40 != 0 { 'N' } else { '-' },
+                            if self.reg_f & 0x20 != 0 { 'H' } else { '-' },
+                            if self.reg_f & 0x10 != 0 { 'C' } else { '-' },
         );
-        // Dump a few bytes around PC
         let mut mem_dump = String::new();
         let pc = self.program_counter as usize;
         for i in 0..8 {
@@ -1510,32 +1526,14 @@ impl CPU {
     }
 
     pub fn get_tile_data(&self, base: usize) -> &[u8] {
-        &self.memory[base..base + 0x2000]
-    }
-
-    pub fn _get_sprite(&self, i: u8) -> [u8; 4] {
-        let base = 0xFE00 + i as usize * 4;
-        [
-            self.memory[base],
-            self.memory[base + 1],
-            self.memory[base + 2],
-            self.memory[base + 3],
-        ]
-    }
-
-    /// Direct read-only access to the memory array (for PPU/rendering hot paths
-    /// where addresses are known to always map to self.memory).
-    #[inline]
-    pub fn _memory_ref(&self) -> &[u8; 0x10000] {
-        &self.memory
-    }
-
-    pub fn _get_mem_slice(&self, start: usize, end: usize) -> &[u8] {
-        &self.memory[start..end]
+        if self.is_cgb {
+            &self.cgb_vram[self.vram_bank as usize][base - 0x8000 .. base - 0x8000 + 0x2000]
+        } else {
+            &self.memory[base..base + 0x2000]
+        }
     }
 
     pub fn handle_interrupts(&mut self) {
-
     }
 
     pub fn set_keys(&mut self, key: u32, value: bool) {
@@ -1545,26 +1543,20 @@ impl CPU {
     }
 
     pub fn request_interrupt(&mut self, interrupt: u8) {
-        // 0: V-Blank, 1: LCD STAT, 2: Timer, 3: Serial, 4: Joypad
-        //console_log!("Requesting interrupt: {}", interrupt);
         self.memory[0xFF0F] |= 1 << interrupt;
-        //console_log!("Interrupt flag: {:02X}, IME: {}", self.MEMORY[0xFF0F], self.IME);
     }
 
-    /// Returns the bit index of the system counter monitored for the given TAC clock select.
-    /// TIMA increments on the falling edge of this bit (ANDed with timer enable).
     #[inline(always)]
     fn timer_bit_for_tac(tac: u8) -> u16 {
         match tac & 0x03 {
-            0 => 1 << 9,   // 4096 Hz   — bit 9  (every 1024 T-cycles)
-            1 => 1 << 3,   // 262144 Hz — bit 3  (every 16 T-cycles)
-            2 => 1 << 5,   // 65536 Hz  — bit 5  (every 64 T-cycles)
-            3 => 1 << 7,   // 16384 Hz  — bit 7  (every 256 T-cycles)
+            0 => 1 << 9,
+            1 => 1 << 3,
+            2 => 1 << 5,
+            3 => 1 << 7,
             _ => unreachable!(),
         }
     }
 
-    /// Check the current timer output bit: (selected_sys_counter_bit AND timer_enable).
     fn timer_output_bit(&self) -> bool {
         let tac = self.memory[0xFF07];
         let enabled = tac & 0x04 != 0;
@@ -1575,19 +1567,17 @@ impl CPU {
         (self.sys_counter & bit_mask) != 0
     }
 
-    /// Increment TIMA by one. On overflow, set pending flag for 1-cycle delayed reload.
     #[inline(always)]
     fn tick_tima(&mut self) {
         let tima = self.memory[0xFF05];
         if tima == 0xFF {
             self.memory[0xFF05] = 0x00;
-            self.tima_reload_delay = 1; // Wait 1 full M-cycle to reload and interrupt
+            self.tima_reload_delay = 1;
         } else {
             self.memory[0xFF05] = tima.wrapping_add(1);
         }
     }
 
-    /// Check for a falling edge on the timer output bit and tick TIMA if detected.
     fn check_timer_falling_edge(&mut self) {
         let current_bit = self.timer_output_bit();
         if self.prev_timer_bit && !current_bit {
@@ -1596,31 +1586,21 @@ impl CPU {
         self.prev_timer_bit = current_bit;
     }
 
-    /// Advance the system clock by exactly 1 M-cycle (4 T-cycles).
-    /// Called once per memory access during instruction execution.
-    /// Ticks timer, PPU, APU, and OAM DMA so all components stay in sync.
     #[inline(always)]
     pub fn tick_timer_4t(&mut self) {
-        // 1. Process delayed TIMA reload (exactly 1 M-cycle after overflow)
         self.tima_reloaded_this_cycle = false;
         if self.tima_reload_delay > 0 {
             self.tima_reload_delay -= 1;
             if self.tima_reload_delay == 0 {
-                self.memory[0xFF05] = self.memory[0xFF06]; // Reload from TMA
-                self.request_interrupt(2);                  // Timer interrupt
+                self.memory[0xFF05] = self.memory[0xFF06];
+                self.request_interrupt(2);
                 self.tima_reloaded_this_cycle = true;
             }
         }
 
-        // 2. Tick system counter and check for timer falling edge
-        //    Note: DIV (0xFF04) is read directly from sys_counter in peek_byte,
-        //    so we don't need to write it to memory here.
         self.sys_counter = self.sys_counter.wrapping_add(4);
         self.timer_ticks_this_instr += 1;
 
-        // Only check falling edge if timer is enabled (TAC bit 2),
-        // or if there was a previous high bit that could produce a falling edge
-        // when the counter wraps.
         let tac = self.memory[0xFF07];
         if tac & 0x04 != 0 {
             let bit_mask = Self::timer_bit_for_tac(tac);
@@ -1630,63 +1610,55 @@ impl CPU {
             }
             self.prev_timer_bit = new_bit;
         } else if self.prev_timer_bit {
-            // Timer just got disabled or counter reset — clear the bit
             self.prev_timer_bit = false;
         }
 
-        // 3. Tick PPU by 1 M-cycle
-        self.ppu_tick_mcycle();
+        let tick_ppu_apu = if self.double_speed {
+            self.ppu_t_cycle_accum += 1;
+            if self.ppu_t_cycle_accum >= 2 {
+                self.ppu_t_cycle_accum -= 2;
+                true
+            } else {
+                false
+            }
+        } else {
+            true
+        };
 
-        // 4. Tick APU by 4 T-cycles
-        self.apu.tick(4);
+        if tick_ppu_apu {
+            self.ppu_tick_mcycle();
+            self.apu.tick(4);
+        }
 
-        // 5. Tick OAM DMA (with proper delay and byte-by-byte copy)
         if self.oam_dma_active {
             if self.oam_dma_delay > 0 {
                 self.oam_dma_delay -= 1;
             }
-            if self.oam_dma_delay == 0 {
-                if self.oam_dma_remaining > 0 {
-                    // Only transfer bytes during the first 160 ticks
-                    if self.oam_dma_remaining > 1 {
-                        let source_addr = self.oam_dma_source.wrapping_add(self.oam_dma_index as u16);
-                        let byte = self.peek_byte(source_addr as usize);
-                        self.memory[0xFE00 + self.oam_dma_index as usize] = byte;
-                        self.oam_dma_index += 1;
-                    }
-
-                    self.oam_dma_remaining -= 1;
-
-                    if self.oam_dma_remaining == 0 {
-                        self.oam_dma_active = false;
-                    }
+            if self.oam_dma_delay == 0 && self.oam_dma_remaining > 0 {
+                if self.oam_dma_remaining > 1 {
+                    let source_addr = self.oam_dma_source.wrapping_add(self.oam_dma_index as u16);
+                    let byte = self.peek_byte(source_addr as usize);
+                    self.memory[0xFE00 + self.oam_dma_index as usize] = byte;
+                    self.oam_dma_index += 1;
+                }
+                self.oam_dma_remaining -= 1;
+                if self.oam_dma_remaining == 0 {
+                    self.oam_dma_active = false;
                 }
             }
         }
     }
 
-    /// Advance the PPU by exactly 1 M-cycle.
-    /// Uses a countdown timer like mooneye-gb: each mode has an M-cycle count
-    /// that decrements once per call. Mode transitions happen when it reaches 0.
-    ///
-    /// M-cycle durations (matching mooneye-gb):
-    ///   Mode 2 (OAM scan)   = 21 M-cycles  (84 T-cycles)
-    ///   Mode 3 (pixel xfer) = 43 M-cycles  (172 T-cycles) + scroll adjust
-    ///   Mode 0 (HBlank)     = 50 M-cycles  (200 T-cycles) - scroll adjust
-    ///   Mode 1 (VBlank)     = 114 M-cycles (456 T-cycles) per line
     fn ppu_tick_mcycle(&mut self) {
         let lcd_on = (self.memory[0xFF40] & 0x80) != 0;
         if !lcd_on {
             return;
         }
 
-        // Decrement the M-cycle countdown
         if self.ppu_mcycle_countdown > 0 {
             self.ppu_mcycle_countdown -= 1;
         }
 
-        // Line 153 LY quirk: LY is only 153 for 1 M-cycle, then resets to 0
-        // for the remaining 113 M-cycles of that line.
         if self.scanline == 153 && self.ppu_mcycle_countdown == 113 {
             self.memory[0xFF44] = 0;
             self.check_lyc();
@@ -1694,9 +1666,6 @@ impl CPU {
 
         let current_mode = self.memory[0xFF41] & 0b11;
 
-        // HBlank STAT interrupt fires 1 M-cycle BEFORE the actual mode switch
-        // (when countdown reaches 1 during mode 3).
-        // The update_stat_irq_line() handles the early_hblank condition internally.
         if self.ppu_mcycle_countdown == 1 && current_mode == 3 {
             self.update_stat_irq_line();
         }
@@ -1705,16 +1674,13 @@ impl CPU {
             return;
         }
 
-        // Mode transition
         match current_mode {
             2 => {
-                // OAM scan done → Pixel transfer (mode 3)
                 let scroll_adjust = self.ppu_scroll_adjust();
                 self.ppu_mcycle_countdown = 43 + scroll_adjust;
                 self.set_ppu_mode(3);
             }
             3 => {
-                // Pixel transfer done → HBlank (mode 0); draw the scanline
                 let scroll_adjust = self.ppu_scroll_adjust();
                 self.ppu_mcycle_countdown = 50 - scroll_adjust;
                 crate::ppu::draw_scanline(self);
@@ -1727,30 +1693,26 @@ impl CPU {
                     self.set_ppu_mode(2);
                     return;
                 }
-                // HBlank done → advance to next scanline
                 self.scanline += 1;
                 self.memory[0xFF44] = self.scanline;
                 self.check_lyc();
 
                 if self.scanline >= 144 {
-                    // Enter VBlank
                     self.ppu_mcycle_countdown = 114;
                     self.set_ppu_mode(1);
-                    self.request_interrupt(0); // V-Blank interrupt
+                    self.request_interrupt(0);
                 } else {
-                    // Next OAM scan
                     self.ppu_mcycle_countdown = 21;
                     self.set_ppu_mode(2);
                 }
             }
             1 => {
-                // VBlank: one scanline elapsed
                 self.scanline += 1;
 
                 if self.scanline > 153 {
-                    // VBlank finished → new frame
                     self.scanline = 0;
                     self.memory[0xFF44] = 0;
+                    self.window_line_counter = 0;
                     self.check_lyc();
                     self.ppu_mcycle_countdown = 21;
                     self.set_ppu_mode(2);
@@ -1768,7 +1730,6 @@ impl CPU {
         }
     }
 
-    /// Compute scroll_x-based mode 3 cycle adjustment (matching mooneye-gb).
     fn ppu_scroll_adjust(&self) -> u32 {
         let scx = self.memory[0xFF43] % 8;
         match scx {
@@ -1779,13 +1740,9 @@ impl CPU {
     }
 
     pub fn handle_timer(&mut self, _t_cycles: u32) {
-        // Timer is now ticked per-M-cycle inside read_byte / write_byte.
-        // This method is kept for API compatibility but does nothing.
     }
 
     pub fn update_apu(&mut self, _t_cycles: u32) {
-        // APU is now ticked per-M-cycle inside tick_timer_4t.
-        // This method is kept for API compatibility but does nothing.
     }
 
     pub fn get_audio_buffer(&mut self) -> Vec<f32> {
@@ -1793,20 +1750,16 @@ impl CPU {
     }
 
     pub fn update_ppu(&mut self, _cycles: u32) {
-        // PPU is now ticked per-M-cycle inside tick_timer_4t via ppu_tick_4t.
-        // This method is kept for API compatibility but does nothing.
     }
 
-    /// Check LYC=LY coincidence (matching mooneye's check_compare_interrupt).
     fn check_lyc(&mut self) {
         let ly = self.memory[0xFF44];
         let lyc = self.memory[0xFF45];
         if ly == lyc {
-            self.memory[0xFF41] |= 0x04; // Set coincidence flag
+            self.memory[0xFF41] |= 0x04;
         } else {
-            self.memory[0xFF41] &= !0x04; // Clear coincidence flag
+            self.memory[0xFF41] &= !0x04;
         }
-        // Re-evaluate STAT line after changing the coincidence flag
         self.update_stat_irq_line();
     }
 
@@ -1816,23 +1769,29 @@ impl CPU {
         self.ppu_cycles = 0;
         self.ppu_mcycle_countdown = 0;
         self.scanline = 0;
+        self.window_line_counter = 0;
         self.prev_stat_line = false;
     }
 
-
-
     fn set_ppu_mode(&mut self, mode: u8) {
-        // Write mode bits directly to memory (lower 2 bits of STAT)
+        let old_mode = self.memory[0xFF41] & 0x03;
         self.memory[0xFF41] = (self.memory[0xFF41] & 0b11111100) | (mode & 0x03);
 
-        // Evaluate STAT line instead of direct interrupt requests
         if (self.memory[0xFF40] & 0x80) != 0 {
             self.update_stat_irq_line();
         }
+
+        if self.is_cgb && mode == 0 && old_mode != 0 && self.hdma_active {
+            self.do_hdma_block();
+            if self.hdma_len == 0 {
+                self.hdma_active = false;
+                self.hdma_len = 0xFF;
+            } else {
+                self.hdma_len -= 1;
+            }
+        }
     }
 
-    /// Evaluate the combined STAT interrupt line and fire on rising edge.
-    /// All STAT conditions combine into a single wire; interrupt fires only on 0→1 transition.
     fn update_stat_irq_line(&mut self) {
         let stat = self.memory[0xFF41];
         let mode = stat & 0x03;
@@ -1840,8 +1799,6 @@ impl CPU {
         let lyc = self.memory[0xFF45];
 
         let hblank_trigger = mode == 0 && (stat & 0x08 != 0);
-
-        // DMG Quirk: During VBlank, OAM STAT (bit 5) can also trigger the line
         let vblank_trigger = mode == 1 && ((stat & 0x10 != 0) || (stat & 0x20 != 0));
 
         let line = hblank_trigger
@@ -1872,538 +1829,37 @@ impl CPU {
     }
 
     pub fn get_opcode_name(&mut self, opcode: u8) -> &'static str {
-        match opcode {
-            0x00 => "nop",
-            0x01 => "ldbca16",
-            0x02 => "ldhbca",
-            0x3 => "incbc",
-            0x4 => "incb",
-            0x5 => "decb",
-            0x6 => "ldb",
-            0x7 => "rlca",
-            0x8 => "lda16sp",
-            0x9 => "addhlbc",
-            0xa => "ldabc",
-            0xb => "decbc",
-            0xc => "incc",
-            0xd => "decc",
-            0xe => "ldc",
-            0xf => "rrca",
-            0x10 => "stop",
-            0x11 => "ldded16",
-            0x12 => "ldhdea",
-            0x13 => "incde",
-            0x14 => "incd",
-            0x15 => "decd",
-            0x16 => "ldd",
-            0x17 => "rla",
-            0x18 => "jr",
-            0x19 => "addhlde",
-            0x1a => "ldade",
-            0x1b => "decde",
-            0x1c => "ince",
-            0x1d => "dece",
-            0x1e => "lde",
-            0x1f => "rra",
-            0x20 => "jrnz",
-            0x21 => "ldhl16",
-            0x22 => "ldhlplusa",
-            0x23 => "inchl",
-            0x24 => "inch",
-            0x25 => "dech",
-            0x26 => "ldha8",
-            0x27 => "daa",
-            0x28 => "jrz",
-            0x29 => "addhlhl",
-            0x2a => "ldahlplus",
-            0x2b => "dechl",
-            0x2c => "incl",
-            0x2d => "decl",
-            0x2e => "ldl",
-            0x2f => "cplm",
-            0x30 => "jrncr8",
-            0x31 => "ldsp16",
-            0x32 => "ldhlmina",
-            0x33 => "incsp",
-            0x34 => "inchhl",
-            0x35 => "dechhl",
-            0x36 => "ldhla8",
-            0x37 => "scf",
-            0x38 => "jrcr8",
-            0x39 => "addhlsp",
-            0x3a => "ldahlmin",
-            0x3b => "decsp",
-            0x3c => "inca",
-            0x3d => "deca",
-            0x3e => "lda",
-            0x3f => "ccf",
-            0x40 => "ldbb",
-            0x41 => "ldbc",
-            0x42 => "ldbd",
-            0x43 => "ldbe",
-            0x44 => "ldbh",
-            0x45 => "ldbl",
-            0x46 => "ldbhl",
-            0x47 => "ldba",
-            0x48 => "ldcb",
-            0x49 => "ldcc",
-            0x4a => "ldcd",
-            0x4b => "ldce",
-            0x4c => "ldch",
-            0x4d => "ldcl",
-            0x4e => "ldchl",
-            0x4f => "ldca",
-            0x50 => "lddb",
-            0x51 => "lddc",
-            0x52 => "lddd",
-            0x53 => "ldde",
-            0x54 => "lddh",
-            0x55 => "lddl",
-            0x56 => "lddhl",
-            0x57 => "ldda",
-            0x58 => "ldeb",
-            0x59 => "ldec",
-            0x5a => "lded",
-            0x5b => "ldee",
-            0x5c => "ldeh",
-            0x5d => "ldel",
-            0x5e => "ldehl",
-            0x5f => "ldea",
-            0x60 => "ldhb",
-            0x61 => "ldhc",
-            0x62 => "ldhd",
-            0x63 => "ldhe",
-            0x64 => "ldhh",
-            0x65 => "ldhl",
-            0x66 => "ldhhl",
-            0x67 => "ldha",
-            0x68 => "ldlb",
-            0x69 => "ldlc",
-            0x6a => "ldld",
-            0x6b => "ldle",
-            0x6c => "ldlh",
-            0x6d => "ldll",
-            0x6e => "ldlhl",
-            0x6f => "ldla",
-            0x70 => "ldhlb",
-            0x71 => "ldhlc",
-            0x72 => "ldhld",
-            0x73 => "ldhle",
-            0x74 => "ldhlh",
-            0x75 => "ldhll",
-            0x76 => "halt",
-            0x77 => "ldhla",
-            0x78 => "ldab",
-            0x79 => "ldac",
-            0x7a => "ldad",
-            0x7b => "ldae",
-            0x7c => "ldah",
-            0x7d => "ldal",
-            0x7e => "ldahl",
-            0x7f => "ldaa",
-            0x80 => "addab",
-            0x81 => "addac",
-            0x82 => "addad",
-            0x83 => "addae",
-            0x84 => "addah",
-            0x85 => "addal",
-            0x86 => "addahl",
-            0x87 => "addaa",
-            0x88 => "adcab",
-            0x89 => "adcac",
-            0x8a => "adcad",
-            0x8b => "adcae",
-            0x8c => "adcah",
-            0x8d => "adcal",
-            0x8e => "adcahl",
-            0x8f => "adcaa",
-            0x90 => "subb",
-            0x91 => "subc",
-            0x92 => "subd",
-            0x93 => "sube",
-            0x94 => "subh",
-            0x95 => "subl",
-            0x96 => "subhl",
-            0x97 => "suba",
-            0x98 => "sbcab",
-            0x99 => "sbcac",
-            0x9a => "sbcad",
-            0x9b => "sbcae",
-            0x9c => "sbcah",
-            0x9d => "sbcal",
-            0x9e => "sbcahl",
-            0x9f => "sbcaa",
-            0xa0 => "andb",
-            0xa1 => "andc",
-            0xa2 => "andd",
-            0xa3 => "ande",
-            0xa4 => "andh",
-            0xa5 => "andl",
-            0xa6 => "andhl",
-            0xa7 => "anda",
-            0xa8 => "xorb",
-            0xa9 => "xorc",
-            0xaa => "xord",
-            0xab => "xore",
-            0xac => "xorh",
-            0xad => "xorl",
-            0xae => "xorhl",
-            0xaf => "xora",
-            0xb0 => "orb",
-            0xb1 => "orc",
-            0xb2 => "ord",
-            0xb3 => "ore",
-            0xb4 => "orh",
-            0xb5 => "orl",
-            0xb6 => "orhl",
-            0xb7 => "ora",
-            0xb8 => "cpb",
-            0xb9 => "cpc",
-            0xba => "cpd",
-            0xbb => "cpe",
-            0xbc => "cph",
-            0xbd => "cpl",
-            0xbe => "cphl",
-            0xbf => "cpa",
-            0xc0 => "retnz",
-            0xc1 => "popbc",
-            0xc2 => "jpnza16",
-            0xc3 => "jp",
-            0xc4 => "callnza16",
-            0xc5 => "pushbc",
-            0xc6 => "adda8",
-            0xc7 => "rst00h",
-            0xc8 => "retz",
-            0xc9 => "ret",
-            0xca => "jpza16",
-            0xcb => "execute_cb",
-            0xcc => "callza16",
-            0xcd => "calla16",
-            0xce => "adcaa8",
-            0xcf => "rst08h",
-            0xd0 => "retnc",
-            0xd1 => "popde",
-            0xd2 => "jpnca16",
-            0xd4 => "callnca16",
-            0xd5 => "pushde",
-            0xd6 => "suba8",
-            0xd7 => "rst10h",
-            0xd8 => "retc",
-            0xd9 => "reti",
-            0xda => "jpca16",
-            0xdc => "callca16",
-            0xde => "sbca8",
-            0xdf => "rst18h",
-            0xe0 => "ldha8a",
-            0xe1 => "pophl",
-            0xe2 => "ldhca",
-            0xe5 => "pushhl",
-            0xe6 => "anda8",
-            0xe7 => "rst20h",
-            0xe8 => "addspr8",
-            0xe9 => "jphl",
-            0xea => "lda16a",
-            0xee => "xora8",
-            0xef => "rst28h",
-            0xf0 => "ldhaa8",
-            0xf1 => "popaf",
-            0xf2 => "ldahc",
-            0xf3 => "di",
-            0xf5 => "pushaf",
-            0xf6 => "ora8",
-            0xf7 => "rst30h",
-            0xf8 => "ldhlspr8",
-            0xf9 => "ldsphl",
-            0xfa => "ldaa16",
-            0xfb => "ei",
-            0xfe => "cp",
-            0xff => "rst38h",
-            _ => {
-                "UNKNOWN"
-            }
-        }
+        Self::opcode_name_static(opcode)
     }
 
     pub fn get_extra_opcode_name(&mut self, opcode: u8) -> &'static str {
-        match opcode {
-            0x00 => "rlcb",
-            0x01 => "rlcc",
-            0x02 => "rlcd",
-            0x03 => "rlce",
-            0x04 => "rlch",
-            0x05 => "rlcl",
-            0x06 => "rlchl",
-            0x07 => "cb_rlca",
-            0x08 => "rrcb",
-            0x09 => "rrcc",
-            0x0a => "rrcd",
-            0x0b => "rrce",
-            0x0c => "rrch",
-            0x0d => "rrcl",
-            0x0e => "rrchl",
-            0x0f => "cb_rrca",
-            0x10 => "rlb",
-            0x11 => "rlc",
-            0x12 => "rld",
-            0x13 => "rle",
-            0x14 => "rlh",
-            0x15 => "rll",
-            0x16 => "rlhl",
-            0x17 => "cb_rla",
-            0x18 => "rrb",
-            0x19 => "rrc",
-            0x1a => "rrd",
-            0x1b => "rre",
-            0x1c => "rrh",
-            0x1d => "rrl",
-            0x1e => "rrhl",
-            0x1f => "cb_rra",
-            0x20 => "slab",
-            0x21 => "slac",
-            0x22 => "slad",
-            0x23 => "slae",
-            0x24 => "slah",
-            0x25 => "slal",
-            0x26 => "slahl",
-            0x27 => "slaa",
-            0x28 => "srab",
-            0x29 => "srac",
-            0x2a => "srad",
-            0x2b => "srae",
-            0x2c => "srah",
-            0x2d => "sral",
-            0x2e => "srahl",
-            0x2f => "sraa",
-            0x30 => "swapb",
-            0x31 => "swapc",
-            0x32 => "swapd",
-            0x33 => "swape",
-            0x34 => "swaph",
-            0x35 => "swapl",
-            0x36 => "swaphl",
-            0x37 => "swapa",
-            0x38 => "srlb",
-            0x39 => "srlc",
-            0x3a => "srld",
-            0x3b => "srle",
-            0x3c => "srlh",
-            0x3d => "srll",
-            0x3e => "srlhl",
-            0x3f => "srla",
-            0x40 => "bit0b",
-            0x41 => "bit0c",
-            0x42 => "bit0d",
-            0x43 => "bit0e",
-            0x44 => "bit0h",
-            0x45 => "bit0l",
-            0x46 => "bit0hl",
-            0x47 => "bit0a",
-            0x48 => "bit1b",
-            0x49 => "bit1c",
-            0x4a => "bit1d",
-            0x4b => "bit1e",
-            0x4c => "bit1h",
-            0x4d => "bit1l",
-            0x4e => "bit1hl",
-            0x4f => "bit1a",
-            0x50 => "bit2b",
-            0x51 => "bit2c",
-            0x52 => "bit2d",
-            0x53 => "bit2e",
-            0x54 => "bit2h",
-            0x55 => "bit2l",
-            0x56 => "bit2hl",
-            0x57 => "bit2a",
-            0x58 => "bit3b",
-            0x59 => "bit3c",
-            0x5a => "bit3d",
-            0x5b => "bit3e",
-            0x5c => "bit3h",
-            0x5d => "bit3l",
-            0x5e => "bit3hl",
-            0x5f => "bit3a",
-            0x60 => "bit4b",
-            0x61 => "bit4c",
-            0x62 => "bit4d",
-            0x63 => "bit4e",
-            0x64 => "bit4h",
-            0x65 => "bit4l",
-            0x66 => "bit4hl",
-            0x67 => "bit4a",
-            0x68 => "bit5b",
-            0x69 => "bit5c",
-            0x6a => "bit5d",
-            0x6b => "bit5e",
-            0x6c => "bit5h",
-            0x6d => "bit5l",
-            0x6e => "bit5hl",
-            0x6f => "bit5a",
-            0x70 => "bit6b",
-            0x71 => "bit6c",
-            0x72 => "bit6d",
-            0x73 => "bit6e",
-            0x74 => "bit6h",
-            0x75 => "bit6l",
-            0x76 => "bit6hl",
-            0x77 => "bit6a",
-            0x78 => "bit7b",
-            0x79 => "bit7c",
-            0x7a => "bit7d",
-            0x7b => "bit7e",
-            0x7c => "bit7h",
-            0x7d => "bit7l",
-            0x7e => "bit7hl",
-            0x7f => "bit7a",
-            0x80 => "res0b",
-            0x81 => "res0c",
-            0x82 => "res0d",
-            0x83 => "res0e",
-            0x84 => "res0h",
-            0x85 => "res0l",
-            0x86 => "res0hl",
-            0x87 => "res0a",
-            0x88 => "res1b",
-            0x89 => "res1c",
-            0x8a => "res1d",
-            0x8b => "res1e",
-            0x8c => "res1h",
-            0x8d => "res1l",
-            0x8e => "res1hl",
-            0x8f => "res1a",
-            0x90 => "res2b",
-            0x91 => "res2c",
-            0x92 => "res2d",
-            0x93 => "res2e",
-            0x94 => "res2h",
-            0x95 => "res2l",
-            0x96 => "res2hl",
-            0x97 => "res2a",
-            0x98 => "res3b",
-            0x99 => "res3c",
-            0x9a => "res3d",
-            0x9b => "res3e",
-            0x9c => "res3h",
-            0x9d => "res3l",
-            0x9e => "res3hl",
-            0x9f => "res3a",
-            0xa0 => "res4b",
-            0xa1 => "res4c",
-            0xa2 => "res4d",
-            0xa3 => "res4e",
-            0xa4 => "res4h",
-            0xa5 => "res4l",
-            0xa6 => "res4hl",
-            0xa7 => "res4a",
-            0xa8 => "res5b",
-            0xa9 => "res5c",
-            0xaa => "res5d",
-            0xab => "res5e",
-            0xac => "res5h",
-            0xad => "res5l",
-            0xae => "res5hl",
-            0xaf => "res5a",
-            0xb0 => "res6b",
-            0xb1 => "res6c",
-            0xb2 => "res6d",
-            0xb3 => "res6e",
-            0xb4 => "res6h",
-            0xb5 => "res6l",
-            0xb6 => "res6hl",
-            0xb7 => "res6a",
-            0xb8 => "res7b",
-            0xb9 => "res7c",
-            0xba => "res7d",
-            0xbb => "res7e",
-            0xbc => "res7h",
-            0xbd => "res7l",
-            0xbe => "res7hl",
-            0xbf => "res7a",
-            0xc0 => "set0b",
-            0xc1 => "set0c",
-            0xc2 => "set0d",
-            0xc3 => "set0e",
-            0xc4 => "set0h",
-            0xc5 => "set0l",
-            0xc6 => "set0hl",
-            0xc7 => "set0a",
-            0xc8 => "set1b",
-            0xc9 => "set1c",
-            0xca => "set1d",
-            0xcb => "set1e",
-            0xcc => "set1h",
-            0xcd => "set1l",
-            0xce => "set1hl",
-            0xcf => "set1a",
-            0xd0 => "set2b",
-            0xd1 => "set2c",
-            0xd2 => "set2d",
-            0xd3 => "set2e",
-            0xd4 => "set2h",
-            0xd5 => "set2l",
-            0xd6 => "set2hl",
-            0xd7 => "set2a",
-            0xd8 => "set3b",
-            0xd9 => "set3c",
-            0xda => "set3d",
-            0xdb => "set3e",
-            0xdc => "set3h",
-            0xdd => "set3l",
-            0xde => "set3hl",
-            0xdf => "set3a",
-            0xe0 => "set4b",
-            0xe1 => "set4c",
-            0xe2 => "set4d",
-            0xe3 => "set4e",
-            0xe4 => "set4h",
-            0xe5 => "set4l",
-            0xe6 => "set4hl",
-            0xe7 => "set4a",
-            0xe8 => "set5b",
-            0xe9 => "set5c",
-            0xea => "set5d",
-            0xeb => "set5e",
-            0xec => "set5h",
-            0xed => "set5l",
-            0xee => "set5hl",
-            0xef => "set5a",
-            0xf0 => "set6b",
-            0xf1 => "set6c",
-            0xf2 => "set6d",
-            0xf3 => "set6e",
-            0xf4 => "set6h",
-            0xf5 => "set6l",
-            0xf6 => "set6hl",
-            0xf7 => "set6a",
-            0xf8 => "set7b",
-            0xf9 => "set7c",
-            0xfa => "set7d",
-            0xfb => "set7e",
-            0xfc => "set7h",
-            0xfd => "set7l",
-            0xfe => "set7hl",
-            0xff => "set7a",
-        }
+        Self::cb_opcode_name_static(opcode)
     }
 
     pub fn execute(&mut self) {
+        if self.dma_pause_mcycles > 0 {
+            for _ in 0..self.dma_pause_mcycles {
+                self.tick_timer_4t();
+            }
+            self.cycles += self.dma_pause_mcycles;
+            self.dma_pause_mcycles = 0;
+        }
+
         let was_ei_pending = self.ei_pending;
         self.timer_ticks_this_instr = 0;
         let cycles_before = self.cycles;
 
-        // Interrupt dispatch happens between instructions, before the next opcode fetch.
         let pending_interrupts = self.memory[0xFF0F] & self.memory[0xFFFF] & 0x1F;
         if self.interrupt_master_enable && pending_interrupts != 0 && !self.halt {
             self.interrupt_master_enable = false;
             self.halt_bug = false;
             self.ei_pending = false;
 
-            // 5 M-cycles total: 3 internal cycles + 2 stack writes.
             self.tick_timer_4t();
             self.tick_timer_4t();
             self.tick_timer_4t();
             self.push(self.program_counter);
 
-            // Re-evaluate priority at service point to allow interrupt hijacking.
             let current_valid = self.memory[0xFF0F] & self.memory[0xFFFF] & 0x1F;
             let mut final_i = 0;
             for j in 0..5 {
@@ -2427,12 +1883,10 @@ impl CPU {
             return;
         }
 
-        // If halted, spin 1 M-cycle without fetching/executing instructions.
         if self.halt {
             self.tick_timer_4t();
             self.cycles += 1;
 
-            // Check if an interrupt fired during this tick to wake up
             let valid_interrupts = self.memory[0xFF0F] & self.memory[0xFFFF] & 0x1F;
             if valid_interrupts != 0 {
                 self.halt = false;
@@ -2445,10 +1899,8 @@ impl CPU {
             return;
         }
 
-        // M1: Fetch opcode (this ticks timer/PPU/APU/DMA by 1 M-cycle)
         let opcode = self.read_byte(self.program_counter as usize);
 
-        // Normal execution continues...
         if self.tracing {
             let line = self.format_trace_line();
             self.trace_buffer.push(line);
@@ -2672,7 +2124,6 @@ impl CPU {
             0xcb => {
                 let cb_opcode = self.read();
                 self.execute_cb_with_opcode(cb_opcode);
-                // Capture CB instruction trace AFTER execution
                 self.capture_instruction_trace(cb_opcode, true);
             },
             0xcc => self.callza16(),
@@ -2717,21 +2168,14 @@ impl CPU {
             0xfe => self.cp(),
             0xff => self.rst38h(),
             _ => {
-                self.cycles+=1
-                //panic!("Unknown opcode: 0x{:02X} at PC=0x{:04X} | AF={:04X} BC={:04X} DE={:04X} HL={:04X} SP={:04X}",
-                //    opcode, self.program_counter.wrapping_sub(1), self.af(), self.bc(), self.de(), self.hl(), self.stackpointer);
+                self.cycles += 1;
             }
         }
 
-        // Capture instruction trace (if enabled) for non-CB instructions
-        // CB instructions are captured separately in execute_cb_with_opcode
         if opcode != 0xCB {
             self.capture_instruction_trace(opcode, false);
         }
 
-        // Tick the timer for any "internal" M-cycles that didn't involve
-        // a memory access (and thus weren't covered by read_byte / write_byte).
-        // Only count M-cycles from THIS instruction (exclude handle_interrupts cycles).
         let instr_m_cycles = self.cycles - cycles_before;
         if instr_m_cycles > self.timer_ticks_this_instr {
             let remaining = instr_m_cycles - self.timer_ticks_this_instr;
@@ -2740,8 +2184,6 @@ impl CPU {
             }
         }
 
-        // Delayed EI: if EI was pending from a previous instruction and
-        // wasn't cancelled by this instruction (e.g., DI), enable IME now
         if was_ei_pending && self.ei_pending {
             self.interrupt_master_enable = true;
             self.ei_pending = false;
@@ -3020,7 +2462,6 @@ impl CPU {
     }
 
     fn nop(&mut self) {
-        // NOP
         self.cycles += 1;
     }
 
@@ -3039,11 +2480,11 @@ impl CPU {
         let data = ((self.reg_b as u16) << 8 | self.reg_c as u16).wrapping_add(1);
         self.reg_b = (data >> 8) as u8;
         self.reg_c = data as u8;
-        self.tick_timer_4t();                  // M2: internal
+        self.tick_timer_4t();
         self.cycles += 2;
     }
 
-    fn incb(&mut self) { 
+    fn incb(&mut self) {
         self.set_flag_bit(5, (self.reg_b & 0x0F) + 1 > 0x0F);
         self.reg_b = self.reg_b.wrapping_add(1);
         self.set_flag_bit(7, self.reg_b==0);
@@ -3052,12 +2493,9 @@ impl CPU {
     }
 
     fn decb(&mut self) {
-        // set H flag if borrow from bit 4
         self.set_flag_bit(5, (self.reg_b & 0x0F) == 0x00);
         self.reg_b = self.dec(self.reg_b);
-        // set Z flag if result is 0
         self.set_flag_bit(7, self.reg_b==0);
-        // set N flag = 1
         self.set_flag_bit(6, true);
         self.cycles += 1;
     }
@@ -3090,7 +2528,7 @@ impl CPU {
         self.set_flag_bit(4, result > 0xffff);
         self.reg_h = (result >> 8) as u8;
         self.reg_l = result as u8;
-        self.tick_timer_4t();                  // M2: internal
+        self.tick_timer_4t();
         self.cycles += 2;
     }
 
@@ -3103,7 +2541,7 @@ impl CPU {
         let bc = self.bc().wrapping_sub(1);
         self.reg_b = (bc >> 8) as u8;
         self.reg_c = bc as u8;
-        self.tick_timer_4t();                  // M2: internal
+        self.tick_timer_4t();
         self.cycles += 2;
     }
 
@@ -3135,14 +2573,16 @@ impl CPU {
     }
 
     fn stop(&mut self) {
-        // STOP is a 2-byte instruction (0x10 0x00) — consume the second byte
         self.read();
-        // On DMG, STOP halts until a button is pressed or interrupt occurs.
-        // For emulation: just treat it as a 2-byte NOP to avoid deadlocks.
-        // The DIV register is reset by STOP (same as writing to DIV).
-        self.sys_counter = 0;
-        self.memory[0xFF04] = 0;
-        self.check_timer_falling_edge();
+        if self.is_cgb && (self.key1 & 0x01) != 0 {
+            self.double_speed = !self.double_speed;
+            self.key1 &= 0xFE;
+            self.cycles += 2050; // Switch delay
+        } else {
+            self.sys_counter = 0;
+            self.memory[0xFF04] = 0;
+            self.check_timer_falling_edge();
+        }
         self.cycles += 1;
     }
 
@@ -3161,7 +2601,7 @@ impl CPU {
         let de = self.de().wrapping_add(1);
         self.reg_d = (de >> 8) as u8;
         self.reg_e = de as u8;
-        self.tick_timer_4t();                  // M2: internal
+        self.tick_timer_4t();
         self.cycles += 2;
     }
 
@@ -3194,12 +2634,11 @@ impl CPU {
         self.set_flag_bit(6, false);
         self.set_flag_bit(7, false);
         self.cycles += 1;
-        
     }
 
     fn jr(&mut self) {
         let offset = self.read() as i8;
-        self.tick_timer_4t();                  // M3: internal (apply offset)
+        self.tick_timer_4t();
         self.program_counter = (self.program_counter as i32 + offset as i32) as u16;
         self.cycles += 3;
     }
@@ -3213,7 +2652,7 @@ impl CPU {
         self.set_flag_bit(4, result > 0xffff);
         self.reg_h = (result >> 8) as u8;
         self.reg_l = result as u8;
-        self.tick_timer_4t();                  // M2: internal
+        self.tick_timer_4t();
         self.cycles += 2;
     }
 
@@ -3227,7 +2666,7 @@ impl CPU {
         let result = de.wrapping_sub(1);
         self.reg_d = (result >> 8) as u8;
         self.reg_e = result as u8;
-        self.tick_timer_4t();                  // M2: internal
+        self.tick_timer_4t();
         self.cycles += 2;
     }
 
@@ -3265,7 +2704,7 @@ impl CPU {
     fn jrnz(&mut self) {
         let offset = self.read() as i8;
         if !self.get_flag_bit(7) {
-            self.tick_timer_4t();               // internal cycle: apply offset
+            self.tick_timer_4t();
             self.program_counter = (self.program_counter as i32 + offset as i32) as u16;
             self.cycles += 3;
         } else {
@@ -3293,7 +2732,7 @@ impl CPU {
         hl = hl.wrapping_add(1);
         self.reg_h = (hl >> 8) as u8;
         self.reg_l = hl as u8;
-        self.tick_timer_4t();                  // M2: internal
+        self.tick_timer_4t();
         self.cycles += 2;
     }
 
@@ -3345,7 +2784,7 @@ impl CPU {
     fn jrz(&mut self) {
         let offset = self.read() as i8;
         if self.get_flag_bit(7) {
-            self.tick_timer_4t();               // internal cycle: apply offset
+            self.tick_timer_4t();
             self.program_counter = (self.program_counter as i32 + offset as i32) as u16;
             self.cycles += 3;
         } else {
@@ -3361,7 +2800,7 @@ impl CPU {
         self.set_flag_bit(4, result > 0xffff);
         self.reg_h = (result >> 8) as u8;
         self.reg_l = result as u8;
-        self.tick_timer_4t();                  // M2: internal
+        self.tick_timer_4t();
         self.cycles += 2;
     }
 
@@ -3378,7 +2817,7 @@ impl CPU {
         hl = hl.wrapping_sub(1);
         self.reg_h = (hl >> 8) as u8;
         self.reg_l = hl as u8;
-        self.tick_timer_4t();                  // M2: internal
+        self.tick_timer_4t();
         self.cycles += 2;
     }
 
@@ -3410,7 +2849,7 @@ impl CPU {
     fn jrncr8(&mut self) {
         let offset = self.read() as i8;
         if !self.get_flag_bit(4) {
-            self.tick_timer_4t();               // internal cycle: apply offset
+            self.tick_timer_4t();
             self.program_counter = (self.program_counter as i32 + offset as i32) as u16;
             self.cycles += 3;
         } else {
@@ -3421,7 +2860,6 @@ impl CPU {
     fn ldsp16(&mut self) {
         self.stackpointer = self.read16();
         self.cycles += 3;
-
     }
 
     fn ldhlmina(&mut self) {
@@ -3435,7 +2873,7 @@ impl CPU {
 
     fn incsp(&mut self) {
         self.stackpointer = self.stackpointer.wrapping_add(1);
-        self.tick_timer_4t();                  // M2: internal
+        self.tick_timer_4t();
         self.cycles += 2;
     }
 
@@ -3472,7 +2910,7 @@ impl CPU {
     fn jrcr8(&mut self) {
         let offset = self.read() as i8;
         if self.get_flag_bit(4) {
-            self.tick_timer_4t();               // internal cycle: apply offset
+            self.tick_timer_4t();
             self.program_counter = (self.program_counter as i32 + offset as i32) as u16;
             self.cycles += 3;
         } else {
@@ -3485,19 +2923,13 @@ impl CPU {
         let sp = self.stackpointer;
         let result = hl as u32 + sp as u32;
 
-        // Set the Half Carry flag (bit 11 carry)
         self.set_flag_bit(5, (hl & 0x0FFF) + (sp & 0x0FFF) > 0x0FFF);
-
-        // Set the Subtract flag to false
         self.set_flag_bit(6, false);
-
-        // Set the Carry flag (bit 15 carry)
         self.set_flag_bit(4, result > 0xFFFF);
 
-        // Update the H and L registers
         self.reg_h = (result >> 8) as u8;
         self.reg_l = result as u8;
-        self.tick_timer_4t();                  // M2: internal
+        self.tick_timer_4t();
         self.cycles += 2;
     }
 
@@ -3511,7 +2943,7 @@ impl CPU {
 
     fn decsp(&mut self) {
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.tick_timer_4t();                  // M2: internal
+        self.tick_timer_4t();
         self.cycles += 2;
     }
 
@@ -3552,7 +2984,6 @@ impl CPU {
     }
 
     fn ldbb(&mut self) {
-        //self.reg_b = self.reg_b;
         self.cycles += 1;
     }
 
@@ -3597,7 +3028,6 @@ impl CPU {
     }
 
     fn ldcc(&mut self) {
-        //self.reg_c = self.reg_c;
         self.cycles += 1;
     }
 
@@ -3642,7 +3072,6 @@ impl CPU {
     }
 
     fn lddd(&mut self) {
-        //self.reg_d = self.reg_d;
         self.cycles += 1;
     }
 
@@ -3687,7 +3116,6 @@ impl CPU {
     }
 
     fn ldee(&mut self) {
-        //self.reg_e = self.reg_e;
         self.cycles += 1;
     }
 
@@ -3732,7 +3160,6 @@ impl CPU {
     }
 
     fn ldhh(&mut self) {
-        //self.reg_h = self.reg_h;
         self.cycles += 1;
     }
 
@@ -3777,7 +3204,6 @@ impl CPU {
     }
 
     fn ldll(&mut self) {
-        //self.reg_l = self.reg_l;
         self.cycles += 1;
     }
 
@@ -3826,12 +3252,8 @@ impl CPU {
 
         if (ie & iflag & 0x1F) != 0 {
             if !self.interrupt_master_enable {
-                // HALT bug: pending interrupt exists but IME is off.
-                // PC does not advance after the opcode of the next instruction.
                 self.halt_bug = true;
             }
-            // Do NOT enter the halt state if an interrupt is pending!
-            // If IME=1, it will dispatch immediately after this cycle.
             self.cycles += 1;
             return;
         }
@@ -3880,7 +3302,6 @@ impl CPU {
     }
 
     fn ldaa(&mut self) {
-        //self.reg_a = self.reg_a;
         self.cycles += 1;
     }
 
@@ -3987,7 +3408,6 @@ impl CPU {
         let tmp = self.reg_a as i16 - b as i16;
         self.set_flag_bit(7, (tmp & 0xFF) == 0);
         self.set_flag_bit(6, true);
-        // Fixed Half-Carry calculation:
         self.set_flag_bit(5, (self.reg_a & 0x0F) < (b & 0x0F));
         self.set_flag_bit(4, tmp < 0);
         self.reg_a = tmp as u8;
@@ -4038,7 +3458,6 @@ impl CPU {
         let tmp = self.reg_a as i16 - b as i16 - carry;
         self.set_flag_bit(7, (tmp & 0xFF) == 0);
         self.set_flag_bit(6, true);
-        // Fixed Half-Carry calculation:
         self.set_flag_bit(5, ((self.reg_a & 0x0F) as i16 - (b & 0x0F) as i16 - carry) < 0);
         self.set_flag_bit(4, tmp < 0);
         self.reg_a = tmp as u8;
@@ -4276,10 +3695,10 @@ impl CPU {
     }
 
     fn retnz(&mut self) {
-        self.tick_timer_4t();               // M2: internal (condition check)
+        self.tick_timer_4t();
         if !self.get_flag_bit(7) {
-            self.ret();                     // M3-M5 (ret adds its own cycles)
-            self.cycles += 1;              // total = 1 + 4 = 5
+            self.ret();
+            self.cycles += 1;
         } else {
             self.cycles += 2;
         }
@@ -4294,9 +3713,9 @@ impl CPU {
     }
 
     fn jpnza16(&mut self) {
-        let addr = self.read16();              // M2-M3: always read address
+        let addr = self.read16();
         if !self.get_flag_bit(7) {
-            self.tick_timer_4t();              // M4: internal
+            self.tick_timer_4t();
             self.program_counter = addr;
             self.cycles += 4;
         } else {
@@ -4305,8 +3724,8 @@ impl CPU {
     }
 
     fn jp(&mut self) {
-        self.program_counter = self.read16();   // M2-M3
-        self.tick_timer_4t();                    // M4: internal (set PC)
+        self.program_counter = self.read16();
+        self.tick_timer_4t();
         self.cycles += 4;
     }
 
@@ -4314,17 +3733,17 @@ impl CPU {
         if !self.get_flag_bit(7) {
             self.calla16();
         } else {
-            self.read16();                     // M2-M3: always read address
+            self.read16();
             self.cycles += 3;
         }
     }
 
     fn pushbc(&mut self) {
-        self.tick_timer_4t();               // M2: internal cycle
+        self.tick_timer_4t();
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, self.reg_b);  // M3
+        self.write_byte(self.stackpointer as usize, self.reg_b);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, self.reg_c);  // M4
+        self.write_byte(self.stackpointer as usize, self.reg_c);
         self.cycles += 4;
     }
 
@@ -4339,39 +3758,39 @@ impl CPU {
     }
 
     fn rst00h(&mut self) {
-        self.tick_timer_4t();               // M2: internal cycle
+        self.tick_timer_4t();
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8); // M3
+        self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, (self.program_counter) as u8);      // M4
+        self.write_byte(self.stackpointer as usize, (self.program_counter) as u8);
         self.program_counter = 0x00;
         self.cycles += 4;
     }
 
     fn retz(&mut self) {
-        self.tick_timer_4t();               // M2: internal (condition check)
+        self.tick_timer_4t();
         if self.get_flag_bit(7) {
-            self.ret();                     // M3-M5
-            self.cycles += 1;              // total = 1 + 4 = 5
+            self.ret();
+            self.cycles += 1;
         } else {
             self.cycles += 2;
         }
     }
 
     fn ret(&mut self) {
-        let l = self.read_byte(self.stackpointer as usize);       // M2
+        let l = self.read_byte(self.stackpointer as usize);
         self.stackpointer = self.stackpointer.wrapping_add(1);
-        let h = self.read_byte(self.stackpointer as usize);       // M3
+        let h = self.read_byte(self.stackpointer as usize);
         self.stackpointer = self.stackpointer.wrapping_add(1);
         self.program_counter = (h as u16) << 8 | l as u16;
-        self.tick_timer_4t();               // M4: internal cycle (set PC)
+        self.tick_timer_4t();
         self.cycles += 4;
     }
 
     fn jpza16(&mut self) {
-        let addr = self.read16();              // M2-M3: always read address
+        let addr = self.read16();
         if self.get_flag_bit(7) {
-            self.tick_timer_4t();              // M4: internal
+            self.tick_timer_4t();
             self.program_counter = addr;
             self.cycles += 4;
         } else {
@@ -4383,19 +3802,19 @@ impl CPU {
         if self.get_flag_bit(7) {
             self.calla16();
         } else {
-            self.read16();                     // M2-M3: always read address
+            self.read16();
             self.cycles += 3;
         }
     }
 
     fn calla16(&mut self) {
-        let target = self.read16();          // M2-M3: read target address
+        let target = self.read16();
         let return_addr = self.program_counter;
-        self.tick_timer_4t();                // M4: internal cycle
+        self.tick_timer_4t();
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, (return_addr >> 8) as u8); // M5
+        self.write_byte(self.stackpointer as usize, (return_addr >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, return_addr as u8);        // M6
+        self.write_byte(self.stackpointer as usize, return_addr as u8);
         self.program_counter = target;
         self.cycles += 6;
     }
@@ -4413,7 +3832,7 @@ impl CPU {
     }
 
     fn rst08h(&mut self) {
-        self.tick_timer_4t();               // M2: internal cycle
+        self.tick_timer_4t();
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -4423,10 +3842,10 @@ impl CPU {
     }
 
     fn retnc(&mut self) {
-        self.tick_timer_4t();               // M2: internal (condition check)
+        self.tick_timer_4t();
         if !self.get_flag_bit(4) {
-            self.ret();                     // M3-M5
-            self.cycles += 1;              // total = 1 + 4 = 5
+            self.ret();
+            self.cycles += 1;
         } else {
             self.cycles += 2;
         }
@@ -4441,9 +3860,9 @@ impl CPU {
     }
 
     fn jpnca16(&mut self) {
-        let addr = self.read16();              // M2-M3: always read address
+        let addr = self.read16();
         if !self.get_flag_bit(4) {
-            self.tick_timer_4t();              // M4: internal
+            self.tick_timer_4t();
             self.program_counter = addr;
             self.cycles += 4;
         } else {
@@ -4455,17 +3874,17 @@ impl CPU {
         if !self.get_flag_bit(4) {
             self.calla16();
         } else {
-            self.read16();                     // M2-M3: always read address
+            self.read16();
             self.cycles += 3;
         }
     }
 
     fn pushde(&mut self) {
-        self.tick_timer_4t();               // M2: internal cycle
+        self.tick_timer_4t();
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, self.reg_d);  // M3
+        self.write_byte(self.stackpointer as usize, self.reg_d);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, self.reg_e);  // M4
+        self.write_byte(self.stackpointer as usize, self.reg_e);
         self.cycles += 4;
     }
 
@@ -4473,7 +3892,6 @@ impl CPU {
         let b = self.read();
         self.set_flag_bit(7, self.reg_a == b);
         self.set_flag_bit(6, true);
-        // Set the half carry flag (bit 4 carry)
         self.set_flag_bit(5, (self.reg_a & 0x0F) < (b & 0x0F));
         self.set_flag_bit(4, self.reg_a < b);
         self.reg_a = self.reg_a.wrapping_sub(b);
@@ -4481,7 +3899,7 @@ impl CPU {
     }
 
     fn rst10h(&mut self) {
-        self.tick_timer_4t();               // M2: internal cycle
+        self.tick_timer_4t();
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -4491,10 +3909,10 @@ impl CPU {
     }
 
     fn retc(&mut self) {
-        self.tick_timer_4t();               // M2: internal (condition check)
+        self.tick_timer_4t();
         if self.get_flag_bit(4) {
-            self.ret();                     // M3-M5
-            self.cycles += 1;              // total = 1 + 4 = 5
+            self.ret();
+            self.cycles += 1;
         } else {
             self.cycles += 2;
         }
@@ -4506,9 +3924,9 @@ impl CPU {
     }
 
     fn jpca16(&mut self) {
-        let addr = self.read16();              // M2-M3: always read address
+        let addr = self.read16();
         if self.get_flag_bit(4) {
-            self.tick_timer_4t();              // M4: internal
+            self.tick_timer_4t();
             self.program_counter = addr;
             self.cycles += 4;
         } else {
@@ -4520,7 +3938,7 @@ impl CPU {
         if self.get_flag_bit(4) {
             self.calla16();
         } else {
-            self.read16();                     // M2-M3: always read address
+            self.read16();
             self.cycles += 3;
         }
     }
@@ -4538,7 +3956,7 @@ impl CPU {
     }
 
     fn rst18h(&mut self) {
-        self.tick_timer_4t();               // M2: internal cycle
+        self.tick_timer_4t();
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -4567,11 +3985,11 @@ impl CPU {
     }
 
     fn pushhl(&mut self) {
-        self.tick_timer_4t();               // M2: internal cycle
+        self.tick_timer_4t();
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, self.reg_h);  // M3
+        self.write_byte(self.stackpointer as usize, self.reg_h);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, self.reg_l);  // M4
+        self.write_byte(self.stackpointer as usize, self.reg_l);
         self.cycles += 4;
     }
 
@@ -4582,7 +4000,7 @@ impl CPU {
     }
 
     fn rst20h(&mut self) {
-        self.tick_timer_4t();               // M2: internal cycle
+        self.tick_timer_4t();
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -4592,22 +4010,18 @@ impl CPU {
     }
 
     fn addspr8(&mut self) {
-        // Add the signed value e8 to SP.
-        // Flags are based on unsigned addition of low byte of SP and unsigned e8
-        let b = self.read();                   // M2: read immediate
+        let b = self.read();
         let offset = b as i8 as i16 as u16;
 
-        // Clear Z and N flags
         self.set_flag_bit(6, false);
         self.set_flag_bit(7, false);
 
-        // Carry and half-carry are based on lower byte unsigned add
         self.set_flag_bit(4, (self.stackpointer & 0xFF) + (b as u16) > 0xFF);
         self.set_flag_bit(5, (self.stackpointer & 0xF) + (b as u16 & 0xF) > 0xF);
 
         self.stackpointer = self.stackpointer.wrapping_add(offset);
-        self.tick_timer_4t();                  // M3: internal
-        self.tick_timer_4t();                  // M4: internal
+        self.tick_timer_4t();
+        self.tick_timer_4t();
         self.cycles += 4;
     }
 
@@ -4618,7 +4032,6 @@ impl CPU {
 
     fn lda16a(&mut self) {
         let address = self.read16() as usize;
-        // special cases
         self.write_byte(address, self.reg_a);
         self.cycles += 4;
     }
@@ -4630,7 +4043,7 @@ impl CPU {
     }
 
     fn rst28h(&mut self) {
-        self.tick_timer_4t();               // M2: internal cycle
+        self.tick_timer_4t();
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -4647,7 +4060,6 @@ impl CPU {
 
     fn popaf(&mut self) {
         self.reg_f = self.read_byte(self.stackpointer as usize);
-        // set lower 4 bits to 0
         self.reg_f &= 0xF0;
         self.stackpointer = self.stackpointer.wrapping_add(1);
         self.reg_a = self.read_byte(self.stackpointer as usize);
@@ -4667,11 +4079,11 @@ impl CPU {
     }
 
     fn pushaf(&mut self) {
-        self.tick_timer_4t();               // M2: internal cycle
+        self.tick_timer_4t();
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, self.reg_a);  // M3
+        self.write_byte(self.stackpointer as usize, self.reg_a);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
-        self.write_byte(self.stackpointer as usize, self.reg_f);  // M4
+        self.write_byte(self.stackpointer as usize, self.reg_f);
         self.cycles += 4;
     }
 
@@ -4682,7 +4094,7 @@ impl CPU {
     }
 
     fn rst30h(&mut self) {
-        self.tick_timer_4t();               // M2: internal cycle
+        self.tick_timer_4t();
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -4692,29 +4104,25 @@ impl CPU {
     }
 
     fn ldhlspr8(&mut self) {
-        // LD HL, SP+r8
-        // Flags are based on unsigned addition of low byte of SP and unsigned e8
         let b = self.read();
         let offset = b as i8 as i16 as u16;
 
-        // Clear Z and N flags
         self.set_flag_bit(6, false);
         self.set_flag_bit(7, false);
 
-        // Carry and half-carry are based on lower byte unsigned add
         self.set_flag_bit(4, (self.stackpointer & 0xFF) + (b as u16) > 0xFF);
         self.set_flag_bit(5, (self.stackpointer & 0xF) + (b as u16 & 0xF) > 0xF);
 
         let hl = self.stackpointer.wrapping_add(offset);
         self.reg_h = (hl >> 8) as u8;
         self.reg_l = hl as u8;
-        self.tick_timer_4t();                  // M3: internal
+        self.tick_timer_4t();
         self.cycles += 3;
     }
 
     fn ldsphl(&mut self) {
         self.stackpointer = self.hl();
-        self.tick_timer_4t();                  // M2: internal
+        self.tick_timer_4t();
         self.cycles += 2;
     }
 
@@ -4725,7 +4133,6 @@ impl CPU {
     }
 
     fn ei(&mut self) {
-        // EI enables interrupts after the next instruction (delayed by one instruction)
         self.ei_pending = true;
         self.cycles += 1;
     }
@@ -4740,7 +4147,7 @@ impl CPU {
     }
 
     fn rst38h(&mut self) {
-        self.tick_timer_4t();               // M2: internal cycle
+        self.tick_timer_4t();
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (self.program_counter >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -4749,7 +4156,7 @@ impl CPU {
         self.cycles += 4;
     }
 
-    fn  cb_rlc(&mut self, n: u8) -> u8 {
+    fn cb_rlc(&mut self, n: u8) -> u8 {
         let carry = n & 0x80;
         let n = (n << 1) & 0xff | carry >> 7;
         self.set_flag_bit(4, carry != 0);
@@ -4952,12 +4359,6 @@ impl CPU {
         self.reg_a=self.cb_rr(self.reg_a);
         self.cycles+=2;
     }
-    // def SLA(n, F):
-    //F[4] = int((n & (1 << 7)) != 0)
-    //n = (n << 1) & 0xff
-    //F[7] = int(n == 0)
-    //F[5:7] = [0, 0]
-    //return n, F
 
     fn sla(&mut self, n: u8) -> u8 {
         let carry = n & 0x80;

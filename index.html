@@ -146,6 +146,10 @@
       }
       #touch-controls.hidden { display: none; }
       #touch-controls.edit-mode { pointer-events: auto; }
+      #touch-controls.edit-mode {
+        /* Prevent browser pan/zoom gestures from canceling pointer drags while editing. */
+        touch-action: none;
+      }
       .touch-cluster {
         position: absolute;
         display: flex;
@@ -233,6 +237,7 @@
         cursor: grab;
         display: none;
         pointer-events: auto;
+        touch-action: none;
       }
       #touch-controls.edit-mode .touch-drag-handle { display: inline-block; }
       #touch-controls.edit-mode .touch-cluster {
@@ -659,17 +664,18 @@
     <div id="rom-picker">
       <h2>RustBoy</h2>
       <div id="rom-tabs" class="hidden">
-        <button class="rom-tab active" data-tab="roms">🎮 ROMs</button>
+        <button class="rom-tab active" data-tab="gb">🎮 Game Boy</button>
+        <button class="rom-tab" data-tab="gbc">🌈 Game Boy Color</button>
         <button class="rom-tab" data-tab="testroms">🧪 Test ROMs</button>
       </div>
       <input type="text" id="rom-search" placeholder="🔍 Search games..." autocomplete="off" spellcheck="false" aria-label="Search ROMs" />
       <div id="rom-count"></div>
       <ul id="rom-list"></ul>
       <div id="upload-area">
-        <button id="upload-btn">📂 Upload ROM (.gb)</button>
+        <button id="upload-btn">📂 Upload ROM (.gb/.gbc)</button>
         <input type="file" id="rom-file-input" accept=".gb,.gbc,.bin" style="display:none" />
       </div>
-      <p class="hint">Type to search · ←→↑↓ navigate · Enter load · Esc back · Drag & drop .gb files</p>
+      <p class="hint">Type to search · ←→↑↓ navigate · Enter load · Esc back · Drag & drop .gb/.gbc files</p>
     </div>
 
     <script>
@@ -1017,12 +1023,31 @@
       /* ═══════════════════════════════════════════════════════════════
        *  ROM SYSTEM
        * ═══════════════════════════════════════════════════════════════ */
-      // Per-tab data: { allRoms, folder, available }
+      // Per-tab data: { allRoms, folder, listPath, accepts(name), available }
       const ROM_TABS = {
-        roms:     { allRoms: [], folder: 'roms',     available: false },
-        testroms: { allRoms: [], folder: 'testroms', available: false },
+        gb: {
+          allRoms: [],
+          folder: 'roms',
+          listPath: 'roms/romlist.json',
+          accepts: (name) => /\.gb$/i.test(name),
+          available: false,
+        },
+        gbc: {
+          allRoms: [],
+          folder: 'roms',
+          listPath: 'roms/romlist.json',
+          accepts: (name) => /\.gbc$/i.test(name),
+          available: false,
+        },
+        testroms: {
+          allRoms: [],
+          folder: 'testroms',
+          listPath: 'testroms/romlist.json',
+          accepts: (name) => /\.(gb|gbc)$/i.test(name),
+          available: false,
+        },
       };
-      let activeTab = 'roms';
+      let activeTab = 'gb';
       let ALL_ROMS = []; // points to current tab's allRoms
       let ROMS = []; // filtered list
       let romLoaded = false;
@@ -1249,8 +1274,8 @@
             }
             const nameSpan = document.createElement('span');
             nameSpan.className = 'rom-name';
-            // Display name without .gb extension
-            nameSpan.textContent = rom.name.replace(/\.gb$/i, '');
+            // Display name without .gb/.gbc extension
+            nameSpan.textContent = rom.name.replace(/\.gbc?$/i, '');
             li.appendChild(nameSpan);
             li.addEventListener('click', () => { selectedIdx = i; loadSelectedRom(); });
             if (i === selectedIdx) li.classList.add('selected');
@@ -1321,12 +1346,20 @@
       });
 
       async function fetchRomList() {
-        // Fetch both tabs in parallel
+        const manifestCache = {};
+
+        // Fetch all tabs in parallel (GB + GBC share one manifest)
         await Promise.all(Object.entries(ROM_TABS).map(async ([key, tab]) => {
           try {
-            const resp = await fetch(tab.folder + '/romlist.json');
-            if (!resp.ok) throw new Error('not found');
-            tab.allRoms = await resp.json();
+            if (!manifestCache[tab.listPath]) {
+              const resp = await fetch(tab.listPath);
+              if (!resp.ok) throw new Error('not found');
+              manifestCache[tab.listPath] = await resp.json();
+            }
+            const source = manifestCache[tab.listPath];
+            tab.allRoms = source
+              .filter((entry) => entry && typeof entry.name === 'string')
+              .filter((entry) => tab.accepts(entry.name));
             tab.available = tab.allRoms.length > 0;
           } catch(e) {
             console.warn('Could not load romlist.json for', key, e);
@@ -1335,16 +1368,22 @@
           }
         }));
 
-        // Show tabs only if both are available
+        // Hide unavailable tabs and show container when at least two tabs have content
         const tabsEl = document.getElementById('rom-tabs');
         const availableTabs = Object.keys(ROM_TABS).filter(k => ROM_TABS[k].available);
+        document.querySelectorAll('#rom-tabs .rom-tab').forEach((btn) => {
+          const tabKey = btn.dataset.tab;
+          btn.classList.toggle('hidden', !ROM_TABS[tabKey]?.available);
+        });
         if (availableTabs.length >= 2) {
           tabsEl.classList.remove('hidden');
+        } else {
+          tabsEl.classList.add('hidden');
         }
 
         // Pick best default tab
         if (!ROM_TABS[activeTab].available) {
-          activeTab = availableTabs[0] || 'roms';
+          activeTab = availableTabs[0] || 'gb';
         }
         updateTabHighlight();
 
@@ -1365,6 +1404,7 @@
         const btn = e.target.closest('.rom-tab');
         if (!btn) return;
         const tab = btn.dataset.tab;
+        if (!ROM_TABS[tab] || !ROM_TABS[tab].available) return;
         if (tab === activeTab) return;
         activeTab = tab;
         updateTabHighlight();
