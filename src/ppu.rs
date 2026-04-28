@@ -264,8 +264,21 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
             let ty = if flip_y { 7 - (dy % 8) } else { dy % 8 };
             let line_offset = offset + (ty as u16 * 2);
 
-            let b1 = if cpu.is_cgb { cpu.cgb_vram[vram_bank][line_offset as usize] } else { cpu.memory[tile_data_base + line_offset as usize] };
-            let b2 = if cpu.is_cgb { cpu.cgb_vram[vram_bank][line_offset as usize + 1] } else { cpu.memory[tile_data_base + line_offset as usize + 1] };
+            let addr = tile_data_base + line_offset as usize;
+
+            let b1 = if cpu.is_cgb {
+                let base = addr - 0x8000;
+                cpu.cgb_vram[vram_bank][base]
+            } else {
+                cpu.memory[addr]
+            };
+
+            let b2 = if cpu.is_cgb {
+                let base = addr - 0x8000;
+                cpu.cgb_vram[vram_bank][base + 1]
+            } else {
+                cpu.memory[addr + 1]
+            };
 
             let px = if flip_x { 7 - (dx % 8) } else { dx % 8 };
             let raw = get_color_index(b1, b2, px);
@@ -289,7 +302,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
             let window_tile_map_base: usize = if lcd_control & 0x40 != 0 { 0x9C00 } else { 0x9800 };
 
             if ly >= window_y {
-                let wy = ly - window_y;
+                let wy = cpu.window_line_counter;
                 for screen_x in 0..160i32 {
                     if screen_x >= window_x {
                         let wx = (screen_x - window_x) as u8;
@@ -322,8 +335,21 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                         let ty = if flip_y { 7 - (wy % 8) } else { wy % 8 };
                         let line_offset = offset + (ty as u16 * 2);
 
-                        let b1 = if cpu.is_cgb { cpu.cgb_vram[vram_bank][line_offset as usize] } else { cpu.memory[tile_data_base + line_offset as usize] };
-                        let b2 = if cpu.is_cgb { cpu.cgb_vram[vram_bank][line_offset as usize + 1] } else { cpu.memory[tile_data_base + line_offset as usize + 1] };
+                        let addr = tile_data_base + line_offset as usize;
+
+                        let b1 = if cpu.is_cgb {
+                            let base = addr - 0x8000;
+                            cpu.cgb_vram[vram_bank][base]
+                        } else {
+                            cpu.memory[addr]
+                        };
+
+                        let b2 = if cpu.is_cgb {
+                            let base = addr - 0x8000;
+                            cpu.cgb_vram[vram_bank][base + 1]
+                        } else {
+                            cpu.memory[addr + 1]
+                        };
 
                         let px = if flip_x { 7 - (wx % 8) } else { wx % 8 };
                         let raw = get_color_index(b1, b2, px);
@@ -338,6 +364,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
 
                         cpu.frame_buffer[(ly as usize * 160) + screen_x as usize] = pack_cgb_pixel(r, g, b, raw, bg_priority);
                     }
+                    cpu.window_line_counter += 1;
                 }
             }
         }
