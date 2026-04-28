@@ -424,9 +424,20 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
 
                 let line_offset = (tile_index as u16) * 16 + (row as u16) * 2;
 
-                let b1 = if cpu.is_cgb { cpu.cgb_vram[vram_bank][line_offset as usize] } else { cpu.memory[0x8000 + line_offset as usize] };
-                let b2 = if cpu.is_cgb { cpu.cgb_vram[vram_bank][line_offset as usize + 1] } else { cpu.memory[0x8000 + line_offset as usize + 1] };
+                let addr = 0x8000 + line_offset as usize;
 
+                let b1 = if cpu.is_cgb {
+                    cpu.cgb_vram[vram_bank][addr - 0x8000]
+                } else {
+                    cpu.memory[addr]
+                };
+
+                let b2 = if cpu.is_cgb {
+                    cpu.cgb_vram[vram_bank][addr - 0x8000 + 1]
+                } else {
+                    cpu.memory[addr + 1]
+                };
+                
                 for px in 0..8u8 {
                     let screen_x = sprite_x as i32 + px as i32;
                     if screen_x < 0 || screen_x >= 160 { continue; }
