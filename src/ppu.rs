@@ -364,8 +364,8 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
 
                         cpu.frame_buffer[(ly as usize * 160) + screen_x as usize] = pack_cgb_pixel(r, g, b, raw, bg_priority);
                     }
-                    cpu.window_line_counter += 1;
                 }
+                cpu.window_line_counter += 1;
             }
         }
 
@@ -437,7 +437,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                 } else {
                     cpu.memory[addr + 1]
                 };
-                
+
                 for px in 0..8u8 {
                     let screen_x = sprite_x as i32 + px as i32;
                     if screen_x < 0 || screen_x >= 160 { continue; }
