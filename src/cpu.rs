@@ -5,6 +5,7 @@ use web_sys::console;
 
 use crate::apu::APU;
 use crate::debug_tracer::InstructionTracer;
+use crate::mbc::Mbc;
 
 #[cfg(target_arch = "wasm32")]
 macro_rules! console_log {
@@ -42,8 +43,8 @@ pub struct CPU {
     pub booting: bool,
     pub memory: [u8; 0x10000],
     pub frame_buffer:[u32; 160 * 144],
-    rom: Vec<u8>,
-    ram: [[u8; 0x2000]; 16],
+    /// All cartridge ROM/RAM state and banking logic.
+    pub mbc: Mbc,
     pub halt: bool,
     pub cycles: u32,
     pub total_cycles: u64,
@@ -57,15 +58,6 @@ pub struct CPU {
     ppu_mcycle_countdown: u32,
     scanline: u8,
     pub go_next: AtomicBool,
-    cartridge_type: u8,
-    rombank: u16,
-    rambank: u8,
-    mbc_rom_mode: u8,
-    mbc_ram_enable: bool,
-    mbc1_bank2: u8,
-    rom_bank_mask: u16,
-    ram_bank_mask: usize,
-    rtc_registers:[u8; 5],
     ei_pending: bool,
     pub apu: APU,
     pub gbc_palettes: [[[u8; 4]; 4]; 3],
@@ -138,8 +130,7 @@ impl CPU {
             booting: true,
             memory: [0; 0x10000],
             frame_buffer: [0; 160*144],
-            rom: Vec::new(),
-            ram: [[0; 0x2000]; 16],
+            mbc: Mbc::empty(),
             halt: false,
             cycles: 0,
             total_cycles: 0,
@@ -153,15 +144,6 @@ impl CPU {
             ppu_mcycle_countdown: 0,
             scanline: 0,
             go_next: AtomicBool::new(false),
-            cartridge_type: 0,
-            rombank: 1,
-            rambank: 0,
-            mbc_rom_mode: 0,
-            mbc_ram_enable: false,
-            mbc1_bank2: 0,
-            rom_bank_mask: 1,
-            ram_bank_mask: 0,
-            rtc_registers:[0; 5],
             ei_pending: false,
             apu: APU::new(),
             gbc_palettes: crate::ppu::DEFAULT_GBC_PALETTES,
@@ -334,7 +316,7 @@ impl CPU {
                             if self.reg_f & 0x10 != 0 { 'C' } else { '-' },
         );
 
-        let bank: u8 = if pc < 0x4000 { 0x00 } else if pc < 0x8000 { self.rombank as u8 } else { 0x00 };
+        let bank: u8 = if pc < 0x4000 { 0x00 } else if pc < 0x8000 { self.mbc.rombank as u8 } else { 0x00 };
 
         let mut hex_bytes = String::new();
         for i in 0..size {
@@ -743,7 +725,7 @@ impl CPU {
             self.reg_d, self.reg_e, self.de(),
             self.reg_h, self.reg_l, self.hl(),
             self.stackpointer, self.program_counter,
-            self.interrupt_master_enable as u8, self.halt as u8, self.rombank, self.rambank,
+            self.interrupt_master_enable as u8, self.halt as u8, self.mbc.rombank, self.mbc.rambank,
         )
     }
 
@@ -772,37 +754,53 @@ impl CPU {
         for i in 0..copy_len {
             self.memory[i] = data[i];
         }
-        self.rom = data;
-        let cgb_flag = self.rom.get(0x143).copied().unwrap_or(0);
+
+        let cgb_flag = data.get(0x143).copied().unwrap_or(0);
         self.is_cgb = cgb_flag == 0x80 || cgb_flag == 0xC0;
-
         self.apu.set_cgb_mode(self.is_cgb);
-        self.cartridge_type = self.memory[0x147];
-        let num_rom_banks = (self.rom.len() / 0x4000).max(2) as u16;
-        self.rom_bank_mask = num_rom_banks.next_power_of_two() - 1;
 
-        let mut ram_size = self.get_ram_size();
-        if self.cartridge_type == 0x05 || self.cartridge_type == 0x06 {
+        let cart_type = *data.get(0x147).unwrap_or(&0);
+        let num_rom_banks = (data.len() / 0x4000).max(2) as u16;
+        let _rom_bank_mask = num_rom_banks.next_power_of_two() - 1;
+
+        // Compute RAM size; MBC2 overrides the header value.
+        let mut ram_size = Self::ram_size_from_rom(&data);
+        if cart_type == 0x05 || cart_type == 0x06 {
             ram_size = 512;
         }
         let num_ram_banks = if ram_size == 0 { 0 } else { (ram_size / 0x2000).max(1) };
-        self.ram_bank_mask = if num_ram_banks > 0 { num_ram_banks.next_power_of_two() - 1 } else { 0 };
+        let _ram_bank_mask = if num_ram_banks > 0 { num_ram_banks.next_power_of_two() - 1 } else { 0 };
 
-        console_log!("Cartridge type: {:02X}, ROM size: {} KB, ROM banks: {}, ROM mask: {:03X}, RAM size: {} KB, RAM banks: {}, RAM mask: {:02X}, CGB: {}",
-            self.cartridge_type, self.rom.len() / 1024, num_rom_banks, self.rom_bank_mask, ram_size, num_ram_banks, self.ram_bank_mask, self.is_cgb);
+        console_log!("Cartridge type: {:02X}, ROM size: {} KB, ROM banks: {}, RAM size: {} KB, RAM banks: {}, CGB: {}",
+            cart_type, data.len() / 1024, num_rom_banks, ram_size, num_ram_banks, self.is_cgb);
 
-        self.gbc_palettes = crate::ppu::gbc_palette_for_rom(&self.rom);
+        self.gbc_palettes = crate::ppu::gbc_palette_for_rom(&data);
+        self.mbc = Mbc::new(data, ram_size);
+
         console_log!("GBC palette assigned for title: '{}'", self.rom_title());
     }
 
+    /// Reads the RAM size declared in the ROM header.
+    fn ram_size_from_rom(rom: &[u8]) -> usize {
+        match rom.get(0x149).copied().unwrap_or(0) {
+            0x00 => 0,
+            0x01 => 0x800,
+            0x02 => 0x2000,
+            0x03 => 0x8000,
+            0x04 => 0x20000,
+            0x05 => 0x10000,
+            _    => 0x2000,
+        }
+    }
+
     pub fn has_battery(&self) -> bool {
-        matches!(self.cartridge_type, 0x03 | 0x06 | 0x09 | 0x0D | 0x0F | 0x10 | 0x13 | 0x1B | 0x1E)
+        self.mbc.has_battery
     }
 
     pub fn rom_title(&self) -> String {
         let mut title = String::new();
         for i in 0x134..=0x143 {
-            let c = self.rom.get(i).copied().unwrap_or(0);
+            let c = self.mbc.rom.get(i).copied().unwrap_or(0);
             if c == 0 { break; }
             title.push(c as char);
         }
@@ -810,39 +808,16 @@ impl CPU {
     }
 
     pub fn export_save_ram(&self) -> Vec<u8> {
-        let ram_size = self.get_ram_size();
-        let num_banks = (ram_size / 0x2000).max(1);
-        let mut data = Vec::with_capacity(num_banks * 0x2000);
-        for bank in 0..num_banks {
-            data.extend_from_slice(&self.ram[bank]);
-        }
-        data
+        self.mbc.export_save_ram()
     }
 
     pub fn import_save_ram(&mut self, data: &[u8]) {
-        let ram_size = self.get_ram_size();
-        let num_banks = (ram_size / 0x2000).max(1);
-        for bank in 0..num_banks {
-            let start = bank * 0x2000;
-            let end = (start + 0x2000).min(data.len());
-            if start < data.len() {
-                let len = end - start;
-                self.ram[bank][..len].copy_from_slice(&data[start..end]);
-            }
-        }
-        console_log!("Loaded save RAM: {} bytes into {} banks", data.len(), num_banks);
+        self.mbc.import_save_ram(data);
+        console_log!("Loaded save RAM: {} bytes", data.len());
     }
 
     fn get_ram_size(&self) -> usize {
-        match self.rom.get(0x149).copied().unwrap_or(0) {
-            0x00 => 0,
-            0x01 => 0x800,
-            0x02 => 0x2000,
-            0x03 => 0x8000,
-            0x04 => 0x20000,
-            0x05 => 0x10000,
-            _ => 0x2000,
-        }
+        self.mbc.get_ram_size()
     }
 
     fn set_flag_bit(&mut self, bit: u8, value: bool) {
@@ -1090,101 +1065,11 @@ impl CPU {
             }
 
             _ => {
-                match self.cartridge_type {
-                    0x0 => {
-                        if address >= 0x8000 {
-                            self.memory[address] = data;
-                        }
-                    }
-                    0x1 | 0x2 | 0x3 => {
-                        if address < 0x2000 {
-                            self.mbc_ram_enable = (data & 0x0F) == 0x0A;
-                        } else if address < 0x4000 {
-                            self.rombank = (data & 0x1F) as u16;
-                        } else if address < 0x6000 {
-                            self.mbc1_bank2 = data & 0x3;
-                        } else if address < 0x8000 {
-                            self.mbc_rom_mode = data & 0x01;
-                        } else if address >= 0xA000 && address < 0xC000 {
-                            if self.mbc_ram_enable {
-                                let r_bank = if self.mbc_rom_mode == 1 { self.mbc1_bank2 as usize } else { 0 };
-                                let ram_bank = r_bank & self.ram_bank_mask;
-                                self.ram[ram_bank][address - 0xA000] = data;
-                            }
-                        } else {
-                            self.memory[address] = data;
-                        }
-                    }                    0x05 | 0x06 => {
-                        if address < 0x4000 {
-                            if (address & 0x0100) == 0 {
-                                self.mbc_ram_enable = (data & 0x0F) == 0x0A;
-                            } else {
-                                let mut bank = (data & 0x0F) as u16;
-                                if bank == 0 { bank = 1; }
-                                self.rombank = bank & self.rom_bank_mask;
-                            }
-                        } else if address < 0x8000 {
-                        } else if address >= 0xA000 && address < 0xC000 {
-                            if self.mbc_ram_enable {
-                                let idx = (address - 0xA000) & 0x1FF;
-                                self.ram[0][idx] = data & 0x0F;
-                            }
-                        } else {
-                            self.memory[address] = data;
-                        }
-                    }
-                    0x0F..=0x13 => {
-                        if address < 0x2000 {
-                            self.mbc_ram_enable = (data & 0x0F) == 0x0A;
-                        } else if address < 0x4000 {
-                            let mut bank = (data & 0x7F) as u16;
-                            if bank == 0 { bank = 1; }
-                            self.rombank = bank & self.rom_bank_mask;
-                        } else if address < 0x6000 {
-                            if data <= 0x03 {
-                                self.rambank = data & (self.ram_bank_mask as u8);
-                            } else if data >= 0x08 && data <= 0x0C {
-                                self.rambank = data;
-                            }
-                        } else if address < 0x8000 {
-                            // RTC latch register
-                        } else if address >= 0xA000 && address < 0xC000 {
-                            if self.mbc_ram_enable {
-                                if self.rambank <= 0x03 {
-                                    self.ram[self.rambank as usize][address - 0xA000] = data;
-                                } else if self.rambank >= 0x08 && self.rambank <= 0x0C {
-                                    self.rtc_registers[(self.rambank - 0x08) as usize] = data;
-                                }
-                            }
-                        } else {
-                            self.memory[address] = data;
-                        }
-                    }
-                    0x19..=0x1E => {
-                        if address < 0x2000 {
-                            self.mbc_ram_enable = (data & 0x0F) == 0x0A;
-                        } else if address < 0x3000 {
-                            let new_bank = (self.rombank & 0x100) | data as u16;
-                            self.rombank = new_bank & self.rom_bank_mask;
-                        } else if address < 0x4000 {
-                            let new_bank = (self.rombank & 0xFF) | ((data as u16 & 0x01) << 8);
-                            self.rombank = new_bank & self.rom_bank_mask;
-                        } else if address < 0x6000 {
-                            let raw_bank = if self.cartridge_type >= 0x1C { data & 0x07 } else { data & 0x0F };
-                            self.rambank = raw_bank & (self.ram_bank_mask as u8);
-                        } else if address >= 0xA000 && address < 0xC000 {
-                            if self.mbc_ram_enable {
-                                self.ram[self.rambank as usize][address - 0xA000] = data;
-                            }
-                        } else {
-                            self.memory[address] = data;
-                        }
-                    }
-                    _ => {
-                        if address >= 0x8000 {
-                            self.memory[address] = data;
-                        }
-                    }
+                // Cartridge ROM space (MBC registers) and external RAM.
+                if address < 0x8000 || (address >= 0xA000 && address < 0xC000) {
+                    self.mbc.write(address, data);
+                } else if address >= 0x8000 {
+                    self.memory[address] = data;
                 }
             }
         }
@@ -1334,86 +1219,11 @@ impl CPU {
         if address >= 0xFF10 && address <= 0xFF3F {
             return self.apu.read_register(address as u16);
         }
-        match self.cartridge_type {
-            0x0 => {
-                if address < 0x8000 {
-                    return self.rom.get(address).copied().unwrap_or(0xFF);
-                }
-                return self.memory[address];
-            }
-            0x1 | 0x2 | 0x3 => {
-                if address < 0x4000 {
-                    if self.mbc_rom_mode == 1 && self.rom_bank_mask >= 0x20 {
-                        let bank = ((self.mbc1_bank2 as usize) << 5) & (self.rom_bank_mask as usize);
-                        return self.rom.get(address + bank * 0x4000).copied().unwrap_or(0xFF);
-                    }
-                    return self.rom.get(address).copied().unwrap_or(0xFF);
-                } else if address < 0x8000 {
-                    let mut lower_5_bits = self.rombank as usize;
-                    if lower_5_bits == 0 {
-                        lower_5_bits = 1;
-                    }
-                    let bank2 = (self.mbc1_bank2 as usize) << 5;
-                    let bank_raw = bank2 | lower_5_bits;
-                    let bank = bank_raw & (self.rom_bank_mask as usize);
-
-                    return self.rom.get(address - 0x4000 + bank * 0x4000).copied().unwrap_or(0xFF);
-                } else if address >= 0xA000 && address < 0xC000 {
-                    if self.mbc_ram_enable {
-                        let r_bank = if self.mbc_rom_mode == 1 { self.mbc1_bank2 as usize } else { 0 };
-                        let ram_bank = r_bank & self.ram_bank_mask;
-                        return self.ram[ram_bank][address - 0xA000];
-                    }
-                    return 0xFF;
-                }
-                self.memory[address]
-            }
-            0x05 | 0x06 => {
-                if address < 0x4000 {
-                    return self.rom.get(address).copied().unwrap_or(0xFF);
-                } else if address < 0x8000 {
-                    return self.rom.get(address - 0x4000 + (self.rombank as usize) * 0x4000).copied().unwrap_or(0xFF);
-                } else if address >= 0xA000 && address < 0xC000 {
-                    if self.mbc_ram_enable {
-                        let idx = (address - 0xA000) & 0x1FF;
-                        return self.ram[0][idx] | 0xF0;
-                    }
-                    return 0xFF;
-                }
-                self.memory[address]
-            }
-            0x0F..=0x13 => {
-                if address < 0x4000 {
-                    return self.rom.get(address).copied().unwrap_or(0xFF);
-                } else if address < 0x8000 {
-                    return self.rom.get(address - 0x4000 + (self.rombank as usize) * 0x4000).copied().unwrap_or(0xFF);
-                } else if address >= 0xA000 && address < 0xC000 {
-                    if self.mbc_ram_enable {
-                        if self.rambank <= 0x03 {
-                            return self.ram[self.rambank as usize][address - 0xA000];
-                        } else if self.rambank >= 0x08 && self.rambank <= 0x0C {
-                            return self.rtc_registers[(self.rambank - 0x08) as usize];
-                        }
-                    }
-                    return 0xFF;
-                }
-                self.memory[address]
-            }
-            0x19..=0x1E => {
-                if address < 0x4000 {
-                    return self.rom.get(address).copied().unwrap_or(0xFF);
-                } else if address < 0x8000 {
-                    return self.rom.get(address - 0x4000 + (self.rombank as usize) * 0x4000).copied().unwrap_or(0xFF);
-                } else if address >= 0xA000 && address < 0xC000 {
-                    if self.mbc_ram_enable {
-                        return self.ram[self.rambank as usize][address - 0xA000];
-                    }
-                    return 0xFF;
-                }
-                self.memory[address]
-            }
-            _ => self.memory[address]
+        // Cartridge ROM and external RAM — delegate to MBC
+        if address < 0x8000 || (address >= 0xA000 && address < 0xC000) {
+            return self.mbc.read(address);
         }
+        self.memory[address]
     }
 
     pub fn read_byte(&mut self, address: usize) -> u8 {
@@ -1519,7 +1329,7 @@ impl CPU {
             ly, stat, lcdc,
             ie, iflag,
             tac, tima,
-            self.rombank, self.rambank, self.cartridge_type, self.booting as u8,
+            self.mbc.rombank, self.mbc.rambank, self.mbc.cart_type, self.booting as u8,
             mem_dump.trim(),
             self.total_cycles,
         )

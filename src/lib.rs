@@ -1,4 +1,5 @@
 pub mod cpu;
+pub mod mbc;
 pub mod ppu;
 pub mod apu;
 pub mod debug_tracer;
