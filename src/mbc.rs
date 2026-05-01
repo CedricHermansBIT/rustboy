@@ -1,3 +1,9 @@
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(target_arch = "wasm32")]
+use js_sys::Date;
+
 /// src/mbc.rs — Memory Bank Controller implementations.
 ///
 /// Each cartridge type gets its own variant in `MbcKind` which carries the
@@ -73,11 +79,21 @@ pub struct Mbc {
     pub cart_type: u8,
     /// RTC registers (MBC3): [S, M, H, DL, DH] – present for all MBC3 carts.
     pub rtc_registers: [u8; 5],
+    /// Latched copy used by MBC3 0->1 latch command.
+    rtc_latched_registers: [u8; 5],
+    rtc_latch_active: bool,
+    rtc_latch_armed: bool,
+    /// Unix timestamp used as base for RTC progression.
+    rtc_last_update_unix: u64,
+    /// True only for MBC3+Timer cartridge types (0x0F, 0x10).
+    has_rtc: bool,
     /// True when the cartridge has a battery-backed save (set at init time).
     pub has_battery: bool,
 }
 
 impl Mbc {
+    const RTC_SAVE_MAGIC: [u8; 6] = *b"RBRTC1";
+
     // ─── Construction ────────────────────────────────────────────────────────
 
     /// Build an `Mbc` for `rom`, using `ram_size_bytes` (pre-calculated by the
@@ -107,6 +123,8 @@ impl Mbc {
             cart_type,
             0x03 | 0x06 | 0x09 | 0x0D | 0x0F | 0x10 | 0x13 | 0x1B | 0x1E
         );
+        let has_rtc = matches!(cart_type, 0x0F | 0x10);
+        let rtc_now = Self::now_unix_seconds();
 
         Mbc {
             kind,
@@ -118,6 +136,11 @@ impl Mbc {
             ram_bank_mask,
             cart_type,
             rtc_registers: [0; 5],
+            rtc_latched_registers: [0; 5],
+            rtc_latch_active: false,
+            rtc_latch_armed: false,
+            rtc_last_update_unix: rtc_now,
+            has_rtc,
             has_battery,
         }
     }
@@ -133,7 +156,121 @@ impl Mbc {
             ram_bank_mask: 0,
             cart_type: 0,
             rtc_registers: [0; 5],
+            rtc_latched_registers: [0; 5],
+            rtc_latch_active: false,
+            rtc_latch_armed: false,
+            rtc_last_update_unix: Self::now_unix_seconds(),
+            has_rtc: false,
             has_battery: false,
+        }
+    }
+
+    #[inline]
+    fn now_unix_seconds() -> u64 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            (Date::now() / 1000.0) as u64
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs())
+        }
+    }
+
+    #[inline]
+    fn rtc_is_halted(regs: &[u8; 5]) -> bool {
+        (regs[4] & 0x40) != 0
+    }
+
+    #[inline]
+    fn rtc_day(regs: &[u8; 5]) -> u16 {
+        regs[3] as u16 | (((regs[4] & 0x01) as u16) << 8)
+    }
+
+    #[inline]
+    fn rtc_apply_delta(mut regs: [u8; 5], delta_seconds: u64) -> [u8; 5] {
+        if delta_seconds == 0 || Self::rtc_is_halted(&regs) {
+            return regs;
+        }
+
+        let day = Self::rtc_day(&regs) as u64;
+        let mut total = regs[0] as u64 + regs[1] as u64 * 60 + regs[2] as u64 * 3600 + day * 86_400;
+        total += delta_seconds;
+
+        let new_day = total / 86_400;
+        let rem = total % 86_400;
+
+        regs[0] = (rem % 60) as u8;
+        regs[1] = ((rem / 60) % 60) as u8;
+        regs[2] = ((rem / 3600) % 24) as u8;
+
+        let wrapped_day = (new_day % 512) as u16;
+        let mut dh = regs[4] & 0xC0;
+        if new_day > 511 {
+            dh |= 0x80;
+        }
+        dh = (dh & !0x01) | (((wrapped_day >> 8) as u8) & 0x01);
+        regs[3] = wrapped_day as u8;
+        regs[4] = dh;
+        regs
+    }
+
+    #[inline]
+    fn rtc_effective_registers(&self) -> [u8; 5] {
+        if !self.has_rtc {
+            return self.rtc_registers;
+        }
+        let now = Self::now_unix_seconds();
+        let delta = now.saturating_sub(self.rtc_last_update_unix);
+        Self::rtc_apply_delta(self.rtc_registers, delta)
+    }
+
+    #[inline]
+    fn rtc_commit_now(&mut self) {
+        if !self.has_rtc {
+            return;
+        }
+        self.rtc_registers = self.rtc_effective_registers();
+        self.rtc_last_update_unix = Self::now_unix_seconds();
+    }
+
+    #[inline]
+    fn rtc_latch(&mut self) {
+        if !self.has_rtc {
+            return;
+        }
+        self.rtc_latched_registers = self.rtc_effective_registers();
+        self.rtc_latch_active = true;
+    }
+
+    #[inline]
+    fn rtc_write_selected_register(&mut self, value: u8) {
+        if !self.has_rtc || !(0x08..=0x0C).contains(&self.rambank) {
+            return;
+        }
+
+        self.rtc_commit_now();
+
+        match self.rambank {
+            0x08 => self.rtc_registers[0] = value % 60,
+            0x09 => self.rtc_registers[1] = value % 60,
+            0x0A => self.rtc_registers[2] = value % 24,
+            0x0B => self.rtc_registers[3] = value,
+            0x0C => {
+                let prev_halt = self.rtc_registers[4] & 0x40;
+                let mut dh = value & 0xC1;
+                if (self.rtc_registers[4] & 0x80) != 0 {
+                    dh |= 0x80;
+                }
+                self.rtc_registers[4] = dh;
+                let new_halt = self.rtc_registers[4] & 0x40;
+                if prev_halt != new_halt {
+                    self.rtc_last_update_unix = Self::now_unix_seconds();
+                }
+            }
+            _ => {}
         }
     }
 
@@ -388,7 +525,15 @@ impl Mbc {
                 if self.rambank <= 0x03 {
                     return self.ram[self.rambank as usize][address - 0xA000];
                 } else if self.rambank >= 0x08 && self.rambank <= 0x0C {
-                    return self.rtc_registers[(self.rambank - 0x08) as usize];
+                    if !self.has_rtc {
+                        return 0xFF;
+                    }
+                    let regs = if self.rtc_latch_active {
+                        self.rtc_latched_registers
+                    } else {
+                        self.rtc_effective_registers()
+                    };
+                    return regs[(self.rambank - 0x08) as usize];
                 }
             }
             return 0xFF;
@@ -412,9 +557,19 @@ impl Mbc {
                 self.rambank = data; // RTC register select; kept as raw value
             }
         } else if address < 0x8000 {
-            // RTC latch: a write of 0 followed by 1 latches the current RTC
-            // time into the readable registers.  Full RTC emulation not yet
-            // implemented; this slot is here for future work.
+            if self.has_rtc {
+                // RTC latch is edge-triggered on a 0 -> 1 write sequence.
+                if data == 0 {
+                    self.rtc_latch_armed = true;
+                } else if data == 1 {
+                    if self.rtc_latch_armed {
+                        self.rtc_latch();
+                    }
+                    self.rtc_latch_armed = false;
+                } else {
+                    self.rtc_latch_armed = false;
+                }
+            }
         } else if address >= 0xA000 && address < 0xC000 {
             let ram_enable = match self.kind {
                 MbcKind::Mbc3 { ram_enable } => ram_enable,
@@ -424,7 +579,7 @@ impl Mbc {
                 if self.rambank <= 0x03 {
                     self.ram[self.rambank as usize][address - 0xA000] = data;
                 } else if self.rambank >= 0x08 && self.rambank <= 0x0C {
-                    self.rtc_registers[(self.rambank - 0x08) as usize] = data;
+                    self.rtc_write_selected_register(data);
                 }
             }
         }
@@ -514,10 +669,21 @@ impl Mbc {
     pub fn export_save_ram(&self) -> Vec<u8> {
         let ram_size = self.get_ram_size();
         let num_banks = (ram_size / 0x2000).max(1);
-        let mut data = Vec::with_capacity(num_banks * 0x2000);
+        let mut data = Vec::with_capacity(num_banks * 0x2000 + 32);
         for bank in 0..num_banks {
             data.extend_from_slice(&self.ram[bank]);
         }
+
+        if self.has_rtc {
+            // Append optional RTC trailer. Older saves without this trailer
+            // remain valid and are still accepted by import_save_ram().
+            let regs = self.rtc_effective_registers();
+            let now = Self::now_unix_seconds();
+            data.extend_from_slice(&Self::RTC_SAVE_MAGIC);
+            data.extend_from_slice(&regs);
+            data.extend_from_slice(&now.to_le_bytes());
+        }
+
         data
     }
 
@@ -525,6 +691,7 @@ impl Mbc {
     pub fn import_save_ram(&mut self, data: &[u8]) {
         let ram_size = self.get_ram_size();
         let num_banks = (ram_size / 0x2000).max(1);
+        let ram_blob_len = num_banks * 0x2000;
         for bank in 0..num_banks {
             let start = bank * 0x2000;
             let end   = (start + 0x2000).min(data.len());
@@ -532,6 +699,74 @@ impl Mbc {
                 self.ram[bank][..end - start].copy_from_slice(&data[start..end]);
             }
         }
+
+        if self.has_rtc {
+            self.rtc_latch_active = false;
+            self.rtc_latch_armed = false;
+
+            let trailer_len = Self::RTC_SAVE_MAGIC.len() + 5 + 8;
+            if data.len() >= ram_blob_len + trailer_len {
+                let trailer = &data[ram_blob_len..];
+                if trailer.starts_with(&Self::RTC_SAVE_MAGIC) {
+                    let mut regs = [0u8; 5];
+                    regs.copy_from_slice(&trailer[Self::RTC_SAVE_MAGIC.len()..Self::RTC_SAVE_MAGIC.len() + 5]);
+
+                    let mut ts_bytes = [0u8; 8];
+                    ts_bytes.copy_from_slice(&trailer[Self::RTC_SAVE_MAGIC.len() + 5..Self::RTC_SAVE_MAGIC.len() + 13]);
+
+                    self.rtc_registers = regs;
+                    self.rtc_last_update_unix = u64::from_le_bytes(ts_bytes);
+                    self.rtc_registers = self.rtc_effective_registers();
+                    self.rtc_last_update_unix = Self::now_unix_seconds();
+                    return;
+                }
+            }
+
+            // Legacy RAM-only save: keep existing RTC registers but resume
+            // progression from current wall-clock time.
+            self.rtc_last_update_unix = Self::now_unix_seconds();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_mbc3_timer() -> Mbc {
+        let mut rom = vec![0u8; 0x8000];
+        rom[0x147] = 0x10; // MBC3 + Timer + RAM + Battery
+        rom[0x149] = 0x02; // 8 KiB RAM
+        Mbc::new(rom, 0x2000)
+    }
+
+    #[test]
+    fn rtc_apply_delta_advances_clock() {
+        let regs = [58, 59, 23, 0x00, 0x00];
+        let out = Mbc::rtc_apply_delta(regs, 3);
+        assert_eq!(out[0], 1);
+        assert_eq!(out[1], 0);
+        assert_eq!(out[2], 0);
+        assert_eq!(out[3], 1);
+    }
+
+    #[test]
+    fn rtc_save_trailer_roundtrip_for_halted_clock() {
+        let mut mbc = make_mbc3_timer();
+        mbc.rtc_registers = [12, 34, 5, 0xAB, 0x41]; // halted + day high bit
+        mbc.rtc_last_update_unix = Mbc::now_unix_seconds();
+
+        let blob = mbc.export_save_ram();
+        assert!(blob.windows(Mbc::RTC_SAVE_MAGIC.len()).any(|w| w == Mbc::RTC_SAVE_MAGIC));
+
+        let mut mbc2 = make_mbc3_timer();
+        mbc2.import_save_ram(&blob);
+
+        assert_eq!(mbc2.rtc_registers[0], 12);
+        assert_eq!(mbc2.rtc_registers[1], 34);
+        assert_eq!(mbc2.rtc_registers[2], 5);
+        assert_eq!(mbc2.rtc_registers[3], 0xAB);
+        assert_eq!(mbc2.rtc_registers[4] & 0xC1, 0x41);
     }
 }
 

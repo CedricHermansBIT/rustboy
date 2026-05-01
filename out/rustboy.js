@@ -334,6 +334,10 @@ function __wbg_get_imports() {
             const ret = new ImageData(getClampedArrayU8FromWasm0(arg0, arg1), arg2 >>> 0, arg3 >>> 0);
             return ret;
         }, arguments); },
+        __wbg_now_46088b605baee87a: function() {
+            const ret = Date.now();
+            return ret;
+        },
         __wbg_putImageData_11e4d488ba4c8adc: function() { return handleError(function (arg0, arg1, arg2, arg3) {
             arg0.putImageData(arg1, arg2, arg3);
         }, arguments); },
@@ -375,7 +379,7 @@ function __wbg_get_imports() {
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 42, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 40, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h251cbffc22d1a62b);
             return ret;
         },
