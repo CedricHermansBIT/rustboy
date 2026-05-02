@@ -429,6 +429,62 @@
       }
       #upload-btn:hover { background: rgba(120,220,120,0.12); border-color: #9be89b; }
 
+      /* Recent games section */
+      #recent-section {
+        width: 900px; max-width: 90vw;
+        margin-bottom: 0.8rem;
+      }
+      #recent-section.hidden { display: none; }
+      #recent-section h3 {
+        font-size: 0.72rem; color: #8ab;
+        text-transform: uppercase; letter-spacing: 0.1em;
+        margin-bottom: 0.45rem;
+      }
+      #recent-list {
+        display: flex; gap: 8px;
+        overflow-x: auto; padding-bottom: 4px;
+      }
+      #recent-list::-webkit-scrollbar { height: 4px; }
+      #recent-list::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
+      #recent-list .recent-item {
+        flex: 0 0 auto; width: 110px;
+        display: flex; flex-direction: column;
+        align-items: center; text-align: center;
+        gap: 5px; padding: 0.45rem;
+        background: rgba(100,160,220,0.07);
+        border: 1px solid rgba(100,160,220,0.2);
+        border-radius: 6px; cursor: pointer;
+        font-size: 0.72rem; color: #aac;
+        transition: background 0.12s, transform 0.1s;
+        line-height: 1.3;
+      }
+      #recent-list .recent-item:hover {
+        background: rgba(100,160,220,0.18);
+        transform: scale(1.04);
+        border-color: #8ab;
+      }
+      #recent-list .recent-item .rom-img {
+        width: 80px; height: 80px; object-fit: contain;
+        border-radius: 4px; background: #0a0a0a;
+        image-rendering: pixelated;
+      }
+      #recent-list .recent-item .rom-noimg {
+        width: 80px; height: 80px; border-radius: 4px;
+        background: #141420; display: flex;
+        align-items: center; justify-content: center;
+        font-size: 1.6rem; color: #334;
+      }
+      #recent-list .recent-item .recent-name {
+        word-break: break-word; color: #aac;
+        max-width: 100px;
+      }
+      #recent-divider {
+        width: 900px; max-width: 90vw;
+        border: none; border-top: 1px solid #2a2a2a;
+        margin: 0 0 0.7rem 0;
+      }
+      #recent-divider.hidden { display: none; }
+
       /* Volume control */
       #volume-control {
         position: fixed; bottom: 14px; right: 14px;
@@ -663,6 +719,11 @@
 
     <div id="rom-picker">
       <h2>RustBoy</h2>
+      <div id="recent-section" class="hidden">
+        <h3>🕹 Recent</h3>
+        <div id="recent-list"></div>
+      </div>
+      <hr id="recent-divider" class="hidden" />
       <div id="rom-tabs" class="hidden">
         <button class="rom-tab active" data-tab="gb">🎮 Game Boy</button>
         <button class="rom-tab" data-tab="gbc">🌈 Game Boy Color</button>
@@ -1052,6 +1113,47 @@
       let ROMS = []; // filtered list
       let romLoaded = false;
       let searchQuery = '';
+      let currentRomInfo = null; // { name, folder, tab } for the currently-loaded list ROM
+
+      // ── Recent games tracking ──
+      const RECENT_KEY = 'rustboy_recent';
+      const MAX_RECENT = 20;
+
+      function addToRecent(info) {
+        try {
+          let recent = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+          recent = recent.filter(r => !(r.name === info.name && r.folder === info.folder));
+          recent.unshift({ ...info, ts: Date.now() });
+          if (recent.length > MAX_RECENT) recent = recent.slice(0, MAX_RECENT);
+          localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
+        } catch(e) {}
+      }
+
+      function getRecentRoms() {
+        try {
+          const recent = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+          if (!recent.length) return [];
+          // Build a lookup of available ROMs across all tabs
+          const available = new Map();
+          Object.entries(ROM_TABS).forEach(([tabKey, tab]) => {
+            tab.allRoms.forEach(rom => {
+              available.set(tab.folder + '/' + rom.name, { rom, tabKey, tab });
+            });
+          });
+          return recent
+            .filter(r => {
+              const key = r.folder + '/' + r.name;
+              if (!available.has(key)) return false;
+              // Only show if a save file exists
+              if (!r.saveKey) return false;
+              return localStorage.getItem(r.saveKey) !== null;
+            })
+            .map(r => {
+              const key = r.folder + '/' + r.name;
+              return { ...available.get(key), ts: r.ts };
+            });
+        } catch(e) { return []; }
+      }
 
       function toggleVramCanvas(v) {
         document.getElementById('vram-canvas').style.display = v ? 'block' : 'none';
@@ -1064,6 +1166,10 @@
           let b = ''; for (let i = 0; i < data.length; i++) b += String.fromCharCode(data[i]);
           localStorage.setItem(key, btoa(b));
         } catch(e) {}
+        // Record save association for recent games
+        if (currentRomInfo) {
+          addToRecent({ ...currentRomInfo, saveKey: key });
+        }
       }
       function loadSaveData(key) {
         try {
@@ -1231,7 +1337,64 @@
         buildList();
       }
 
+      function buildRecentSection() {
+        const recentSection = document.getElementById('recent-section');
+        const recentDivider = document.getElementById('recent-divider');
+        const recentListEl = document.getElementById('recent-list');
+        // Hide when searching
+        if (searchQuery) {
+          recentSection.classList.add('hidden');
+          recentDivider.classList.add('hidden');
+          return;
+        }
+        const recents = getRecentRoms();
+        if (!recents.length) {
+          recentSection.classList.add('hidden');
+          recentDivider.classList.add('hidden');
+          return;
+        }
+        recentListEl.innerHTML = '';
+        recents.forEach(({ rom, tabKey, tab }) => {
+          const item = document.createElement('div');
+          item.className = 'recent-item';
+          if (rom.img) {
+            const img = document.createElement('img');
+            img.className = 'rom-img';
+            img.loading = 'lazy';
+            img.src = tab.folder + '/' + encodeURI(rom.img);
+            img.alt = rom.name;
+            img.onerror = function() {
+              const ph = document.createElement('div');
+              ph.className = 'rom-noimg'; ph.textContent = '🎮';
+              this.replaceWith(ph);
+            };
+            item.appendChild(img);
+          } else {
+            const ph = document.createElement('div');
+            ph.className = 'rom-noimg'; ph.textContent = '🎮';
+            item.appendChild(ph);
+          }
+          const nameSpan = document.createElement('span');
+          nameSpan.className = 'recent-name';
+          nameSpan.textContent = rom.name.replace(/\.gbc?$/i, '');
+          item.appendChild(nameSpan);
+          item.addEventListener('click', () => {
+            // Switch to the correct tab and load
+            activeTab = tabKey;
+            updateTabHighlight();
+            ALL_ROMS = ROM_TABS[activeTab].allRoms;
+            const idx = ALL_ROMS.findIndex(r => r.name === rom.name);
+            if (idx >= 0) { ROMS = [...ALL_ROMS]; selectedIdx = idx; }
+            loadSelectedRom();
+          });
+          recentListEl.appendChild(item);
+        });
+        recentSection.classList.remove('hidden');
+        recentDivider.classList.remove('hidden');
+      }
+
       function buildList() {
+        buildRecentSection();
         listEl.innerHTML = '';
         const countEl = document.getElementById('rom-count');
         if (!ROMS.length && !ALL_ROMS.length) {
@@ -1294,6 +1457,7 @@
         pickerOpen = true;
         touchSettingsOpen = false;
         pickerEl.classList.remove('hidden');
+        buildRecentSection();
         refreshSelection();
         if (!shouldUseTouchControls()) setTimeout(() => searchInput.focus(), 50);
       }
@@ -1309,7 +1473,10 @@
         closePicker(); initAudio();
         resumeAudioContext();
         try {
-          const resp = await fetch(ROM_TABS[activeTab].folder + '/' + encodeURIComponent(ROMS[selectedIdx].name));
+          const rom = ROMS[selectedIdx];
+          const tab = ROM_TABS[activeTab];
+          currentRomInfo = { name: rom.name, folder: tab.folder, tab: activeTab };
+          const resp = await fetch(tab.folder + '/' + encodeURIComponent(rom.name));
           if (!resp.ok) throw new Error(resp.statusText);
           Module._load_rom_data(new Uint8Array(await resp.arrayBuffer()));
           romLoaded = true;
