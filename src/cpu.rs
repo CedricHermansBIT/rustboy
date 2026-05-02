@@ -835,6 +835,16 @@ impl CPU {
     pub fn write_byte(&mut self, address: usize, data: u8) {
         self.tick_timer_4t();
 
+        // DMG OAM DMA blocks CPU bus access except HRAM (FF80-FFFE) and FF46.
+        if !self.is_cgb
+            && self.oam_dma_active
+            && self.oam_dma_delay == 0
+            && address != 0xFF46
+            && !(0xFF80..=0xFFFE).contains(&address)
+        {
+            return;
+        }
+
         if address >= 0xFE00 && address < 0xFEA0 {
             if self.oam_dma_active && self.oam_dma_delay == 0 {
                 return;
@@ -1019,28 +1029,15 @@ impl CPU {
                     self.memory[0xFF44] = 0;
                     self.window_line_counter = 0;
                     self.ppu_cycles = 0;
-                    self.ppu_mcycle_countdown = 1;
+                    self.ppu_mcycle_countdown = 0;
                     self.is_lcd_turning_on = true;
                     self.set_ppu_mode(0);
                     self.check_lyc();
                 }
             }
             0xFF41 => {
-                let lcd_on = (self.memory[0xFF40] & 0x80) != 0;
                 let old_stat = self.memory[0xFF41];
                 let read_only = old_stat & 0x07;
-
-                if lcd_on {
-                    let mode = old_stat & 0x03;
-                    let ly = self.memory[0xFF44];
-                    let lyc = self.memory[0xFF45];
-                    let any_condition_active = mode != 3 || ly == lyc;
-
-                    if any_condition_active && !self.prev_stat_line {
-                        self.request_interrupt(1);
-                    }
-                    self.prev_stat_line = any_condition_active;
-                }
 
                 self.memory[0xFF41] = (data & 0xF8) | read_only;
                 self.update_stat_irq_line();
@@ -1228,6 +1225,17 @@ impl CPU {
 
     pub fn read_byte(&mut self, address: usize) -> u8 {
         self.tick_timer_4t();
+
+        // DMG OAM DMA blocks CPU bus access except HRAM (FF80-FFFE) and FF46.
+        if !self.is_cgb
+            && self.oam_dma_active
+            && self.oam_dma_delay == 0
+            && address != 0xFF46
+            && !(0xFF80..=0xFFFE).contains(&address)
+        {
+            return 0xFF;
+        }
+
         self.peek_byte(address)
     }
 
@@ -1499,7 +1507,7 @@ impl CPU {
             0 => {
                 if self.is_lcd_turning_on {
                     self.is_lcd_turning_on = false;
-                    self.ppu_mcycle_countdown = 20;
+                    self.ppu_mcycle_countdown = 19;
                     self.set_ppu_mode(2);
                     return;
                 }
@@ -1609,7 +1617,7 @@ impl CPU {
         let lyc = self.memory[0xFF45];
 
         let hblank_trigger = mode == 0 && (stat & 0x08 != 0);
-        let vblank_trigger = mode == 1 && ((stat & 0x10 != 0) || (stat & 0x20 != 0));
+        let vblank_trigger = mode == 1 && (stat & 0x10 != 0);
 
         let line = hblank_trigger
             || vblank_trigger
