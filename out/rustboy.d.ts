@@ -13,13 +13,34 @@ export function add_breakpoint_reg(reg: string, value: number): void;
 
 export function clear_breakpoints(): void;
 
+export function clear_save_data(): void;
+
 export function clear_trace(): void;
+
+export function export_save_data(): Uint8Array;
+
+export function export_state(): Uint8Array;
 
 export function get_debug_state(): string;
 
+/**
+ * Returns true when the loaded ROM requires/supports Game Boy Color mode.
+ */
+export function get_is_cgb(): boolean;
+
+export function get_rom_title(): string;
+
 export function get_speed(): number;
 
+export function get_state_id(): string;
+
 export function get_trace(): string;
+
+export function import_save_data(data: Uint8Array): void;
+
+export function import_state(data: Uint8Array): void;
+
+export function is_paused(): boolean;
 
 export function is_tracing(): boolean;
 
@@ -37,9 +58,15 @@ export function peek_slice(start: number, len: number): string;
 
 export function remove_breakpoint(index: number): void;
 
+export function reset_emulator(): void;
+
 export function save_game(): void;
 
 export function set_key_state(key_code: number, is_pressed: boolean): void;
+
+export function set_paused(paused: boolean): void;
+
+export function set_speed(speed: number): void;
 
 export function toggle_trace(): void;
 
@@ -54,8 +81,16 @@ export interface InitOutput {
     readonly add_breakpoint_opcode: (a: number) => void;
     readonly add_breakpoint_pc: (a: number) => void;
     readonly add_breakpoint_reg: (a: number, b: number, c: number) => void;
+    readonly export_save_data: () => [number, number];
+    readonly export_state: () => [number, number];
     readonly get_debug_state: () => [number, number];
+    readonly get_is_cgb: () => number;
+    readonly get_rom_title: () => [number, number];
+    readonly get_state_id: () => [number, number];
     readonly get_trace: () => [number, number];
+    readonly import_save_data: (a: number, b: number) => [number, number];
+    readonly import_state: (a: number, b: number) => [number, number];
+    readonly is_paused: () => number;
     readonly is_tracing: () => number;
     readonly list_breakpoints: () => [number, number];
     readonly load_rom_data: (a: number, b: number) => void;
@@ -64,14 +99,18 @@ export interface InitOutput {
     readonly peek_regs: () => [number, number];
     readonly peek_slice: (a: number, b: number) => [number, number];
     readonly set_key_state: (a: number, b: number) => void;
-    readonly trace_len: () => number;
-    readonly remove_breakpoint: (a: number) => void;
-    readonly get_speed: () => number;
+    readonly set_paused: (a: number) => void;
     readonly clear_breakpoints: () => void;
     readonly clear_trace: () => void;
+    readonly reset_emulator: () => void;
     readonly toggle_trace: () => void;
     readonly save_game: () => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h251cbffc22d1a62b: (a: number, b: number) => void;
+    readonly set_speed: (a: number) => void;
+    readonly remove_breakpoint: (a: number) => void;
+    readonly clear_save_data: () => void;
+    readonly trace_len: () => number;
+    readonly get_speed: () => number;
+    readonly wasm_bindgen__convert__closures_____invoke__hfff0a4eb64ee2bc3: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
@@ -79,6 +118,7 @@ export interface InitOutput {
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_destroy_closure: (a: number, b: number) => void;
+    readonly __externref_table_dealloc: (a: number) => void;
     readonly __wbindgen_start: () => void;
 }
 

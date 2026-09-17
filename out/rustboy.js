@@ -43,8 +43,32 @@ export function clear_breakpoints() {
     wasm.clear_breakpoints();
 }
 
+export function clear_save_data() {
+    wasm.clear_save_data();
+}
+
 export function clear_trace() {
     wasm.clear_trace();
+}
+
+/**
+ * @returns {Uint8Array}
+ */
+export function export_save_data() {
+    const ret = wasm.export_save_data();
+    var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v1;
+}
+
+/**
+ * @returns {Uint8Array}
+ */
+export function export_state() {
+    const ret = wasm.export_state();
+    var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v1;
 }
 
 /**
@@ -64,11 +88,52 @@ export function get_debug_state() {
 }
 
 /**
+ * Returns true when the loaded ROM requires/supports Game Boy Color mode.
+ * @returns {boolean}
+ */
+export function get_is_cgb() {
+    const ret = wasm.get_is_cgb();
+    return ret !== 0;
+}
+
+/**
+ * @returns {string}
+ */
+export function get_rom_title() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const ret = wasm.get_rom_title();
+        deferred1_0 = ret[0];
+        deferred1_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
  * @returns {number}
  */
 export function get_speed() {
     const ret = wasm.get_speed();
     return ret >>> 0;
+}
+
+/**
+ * @returns {string}
+ */
+export function get_state_id() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const ret = wasm.get_state_id();
+        deferred1_0 = ret[0];
+        deferred1_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
 }
 
 /**
@@ -85,6 +150,38 @@ export function get_trace() {
     } finally {
         wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
     }
+}
+
+/**
+ * @param {Uint8Array} data
+ */
+export function import_save_data(data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.import_save_data(ptr0, len0);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @param {Uint8Array} data
+ */
+export function import_state(data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.import_state(ptr0, len0);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @returns {boolean}
+ */
+export function is_paused() {
+    const ret = wasm.is_paused();
+    return ret !== 0;
 }
 
 /**
@@ -174,6 +271,10 @@ export function remove_breakpoint(index) {
     wasm.remove_breakpoint(index);
 }
 
+export function reset_emulator() {
+    wasm.reset_emulator();
+}
+
 export function save_game() {
     wasm.save_game();
 }
@@ -184,6 +285,20 @@ export function save_game() {
  */
 export function set_key_state(key_code, is_pressed) {
     wasm.set_key_state(key_code, is_pressed);
+}
+
+/**
+ * @param {boolean} paused
+ */
+export function set_paused(paused) {
+    wasm.set_paused(paused);
+}
+
+/**
+ * @param {number} speed
+ */
+export function set_speed(speed) {
+    wasm.set_speed(speed);
 }
 
 export function toggle_trace() {
@@ -368,8 +483,9 @@ function __wbg_get_imports() {
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
         },
-        __wbg_storeSaveData_f07b3af0cd9856fe: function(arg0, arg1, arg2, arg3) {
-            storeSaveData(getStringFromWasm0(arg0, arg1), getArrayU8FromWasm0(arg2, arg3));
+        __wbg_storeSaveData_cd4aabfbcc7a4574: function(arg0, arg1, arg2, arg3) {
+            const ret = storeSaveData(getStringFromWasm0(arg0, arg1), getArrayU8FromWasm0(arg2, arg3));
+            return ret;
         },
         __wbg_toggleVramCanvas_3800f19a85e9545c: function(arg0) {
             toggleVramCanvas(arg0 !== 0);
@@ -379,8 +495,8 @@ function __wbg_get_imports() {
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 40, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h251cbffc22d1a62b);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 39, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hfff0a4eb64ee2bc3);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
@@ -404,8 +520,8 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen__convert__closures_____invoke__h251cbffc22d1a62b(arg0, arg1) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h251cbffc22d1a62b(arg0, arg1);
+function wasm_bindgen__convert__closures_____invoke__hfff0a4eb64ee2bc3(arg0, arg1) {
+    wasm.wasm_bindgen__convert__closures_____invoke__hfff0a4eb64ee2bc3(arg0, arg1);
 }
 
 function addToExternrefTable0(obj) {
@@ -618,6 +734,12 @@ function passStringToWasm0(arg, malloc, realloc) {
 
     WASM_VECTOR_LEN = offset;
     return ptr;
+}
+
+function takeFromExternrefTable0(idx) {
+    const value = wasm.__wbindgen_externrefs.get(idx);
+    wasm.__externref_table_dealloc(idx);
+    return value;
 }
 
 let cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });
