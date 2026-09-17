@@ -485,6 +485,60 @@
       }
       #recent-divider.hidden { display: none; }
 
+      #library-tools {
+        width: 540px; max-width: 90vw; display: flex; gap: 7px;
+        margin: -0.25rem 0 0.65rem;
+      }
+      #library-tools select, #library-tools button {
+        background: #181818; color: #aaa; border: 1px solid #383838;
+        border-radius: 5px; padding: 0.4rem 0.6rem; font: inherit;
+        font-size: 0.76rem; cursor: pointer;
+      }
+      #library-tools select { flex: 1; }
+      #library-tools button.active { color: #ffd76a; border-color: #8b7335; }
+      #rom-list li { position: relative; }
+      .favorite-btn {
+        position: absolute; top: 5px; right: 5px; border: 0; background: rgba(0,0,0,.7);
+        color: #666; border-radius: 50%; width: 25px; height: 25px; cursor: pointer;
+        line-height: 25px; padding: 0; z-index: 2;
+      }
+      .favorite-btn.active { color: #ffd76a; }
+      .rom-status { font-size: .62rem; color: #78a878; min-height: .8rem; }
+
+      #quick-toolbar {
+        position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+        display: flex; gap: 5px; z-index: 45; opacity: .35; transition: opacity .18s;
+      }
+      #quick-toolbar:hover, #quick-toolbar:focus-within { opacity: 1; }
+      #quick-toolbar button {
+        background: rgba(10,10,10,.86); color: #aaa; border: 1px solid #3a3a3a;
+        border-radius: 5px; padding: 5px 8px; cursor: pointer; font: 12px inherit;
+      }
+      #quick-toolbar button:hover, #quick-toolbar button.active { color: #9be89b; border-color: #6a9; }
+      #toast-stack { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 300; pointer-events: none; }
+      .toast { background: rgba(15,20,15,.94); color: #d8ead8; border: 1px solid #587058; border-radius: 6px; padding: 9px 14px; margin-top: 6px; font-size: .8rem; box-shadow: 0 4px 18px #0008; animation: toast-in .18s ease-out; }
+      .toast.error { border-color: #a55; color: #f3baba; }
+      @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+
+      #save-manager {
+        position: fixed; inset: 0; z-index: 250; background: rgba(0,0,0,.82);
+        display: flex; align-items: center; justify-content: center;
+      }
+      #save-manager.hidden { display: none; }
+      .save-panel { width: 620px; max-width: 92vw; max-height: 82vh; overflow: auto; background: #131513; border: 1px solid #465446; border-radius: 9px; padding: 18px; color: #ccc; }
+      .save-panel header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 13px; }
+      .save-panel h2 { color: #9be89b; font-size: 1.15rem; }
+      .save-panel button { background: #202420; color: #bbb; border: 1px solid #465046; border-radius: 5px; padding: 6px 9px; cursor: pointer; }
+      .save-panel button:hover { color: #9be89b; border-color: #6a8; }
+      #state-slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin: 12px 0 17px; }
+      .state-slot { border: 1px solid #333; border-radius: 6px; padding: 8px; min-width: 0; }
+      .state-slot img { width: 100%; aspect-ratio: 10/9; object-fit: cover; image-rendering: pixelated; background: #090909; border-radius: 3px; }
+      .state-slot strong, .state-slot small { display: block; margin: 5px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .state-slot small { color: #777; font-size: .66rem; }
+      .state-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+      .save-data-actions { border-top: 1px solid #303530; padding-top: 13px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+      .save-data-actions label { margin-right: auto; font-size: .78rem; color: #999; }
+
       /* Volume control */
       #volume-control {
         position: fixed; bottom: 14px; right: 14px;
@@ -711,6 +765,16 @@
 
     <div id="debug-hud" class="hidden"></div>
 
+    <div id="quick-toolbar" aria-label="Quick emulator controls">
+      <button id="quick-pause" title="Pause / resume">⏸ Pause</button>
+      <button id="quick-ff" title="Hold for 4× speed">⏩</button>
+      <button id="quick-reset" title="Reset game">↻</button>
+      <button id="quick-mute" title="Mute audio">🔊</button>
+      <button id="quick-fullscreen" title="Fullscreen">⛶</button>
+      <button id="quick-saves" title="Save states and save data">Saves</button>
+    </div>
+    <div id="toast-stack" aria-live="polite"></div>
+
     <div id="volume-control">
       <span class="vol-icon" id="vol-mute-btn" role="button" tabindex="0" aria-label="Mute or unmute audio">🔊</span>
       <input type="range" id="volume-slider" min="0" max="100" value="30" aria-label="Volume" />
@@ -730,6 +794,11 @@
         <button class="rom-tab" data-tab="testroms">🧪 Test ROMs</button>
       </div>
       <input type="text" id="rom-search" placeholder="🔍 Search games..." autocomplete="off" spellcheck="false" aria-label="Search ROMs" />
+      <div id="library-tools">
+        <select id="rom-sort" aria-label="Sort games"><option value="name">Name A–Z</option><option value="recent">Recently played</option></select>
+        <button id="favorites-filter" type="button">☆ Favorites</button>
+        <button id="clear-recents" type="button">Clear recent</button>
+      </div>
       <div id="rom-count"></div>
       <ul id="rom-list"></ul>
       <div id="upload-area">
@@ -737,6 +806,21 @@
         <input type="file" id="rom-file-input" accept=".gb,.gbc,.bin" style="display:none" />
       </div>
       <p class="hint">Type to search · ←→↑↓ navigate · Enter load · Esc back · Drag & drop .gb/.gbc files</p>
+    </div>
+
+    <div id="save-manager" class="hidden" role="dialog" aria-modal="true" aria-labelledby="save-manager-title">
+      <div class="save-panel">
+        <header><h2 id="save-manager-title">Saves</h2><button id="save-manager-close" type="button">Close</button></header>
+        <label><input id="auto-resume" type="checkbox" checked /> Automatically resume the latest autosave</label>
+        <div id="state-slots"></div>
+        <div class="save-data-actions">
+          <label>Battery save (.sav) and save-state backups</label>
+          <button id="export-saves" type="button">Export backup</button>
+          <button id="import-saves" type="button">Import backup</button>
+          <button id="delete-saves" type="button">Delete game saves</button>
+          <input id="save-import-file" type="file" accept=".json,application/json" hidden />
+        </div>
+      </div>
     </div>
 
     <script>
@@ -1117,15 +1201,32 @@
 
       // ── Recent games tracking ──
       const RECENT_KEY = 'rustboy_recent';
+      const FAVORITES_KEY = 'rustboy_favorites';
       const MAX_RECENT = 20;
+      let favoritesOnly = false;
+      let stateLibraryKeys = new Set();
+      function romLibraryKey(name, folder) { return `${folder}/${name}`; }
+      function getFavorites() {
+        try { const value = JSON.parse(localStorage.getItem(FAVORITES_KEY) || '[]'); return new Set(Array.isArray(value) ? value : []); }
+        catch (_) { return new Set(); }
+      }
+      function toggleFavorite(rom) {
+        const favorites = getFavorites(), key = romLibraryKey(rom.name, ROM_TABS[activeTab].folder);
+        favorites.has(key) ? favorites.delete(key) : favorites.add(key);
+        try { localStorage.setItem(FAVORITES_KEY, JSON.stringify([...favorites])); } catch (_) {}
+        filterRoms();
+      }
 
       function addToRecent(info) {
         try {
           let recent = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+          if (!Array.isArray(recent)) recent = [];
+          const existing = recent.find(r => r.name === info.name && r.folder === info.folder);
           recent = recent.filter(r => !(r.name === info.name && r.folder === info.folder));
-          recent.unshift({ ...info, ts: Date.now() });
+          recent.unshift({ ...existing, ...info, ts: Date.now() });
           if (recent.length > MAX_RECENT) recent = recent.slice(0, MAX_RECENT);
           localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
+          buildRecentSection();
         } catch(e) {}
       }
 
@@ -1143,15 +1244,13 @@
           return recent
             .filter(r => {
               const key = r.folder + '/' + r.name;
-              if (!available.has(key)) return false;
-              // Only show if a save file exists
-              if (!r.saveKey) return false;
-              return localStorage.getItem(r.saveKey) !== null;
+              return available.has(key);
             })
             .map(r => {
               const key = r.folder + '/' + r.name;
               return { ...available.get(key), ts: r.ts };
-            });
+            })
+            .sort((a, b) => (b.ts || 0) - (a.ts || 0));
         } catch(e) { return []; }
       }
 
@@ -1162,14 +1261,17 @@
       }
 
       function storeSaveData(key, data) {
+        let stored = false;
         try {
           let b = ''; for (let i = 0; i < data.length; i++) b += String.fromCharCode(data[i]);
           localStorage.setItem(key, btoa(b));
+          stored = true;
         } catch(e) {}
         // Record save association for recent games
         if (currentRomInfo) {
           addToRecent({ ...currentRomInfo, saveKey: key });
         }
+        return stored;
       }
       function loadSaveData(key) {
         try {
@@ -1180,6 +1282,99 @@
         } catch(e) { return undefined; }
       }
       let saveInterval = null;
+
+      /* ── Save states (binary data lives in IndexedDB) ── */
+      const STATE_DB = 'rustboy_states';
+      const STATE_STORE = 'states';
+      const AUTO_RESUME_KEY = 'rustboy_auto_resume';
+      let stateDbPromise = null;
+      let stateAutosaveInterval = null;
+      function openStateDb() {
+        if (stateDbPromise) return stateDbPromise;
+        stateDbPromise = new Promise((resolve, reject) => {
+          const req = indexedDB.open(STATE_DB, 1);
+          req.onupgradeneeded = () => req.result.createObjectStore(STATE_STORE, { keyPath: 'key' });
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+        return stateDbPromise;
+      }
+      async function stateRecord(mode, value) {
+        const db = await openStateDb();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction(STATE_STORE, mode === 'get' ? 'readonly' : 'readwrite');
+          const store = tx.objectStore(STATE_STORE);
+          const req = mode === 'get' ? store.get(value) : mode === 'put' ? store.put(value) : store.delete(value);
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+      }
+      function currentStateId() { return Module?._get_state_id?.() || ''; }
+      function stateKey(slot) { const id = currentStateId(); return id ? `${id}:${slot}` : ''; }
+      function screenshot() {
+        try { return document.getElementById('rustboy-canvas').toDataURL('image/jpeg', .72); }
+        catch (_) { return ''; }
+      }
+      async function saveState(slot, quiet = false) {
+        if (!romLoaded || !Module?._export_state) return false;
+        try {
+          const bytes = Module._export_state();
+          if (!bytes?.length) throw new Error('No emulator state available');
+          await stateRecord('put', { key: stateKey(slot), romId: currentStateId(), slot,
+            libraryKey: currentRomInfo ? romLibraryKey(currentRomInfo.name, currentRomInfo.folder) : '',
+            title: Module._get_rom_title?.() || currentRomInfo?.name || 'Game', timestamp: Date.now(),
+            preview: screenshot(), data: bytes.slice().buffer });
+          if (!quiet) toast(slot === 'auto' ? 'Autosave updated' : `Saved state ${slot}`);
+          await refreshStateIndex();
+          return true;
+        } catch (e) { if (!quiet) toast(`Could not save state: ${e.message || e}`, true); return false; }
+      }
+      async function loadState(slot, quiet = false) {
+        if (!romLoaded || !Module?._import_state) return false;
+        try {
+          const record = await stateRecord('get', stateKey(slot));
+          if (!record) return false;
+          Module._import_state(new Uint8Array(record.data));
+          clearAudioQueue();
+          if (!quiet) toast(slot === 'auto' ? 'Autosave resumed' : `Loaded state ${slot}`);
+          updatePauseButton();
+          return true;
+        } catch (e) { if (!quiet) toast(`Could not load state: ${e.message || e}`, true); return false; }
+      }
+      async function deleteState(slot) {
+        try { await stateRecord('delete', stateKey(slot)); toast(`Deleted ${slot === 'auto' ? 'autosave' : `state ${slot}`}`); refreshSaveManager(); buildList(); }
+        catch (e) { toast('Could not delete state', true); }
+      }
+      function clearAudioQueue() { audioWritePos = audioReadPos = audioSamplesAvailable = 0; }
+      async function refreshStateIndex() {
+        try {
+          const db = await openStateDb();
+          const records = await new Promise((resolve, reject) => {
+            const req = db.transaction(STATE_STORE, 'readonly').objectStore(STATE_STORE).getAll();
+            req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error);
+          });
+          stateLibraryKeys = new Set(records.map(r => r.libraryKey).filter(Boolean));
+          if (pickerOpen) buildList();
+        } catch (_) {}
+      }
+      function autoResumeEnabled() { try { return localStorage.getItem(AUTO_RESUME_KEY) !== '0'; } catch (_) { return true; } }
+      async function finishRomLoad() {
+        if (autoResumeEnabled()) await loadState('auto', true).then(restored => { if (restored) toast('Resumed autosave'); });
+        clearInterval(stateAutosaveInterval);
+        stateAutosaveInterval = setInterval(() => saveState('auto', true), 30000);
+        updatePauseButton();
+      }
+
+      function bytesToBase64(bytes) {
+        let result = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) result += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+        return btoa(result);
+      }
+      function base64ToBytes(value) {
+        const raw = atob(value), out = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+        return out;
+      }
 
       /* ── Audio ── */
       let audioCtx = null, audioNode = null, gainNode = null;
@@ -1328,11 +1523,14 @@
       function filterRoms() {
         const q = searchQuery.toLowerCase().trim();
         ALL_ROMS = ROM_TABS[activeTab].allRoms;
-        if (!q) {
-          ROMS = [...ALL_ROMS];
-        } else {
-          ROMS = ALL_ROMS.filter(r => r.name.toLowerCase().includes(q));
-        }
+        const favorites = getFavorites();
+        ROMS = ALL_ROMS.filter(r => (!q || r.name.toLowerCase().includes(q)) &&
+          (!favoritesOnly || favorites.has(romLibraryKey(r.name, ROM_TABS[activeTab].folder))));
+        if (document.getElementById('rom-sort')?.value === 'recent') {
+          let recent = []; try { recent = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch (_) {}
+          const order = new Map(recent.map((r, i) => [romLibraryKey(r.name, r.folder), i]));
+          ROMS.sort((a, b) => (order.get(romLibraryKey(a.name, ROM_TABS[activeTab].folder)) ?? 1e9) - (order.get(romLibraryKey(b.name, ROM_TABS[activeTab].folder)) ?? 1e9) || a.name.localeCompare(b.name));
+        } else ROMS.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
         selectedIdx = 0;
         buildList();
       }
@@ -1415,6 +1613,12 @@
             : `${ALL_ROMS.length} games`;
           ROMS.forEach((rom, i) => {
             const li = document.createElement('li');
+            const libraryKey = romLibraryKey(rom.name, ROM_TABS[activeTab].folder);
+            const favorite = document.createElement('button');
+            favorite.type = 'button'; favorite.className = 'favorite-btn' + (getFavorites().has(libraryKey) ? ' active' : '');
+            favorite.textContent = getFavorites().has(libraryKey) ? '★' : '☆'; favorite.title = 'Favorite';
+            favorite.addEventListener('click', e => { e.stopPropagation(); toggleFavorite(rom); });
+            li.appendChild(favorite);
             if (rom.img) {
               const img = document.createElement('img');
               img.className = 'rom-img';
@@ -1440,6 +1644,10 @@
             // Display name without .gb/.gbc extension
             nameSpan.textContent = rom.name.replace(/\.gbc?$/i, '');
             li.appendChild(nameSpan);
+            const status = document.createElement('span'); status.className = 'rom-status';
+            const recentEntry = (() => { try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]').find(r => romLibraryKey(r.name, r.folder) === libraryKey); } catch (_) { return null; } })();
+            status.textContent = [recentEntry?.saveKey && localStorage.getItem(recentEntry.saveKey) ? 'SAVE' : '', stateLibraryKeys.has(libraryKey) ? 'STATE' : ''].filter(Boolean).join(' · ');
+            li.appendChild(status);
             li.addEventListener('click', () => { selectedIdx = i; loadSelectedRom(); });
             if (i === selectedIdx) li.classList.add('selected');
             listEl.appendChild(li);
@@ -1473,22 +1681,37 @@
         closePicker(); initAudio();
         resumeAudioContext();
         try {
+          if (!Module) throw new Error('Emulator is still initializing; please try again');
           const rom = ROMS[selectedIdx];
           const tab = ROM_TABS[activeTab];
-          currentRomInfo = { name: rom.name, folder: tab.folder, tab: activeTab };
+          const romInfo = { name: rom.name, folder: tab.folder, tab: activeTab };
           const resp = await fetch(tab.folder + '/' + encodeURIComponent(rom.name));
           if (!resp.ok) throw new Error(resp.statusText);
           Module._load_rom_data(new Uint8Array(await resp.arrayBuffer()));
+          currentRomInfo = romInfo;
+          addToRecent(romInfo);
           romLoaded = true;
+          await finishRomLoad();
           resumeAudioContext();
+          updateSpeedBadge(); // show GBC/speed indicator immediately on load
         } catch(e) { console.error('ROM load failed:', e); openPicker(); }
       }
-      function loadRomFromBuffer(buf) {
+      async function loadRomFromBuffer(buf, name = 'Uploaded ROM') {
+        if (!Module) {
+          console.error('ROM load failed: emulator is still initializing');
+          openPicker();
+          return;
+        }
         closePicker(); initAudio();
         resumeAudioContext();
+        // Uploaded ROMs cannot be reopened from the built-in picker, and must
+        // not inherit the previously selected ROM's recent/save association.
+        currentRomInfo = { name, folder: 'uploads', tab: 'uploads', uploaded: true };
         Module._load_rom_data(new Uint8Array(buf));
         romLoaded = true;
+        await finishRomLoad();
         resumeAudioContext();
+        updateSpeedBadge(); // show GBC/speed indicator immediately on load
       }
 
       /* ── Upload ── */
@@ -1498,18 +1721,18 @@
       fileInput.addEventListener('change', (e) => {
         const f = e.target.files[0]; if (!f) return;
         const r = new FileReader();
-        r.onload = () => { if (Module) loadRomFromBuffer(r.result); };
+        r.onload = () => { if (Module) loadRomFromBuffer(r.result, f.name); };
         r.readAsArrayBuffer(f); fileInput.value = '';
       });
       pickerEl.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
       pickerEl.addEventListener('drop', (e) => {
         e.preventDefault(); const f = e.dataTransfer.files[0];
-        if (f && Module) { const r = new FileReader(); r.onload = () => loadRomFromBuffer(r.result); r.readAsArrayBuffer(f); }
+        if (f && Module) { const r = new FileReader(); r.onload = () => loadRomFromBuffer(r.result, f.name); r.readAsArrayBuffer(f); }
       });
       document.body.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
       document.body.addEventListener('drop', (e) => {
         e.preventDefault(); const f = e.dataTransfer.files[0];
-        if (f && Module) { const r = new FileReader(); r.onload = () => loadRomFromBuffer(r.result); r.readAsArrayBuffer(f); }
+        if (f && Module) { const r = new FileReader(); r.onload = () => loadRomFromBuffer(r.result, f.name); r.readAsArrayBuffer(f); }
       });
 
       async function fetchRomList() {
@@ -1588,6 +1811,15 @@
         searchQuery = searchInput.value;
         filterRoms();
       });
+      document.getElementById('rom-sort').addEventListener('change', filterRoms);
+      document.getElementById('favorites-filter').addEventListener('click', (e) => {
+        favoritesOnly = !favoritesOnly; e.currentTarget.classList.toggle('active', favoritesOnly); filterRoms();
+      });
+      document.getElementById('clear-recents').addEventListener('click', () => {
+        try { localStorage.removeItem(RECENT_KEY); } catch (_) {}
+        buildRecentSection(); if (document.getElementById('rom-sort').value === 'recent') filterRoms(); toast('Recent games cleared');
+      });
+      refreshStateIndex();
 
       /* ── Volume control ── */
       const volSlider = document.getElementById('volume-slider');
@@ -1608,6 +1840,121 @@
         volMuteBtn.click();
       });
 
+      /* ── Quick controls, notifications, and save manager ── */
+      function toast(message, error = false) {
+        const el = document.createElement('div'); el.className = 'toast' + (error ? ' error' : ''); el.textContent = message;
+        document.getElementById('toast-stack').appendChild(el);
+        setTimeout(() => el.remove(), 2600);
+      }
+      function updatePauseButton() {
+        const paused = !!Module?._is_paused?.();
+        const button = document.getElementById('quick-pause');
+        button.textContent = paused ? '▶ Resume' : '⏸ Pause'; button.classList.toggle('active', paused);
+      }
+      document.getElementById('quick-pause').addEventListener('click', () => {
+        if (!romLoaded || !Module?._set_paused) return;
+        const paused = !Module._is_paused(); Module._set_paused(paused); updatePauseButton(); toast(paused ? 'Paused' : 'Resumed');
+      });
+      document.getElementById('quick-reset').addEventListener('click', () => {
+        if (!romLoaded || !Module?._reset_emulator) return;
+        Module._reset_emulator(); clearAudioQueue(); toast('Game reset');
+      });
+      document.getElementById('quick-mute').addEventListener('click', () => volMuteBtn.click());
+      document.getElementById('quick-fullscreen').addEventListener('click', async () => {
+        try {
+          if (document.fullscreenElement) await document.exitFullscreen();
+          else await document.getElementById('screen-area').requestFullscreen();
+        } catch (e) { toast('Fullscreen is unavailable', true); }
+      });
+      let fastForwardPrevious = 1;
+      const quickFf = document.getElementById('quick-ff');
+      function startFastForward(e) {
+        if (!romLoaded || !Module?._set_speed) return;
+        e.preventDefault(); fastForwardPrevious = Module._get_speed?.() || 1; Module._set_speed(4); quickFf.classList.add('active'); updateSpeedBadge();
+      }
+      function stopFastForward() {
+        if (!quickFf.classList.contains('active')) return;
+        Module?._set_speed?.(fastForwardPrevious); quickFf.classList.remove('active'); updateSpeedBadge();
+      }
+      quickFf.addEventListener('pointerdown', startFastForward);
+      ['pointerup','pointercancel','pointerleave'].forEach(type => quickFf.addEventListener(type, stopFastForward));
+
+      const saveManager = document.getElementById('save-manager');
+      const autoResume = document.getElementById('auto-resume');
+      autoResume.checked = autoResumeEnabled();
+      autoResume.addEventListener('change', () => { try { localStorage.setItem(AUTO_RESUME_KEY, autoResume.checked ? '1' : '0'); } catch (_) {} });
+      let saveManagerWasPaused = false;
+      async function openSaveManager() {
+        if (!romLoaded) { toast('Load a game first'); return; }
+        saveManagerWasPaused = Module?._is_paused?.() || false;
+        Module?._set_paused?.(true); updatePauseButton(); saveManager.classList.remove('hidden'); await refreshSaveManager();
+      }
+      function closeSaveManager() {
+        saveManager.classList.add('hidden');
+        if (!saveManagerWasPaused) Module?._set_paused?.(false);
+        updatePauseButton(); resumeAudioContext();
+      }
+      async function refreshSaveManager() {
+        const container = document.getElementById('state-slots'); container.innerHTML = '';
+        for (const slot of ['auto', '1', '2', '3']) {
+          let record = null; try { record = await stateRecord('get', stateKey(slot)); } catch (_) {}
+          const card = document.createElement('div'); card.className = 'state-slot';
+          const image = document.createElement('img'); image.alt = '';
+          if (record?.preview) image.src = record.preview; else image.style.visibility = 'hidden';
+          const title = document.createElement('strong'); title.textContent = slot === 'auto' ? 'Autosave' : `Slot ${slot}`;
+          const date = document.createElement('small'); date.textContent = record ? new Date(record.timestamp).toLocaleString() : 'Empty';
+          const actions = document.createElement('div'); actions.className = 'state-actions';
+          const save = document.createElement('button'); save.textContent = 'Save'; save.onclick = async () => { await saveState(slot); await refreshSaveManager(); };
+          const load = document.createElement('button'); load.textContent = 'Load'; load.disabled = !record; load.onclick = async () => { if (await loadState(slot)) closeSaveManager(); };
+          const del = document.createElement('button'); del.textContent = 'Delete'; del.disabled = !record; del.onclick = () => deleteState(slot);
+          actions.append(save, load, del); card.append(image, title, date, actions); container.appendChild(card);
+        }
+      }
+      document.getElementById('quick-saves').addEventListener('click', openSaveManager);
+      document.getElementById('save-manager-close').addEventListener('click', closeSaveManager);
+      saveManager.addEventListener('click', e => { if (e.target === saveManager) closeSaveManager(); });
+
+      document.getElementById('export-saves').addEventListener('click', async () => {
+        try {
+          Module?._save_game?.();
+          const romId = currentStateId(), title = Module?._get_rom_title?.() || 'game';
+          const batteryKey = `rustboy_save_${title}`, battery = localStorage.getItem(batteryKey);
+          const states = [];
+          for (const slot of ['auto','1','2','3']) {
+            const record = await stateRecord('get', stateKey(slot));
+            if (record) states.push({ ...record, data: bytesToBase64(new Uint8Array(record.data)) });
+          }
+          const blob = new Blob([JSON.stringify({ format: 'rustboy-backup', version: 1, romId, title, battery, states })], { type: 'application/json' });
+          const url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = `${title || 'rustboy'}.rustboy-save.json`; a.click(); URL.revokeObjectURL(url);
+          toast('Save backup exported');
+        } catch (e) { toast(`Export failed: ${e.message || e}`, true); }
+      });
+      const saveImportFile = document.getElementById('save-import-file');
+      document.getElementById('import-saves').addEventListener('click', () => saveImportFile.click());
+      saveImportFile.addEventListener('change', async () => {
+        try {
+          const backup = JSON.parse(await saveImportFile.files[0].text());
+          if (backup.format !== 'rustboy-backup' || backup.version !== 1) throw new Error('Unsupported backup file');
+          if (backup.romId !== currentStateId()) throw new Error('Backup belongs to another ROM');
+          if (backup.battery) {
+            localStorage.setItem(`rustboy_save_${Module._get_rom_title()}`, backup.battery);
+            Module?._import_save_data?.(base64ToBytes(backup.battery));
+          }
+          for (const record of backup.states || []) await stateRecord('put', { ...record, data: base64ToBytes(record.data).buffer });
+          await refreshStateIndex(); await refreshSaveManager(); toast('Save backup imported');
+        } catch (e) { toast(`Import failed: ${e.message || e}`, true); }
+        saveImportFile.value = '';
+      });
+      document.getElementById('delete-saves').addEventListener('click', async () => {
+        if (!confirm('Delete the battery save and all save states for this game?')) return;
+        try {
+          localStorage.removeItem(`rustboy_save_${Module._get_rom_title()}`);
+          Module?._clear_save_data?.();
+          for (const slot of ['auto','1','2','3']) await stateRecord('delete', stateKey(slot));
+          await refreshStateIndex(); await refreshSaveManager(); toast('Game saves deleted');
+        } catch (e) { toast('Could not delete saves', true); }
+      });
+
       /* ── Speed badge ── */
       const speedBadge = document.getElementById('speed-badge');
       let speedHideTimeout = null;
@@ -1615,7 +1962,10 @@
         if (!Module) return;
         try {
           const s = Module._get_speed();
-          speedBadge.textContent = s + '×'; speedBadge.classList.remove('hidden');
+          const isCgb = Module._get_is_cgb && Module._get_is_cgb();
+          const label = (isCgb ? 'GBC ' : '') + s + '×';
+          speedBadge.textContent = label;
+          speedBadge.classList.remove('hidden');
           clearTimeout(speedHideTimeout);
           if (s === 1) speedHideTimeout = setTimeout(() => speedBadge.classList.add('hidden'), 1500);
         } catch(e) {}
@@ -1628,6 +1978,7 @@
         if (!action) return;
         if (action === 'rom_picker') {
           if (Module && Module._save_game) { try { Module._save_game(); } catch(x) {} }
+          saveState('auto', true);
           openPicker(); return;
         }
         if (action === 'debug_hud') { toggleDebug(); return; }
@@ -1638,6 +1989,8 @@
           Module._set_key_state(ACTION_TO_RUST.speed, true);
           setTimeout(updateSpeedBadge, 50); return;
         }
+        if (action === 'pause' && Module) setTimeout(() => { updatePauseButton(); toast(Module._is_paused?.() ? 'Paused' : 'Resumed'); }, 30);
+        if (action === 'reset' && Module) { clearAudioQueue(); toast('Game reset'); }
         const rc = ACTION_TO_RUST[action];
         if (rc >= 0 && Module) Module._set_key_state(rc, true);
       }
@@ -1824,45 +2177,53 @@
     </script>
 
     <script type="module">
-      import init, {
-        set_key_state, load_rom_data, get_debug_state, save_game, get_speed,
-        add_breakpoint_pc, add_breakpoint_reg, add_breakpoint_mem, add_breakpoint_opcode, add_breakpoint_cb_opcode,
-        remove_breakpoint, clear_breakpoints, list_breakpoints,
-        peek, peek_slice, peek_regs,
-        toggle_trace, is_tracing, get_trace, clear_trace, trace_len
-      } from './out/rustboy.js';
+      // Import the namespace so optional/new exports do not prevent the entire
+      // emulator from starting when a browser has an older generated bundle cached.
+      import init, * as Rustboy from './out/rustboy.js';
       init().then(() => {
         Module = {
-          _set_key_state: set_key_state,
-          _load_rom_data: load_rom_data,
-          _get_debug_state: get_debug_state,
-          _save_game: save_game,
-          _get_speed: get_speed,
-          _toggle_trace: toggle_trace,
-          _is_tracing: is_tracing,
-          _get_trace: get_trace,
-          _clear_trace: clear_trace,
-          _trace_len: trace_len,
+          _set_key_state: Rustboy.set_key_state,
+          _load_rom_data: Rustboy.load_rom_data,
+          _get_debug_state: Rustboy.get_debug_state,
+          _save_game: Rustboy.save_game,
+          _get_speed: Rustboy.get_speed,
+          _get_is_cgb: Rustboy.get_is_cgb,
+          _export_state: Rustboy.export_state,
+          _import_state: Rustboy.import_state,
+          _get_state_id: Rustboy.get_state_id,
+          _get_rom_title: Rustboy.get_rom_title,
+          _export_save_data: Rustboy.export_save_data,
+          _import_save_data: Rustboy.import_save_data,
+          _clear_save_data: Rustboy.clear_save_data,
+          _set_paused: Rustboy.set_paused,
+          _is_paused: Rustboy.is_paused,
+          _reset_emulator: Rustboy.reset_emulator,
+          _set_speed: Rustboy.set_speed,
+          _toggle_trace: Rustboy.toggle_trace,
+          _is_tracing: Rustboy.is_tracing,
+          _get_trace: Rustboy.get_trace,
+          _clear_trace: Rustboy.clear_trace,
+          _trace_len: Rustboy.trace_len,
         };
 
-        window.bp  = (a) => add_breakpoint_pc(a);
-        window.bpr = (r,v) => add_breakpoint_reg(r,v);
-        window.bpm = (a,v) => add_breakpoint_mem(a,v);
-        window.bpo = (o) => add_breakpoint_opcode(o);
-        window.bpcb = (o) => add_breakpoint_cb_opcode(o);
-        window.bpd = (i) => remove_breakpoint(i);
-        window.bpc = () => clear_breakpoints();
-        window.bpl = () => console.log(list_breakpoints());
-        window.mem  = (a) => '0x' + peek(a).toString(16).toUpperCase().padStart(2, '0');
-        window.dump = (s,l) => console.log(peek_slice(s, l||16));
-        window.regs = () => console.log(peek_regs());
+        window.bp  = (a) => Rustboy.add_breakpoint_pc(a);
+        window.bpr = (r,v) => Rustboy.add_breakpoint_reg(r,v);
+        window.bpm = (a,v) => Rustboy.add_breakpoint_mem(a,v);
+        window.bpo = (o) => Rustboy.add_breakpoint_opcode(o);
+        window.bpcb = (o) => Rustboy.add_breakpoint_cb_opcode(o);
+        window.bpd = (i) => Rustboy.remove_breakpoint(i);
+        window.bpc = () => Rustboy.clear_breakpoints();
+        window.bpl = () => console.log(Rustboy.list_breakpoints());
+        window.mem  = (a) => '0x' + Rustboy.peek(a).toString(16).toUpperCase().padStart(2, '0');
+        window.dump = (s,l) => console.log(Rustboy.peek_slice(s, l||16));
+        window.regs = () => console.log(Rustboy.peek_regs());
 
         saveInterval = setInterval(() => {
           if (Module._save_game) { try { Module._save_game(); } catch(e) {} }
         }, 5000);
         window.addEventListener('beforeunload', () => { try { Module._save_game(); } catch(e) {} });
         document.addEventListener('visibilitychange', () => {
-          if (document.hidden) { try { Module._save_game(); } catch(e) {} }
+          if (document.hidden) { try { Module._save_game(); saveState('auto', true); } catch(e) {} }
         });
       }).catch(err => console.error(err));
 
