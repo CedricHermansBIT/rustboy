@@ -33,5 +33,8 @@ features = ["console",
            "ImageData",
            "HtmlTextAreaElement"]
 
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O3", "--enable-mutable-globals"]
+
 [profile.release]
 #debug = true

@@ -591,6 +591,17 @@ impl APU {
         self.cgb_mode = cgb_mode;
     }
 
+    /// Recreate audible register state after loading a save state. Internal
+    /// oscillator phase is intentionally restarted, avoiding stale queued
+    /// samples while preserving the game's channel configuration.
+    pub(crate) fn restore_from_memory(memory: &[u8; 0x10000], cgb_mode: bool) -> Self {
+        let mut apu = Self::new();
+        apu.set_cgb_mode(cgb_mode);
+        for addr in 0xFF30..=0xFF3F { apu.write_register(addr, memory[addr as usize]); }
+        for addr in 0xFF10..=0xFF25 { apu.write_register(addr, memory[addr as usize]); }
+        apu
+    }
+
     /// Advance the APU by `t_cycles` T-cycles
     pub fn tick(&mut self, t_cycles: u32) {
         // Frame sequencer cycle counter always advances (driven by DIV)

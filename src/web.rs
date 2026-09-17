@@ -16,7 +16,7 @@ lazy_static::lazy_static! {
 extern "C" {
     fn toggleVramCanvas(v: bool);
     fn queueAudioSamples(left: &[f32], right: &[f32]);
-    fn storeSaveData(key: &str, data: &[u8]);
+    fn storeSaveData(key: &str, data: &[u8]) -> bool;
     fn loadSaveData(key: &str) -> JsValue;
 }
 
@@ -49,7 +49,8 @@ pub fn load_rom_data(rom_data: &[u8]) {
     });
 
     let cgb_flag = rom_data.get(0x143).copied().unwrap_or(0);
-    let use_cgb_boot = matches!(cgb_flag, 0x80 | 0xC0);
+    // Bit 7 set = CGB support; matches both 0x80 (compatible) and 0xC0 (CGB-only).
+    let use_cgb_boot = cgb_flag & 0x80 != 0;
     let bootrom: &[u8] = if use_cgb_boot {
         include_bytes!("../roms/cgb_boot.bin")
     } else {
@@ -98,13 +99,82 @@ pub fn save_game() {
     CPU.with(|c| {
         let cpu_opt = c.borrow();
         if let Some(cpu_rc) = cpu_opt.as_ref() {
-            let cpu = cpu_rc.borrow();
-            if cpu.has_battery() {
+            let mut cpu = cpu_rc.borrow_mut();
+            if cpu.has_battery() && cpu.save_ram_is_dirty() {
                 let key = format!("rustboy_save_{}", cpu.rom_title());
                 let data = cpu.export_save_ram();
-                storeSaveData(&key, &data);
+                if storeSaveData(&key, &data) {
+                    cpu.mark_save_ram_clean();
+                }
             }
         }
+    });
+}
+
+#[wasm_bindgen]
+pub fn export_state() -> Vec<u8> {
+    CPU.with(|c| c.borrow().as_ref().map(|rc| rc.borrow().export_state()).unwrap_or_default())
+}
+
+#[wasm_bindgen]
+pub fn import_state(data: &[u8]) -> Result<(), JsValue> {
+    CPU.with(|c| {
+        let cpu = c.borrow().clone().ok_or_else(|| JsValue::from_str("No ROM is loaded"))?;
+        let result = cpu.borrow_mut().import_state(data).map_err(JsValue::from_str);
+        result
+    })
+}
+
+#[wasm_bindgen]
+pub fn get_state_id() -> String {
+    CPU.with(|c| c.borrow().as_ref().map(|rc| rc.borrow().state_id()).unwrap_or_default())
+}
+
+#[wasm_bindgen]
+pub fn get_rom_title() -> String {
+    CPU.with(|c| c.borrow().as_ref().map(|rc| rc.borrow().rom_title()).unwrap_or_default())
+}
+
+#[wasm_bindgen]
+pub fn export_save_data() -> Vec<u8> {
+    CPU.with(|c| c.borrow().as_ref().map(|rc| rc.borrow().export_save_ram()).unwrap_or_default())
+}
+
+#[wasm_bindgen]
+pub fn import_save_data(data: &[u8]) -> Result<(), JsValue> {
+    CPU.with(|c| {
+        let cpu = c.borrow().clone().ok_or_else(|| JsValue::from_str("No ROM is loaded"))?;
+        cpu.borrow_mut().import_save_ram(data);
+        Ok(())
+    })
+}
+
+#[wasm_bindgen]
+pub fn clear_save_data() {
+    CPU.with(|c| if let Some(rc) = c.borrow().as_ref() { rc.borrow_mut().clear_save_ram(); });
+}
+
+#[wasm_bindgen]
+pub fn set_paused(paused: bool) {
+    CPU.with(|c| if let Some(rc) = c.borrow().as_ref() {
+        rc.borrow().is_paused.store(paused, Ordering::Relaxed);
+    });
+}
+
+#[wasm_bindgen]
+pub fn is_paused() -> bool {
+    CPU.with(|c| c.borrow().as_ref().map(|rc| rc.borrow().is_paused.load(Ordering::Relaxed)).unwrap_or(false))
+}
+
+#[wasm_bindgen]
+pub fn reset_emulator() {
+    CPU.with(|c| if let Some(rc) = c.borrow().as_ref() { rc.borrow_mut().reset(); });
+}
+
+#[wasm_bindgen]
+pub fn set_speed(speed: u32) {
+    CPU.with(|c| if let Some(rc) = c.borrow().as_ref() {
+        rc.borrow_mut().speed_multiplier = match speed { 1 | 2 | 4 | 8 => speed, _ => 1 };
     });
 }
 
@@ -127,6 +197,17 @@ pub fn get_speed() -> u32 {
             Some(cpu_rc) => cpu_rc.borrow().get_speed(),
             None => 1,
         }
+    })
+}
+
+/// Returns true when the loaded ROM requires/supports Game Boy Color mode.
+#[wasm_bindgen]
+pub fn get_is_cgb() -> bool {
+    CPU.with(|c| {
+        c.borrow()
+            .as_ref()
+            .map(|rc| rc.borrow().is_cgb)
+            .unwrap_or(false)
     })
 }
 
@@ -346,7 +427,13 @@ fn start_emulation_loop() {
 
             cpu.handle_timer(t_cycles);
 
-            cycles_this_frame += t_cycles as u32;
+            // Frame pacing: count PPU T-cycles, not CPU T-cycles.
+            // In CGB double-speed mode the CPU runs at 2× but the PPU
+            // stays at 1×, so each CPU M-cycle only advances the PPU by
+            // 2 T-cycles instead of 4.  Using CPU T-cycles would fill the
+            // frame budget twice as fast, halving the effective game speed.
+            let ppu_t_cycles = if cpu.double_speed { cycles * 2 } else { t_cycles };
+            cycles_this_frame += ppu_t_cycles;
 
             if cpu.booting && cpu.program_counter == 0x100 {
                 cpu.check_boot_finish();

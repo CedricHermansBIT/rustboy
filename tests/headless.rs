@@ -66,20 +66,26 @@ fn run_rom(path: &str, max_cycles: u64) -> CPU {
             eprintln!("  ✓ Tracing started at PC=0x{:04X}", cpu.program_counter);
         }
 
-        // Detect JR -2 infinite loop (0x18 0xFE)
+        // GBMicrotest publishes a terminal result byte.
+        if path.contains("/gbmicrotest/") && cpu.peek_byte(0xFF82) != 0 {
+            break;
+        }
+
+        // Detect JR -2 infinite loop (0x18 0xFE). Use the bus-facing ROM
+        // view: `memory` only mirrors the first ROM window at load time.
         let addr = cpu.program_counter as usize;
-        if addr + 1 < cpu.memory.len()
-            && cpu.memory[addr] == 0x18
-            && cpu.memory[addr + 1] == 0xFE
+        if addr + 1 < 0x1_0000
+            && cpu.peek_byte(addr) == 0x18
+            && cpu.peek_byte(addr + 1) == 0xFE
         {
             break;
         }
 
         // Detect LD B,B (0x40) followed by JR -2 (Mooneye finish)
-        if addr + 2 < cpu.memory.len()
-            && cpu.memory[addr] == 0x40
-            && cpu.memory[addr + 1] == 0x18
-            && cpu.memory[addr + 2] == 0xFE
+        if addr + 2 < 0x1_0000
+            && cpu.peek_byte(addr) == 0x40
+            && cpu.peek_byte(addr + 1) == 0x18
+            && cpu.peek_byte(addr + 2) == 0xFE
         {
             cpu.execute();
             cpu.cycles = 0;
@@ -149,6 +155,14 @@ fn mooneye_state(cpu: &CPU) -> String {
 fn run_micro_test(rom_path: &str) {
     if !Path::new(rom_path).exists() {
         eprintln!("SKIP: ROM not found: {}", rom_path);
+        return;
+    }
+    let rom = std::fs::read(rom_path)
+        .unwrap_or_else(|e| panic!("Failed to read ROM {}: {}", rom_path, e));
+    let publishes_result = rom.windows(2).any(|w| w == [0xE0, 0x82])
+        || rom.windows(3).any(|w| w == [0xEA, 0x82, 0xFF]);
+    if !publishes_result {
+        eprintln!("SKIP: {} has no GBMicrotest FF82 result publisher", rom_path);
         return;
     }
     // These tests usually finish very quickly (a few hundred cycles)
@@ -782,6 +796,10 @@ fn mooneye_ld_hl_sp_e_timing() {
     run_mooneye_test("testroms/ld_hl_sp_e_timing.gb");
 }
 
+// Pixel-FIFO conformance backlog: these Mode 2/3 visual tests were audited
+// against the strict scanline scheduler on 2026-09-16. None pass yet because
+// they require fetcher/FIFO-level behavior, not just dot-accurate mode edges.
+// Keep each test separate so implementations can be enabled one at a time.
 #[ignore]
 #[test]
 fn mooneye_m2_win_en_toggle() {
@@ -3875,6 +3893,7 @@ fn timer_falling_edge_basic() {
 #[test]
 fn timer_div_reset_causes_tick() {
     let mut cpu = CPU::new();
+    cpu.sys_counter = 0;
     cpu.program_counter = 0x100;
     cpu.booting = false;
     cpu.memory[0xFF05] = 0x00;

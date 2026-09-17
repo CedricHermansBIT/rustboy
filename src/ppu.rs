@@ -1,6 +1,30 @@
+#[cfg(target_arch = "wasm32")]
 use crate::cpu::CPU;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::Clamped;
+
+/// Snapshot of PPU-rendering registers captured at the Mode 2→3 boundary.
+#[derive(Copy, Clone, Default)]
+pub struct PpuLineSnapshot {
+    pub lcdc: u8,
+    pub scy:  u8,
+    pub scx:  u8,
+    pub bgp:  u8,
+    pub obp0: u8,
+    pub obp1: u8,
+    pub wx:   u8,
+    pub wy:   u8,
+}
+/// A single PPU register change that occurred during Mode 3 drawing.
+#[derive(Copy, Clone, Default)]
+pub struct PpuRegChange {
+    /// T-cycle within the scanline (from Mode-2 start) when the write occurred.
+    pub dot:   u16,
+    /// I/O address (e.g. 0xFF40).
+    pub addr:  u16,
+    /// Value written.
+    pub value: u8,
+}
 
 // Default DMG-style green palette (used as fallback)
 pub const DEFAULT_GBC_PALETTES: [[[u8; 4]; 4]; 3] =[
@@ -213,268 +237,303 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
     let ly = cpu.memory[0xFF44];
     if ly >= 144 { return; }
 
-    let lcd_control = cpu.memory[0xFF40];
-    let scroll_y = cpu.memory[0xFF42];
-    let scroll_x = cpu.memory[0xFF43];
-    let bgp = cpu.memory[0xFF47];
+    let snap = cpu.ppu_line_snapshot;
+    if snap.lcdc & 0x80 == 0 { return; }
 
-    let lcdc_bit0 = lcd_control & 0x01 != 0;
-    let master_bg_enable = cpu.is_cgb || lcdc_bit0;
+    let log       = &cpu.ppu_reg_log[..cpu.ppu_reg_log_len];
+    let mode3_dot = cpu.ppu_mode3_start_dot;
+    let fine_x    = (snap.scx % 8) as u16;
+    let is_cgb    = cpu.is_cgb;
+    let buf_base  = ly as usize * 160;
 
-    let palettes = if cpu.color_mode == 0 {
-        &cpu.gbc_palettes
-    } else {
-        &DEFAULT_GBC_PALETTES
-    };
+    let palettes = if cpu.color_mode == 0 { &cpu.gbc_palettes } else { &DEFAULT_GBC_PALETTES };
 
-    if lcd_control & 0x80 == 0x80 {
-        let tile_map_base: usize = if lcd_control & 0x08 == 0x08 { 0x9C00 } else { 0x9800 };
-        let tile_data_base: usize = if lcd_control & 0x10 == 0x10 { 0x8000 } else { 0x8800 };
+    // ── Pre-build per-pixel OBP/LCDC state for sprite pass ──────────────────
+    // One forward pass (O(160)) instead of a full log scan (O(log_len)) per
+    // sprite pixel. 3×160 = 480 bytes on the stack.
+    let mut px_obp0    = [snap.obp0; 160];
+    let mut px_obp1    = [snap.obp1; 160];
+    let mut px_lcdc_sp = [snap.lcdc; 160];
+    if !log.is_empty() {
+        let (mut c0, mut c1, mut cl) = (snap.obp0, snap.obp1, snap.lcdc);
+        let mut li = 0usize;
+        for xi in 0..160usize {
+            let dot = mode3_dot.saturating_add(fine_x).saturating_add(xi as u16);
+            while li < log.len() && log[li].dot <= dot {
+                match log[li].addr {
+                    0xFF40 => cl = log[li].value,
+                    0xFF48 => c0 = log[li].value,
+                    0xFF49 => c1 = log[li].value,
+                    _ => {}
+                }
+                li += 1;
+            }
+            px_obp0[xi] = c0; px_obp1[xi] = c1; px_lcdc_sp[xi] = cl;
+        }
+    }
 
-        // 1. DRAW BACKGROUND FOR THIS LINE
-        let dy = ly.wrapping_add(scroll_y);
-        for x in 0..160u32 {
-            let dx = ((x + scroll_x as u32) & 0xFF) as u8;
-            let tile_map_addr = tile_map_base + (dy as usize / 8) * 32 + (dx as usize / 8);
+    // Working rendering registers — start at Mode-2→3 snapshot values.
+    let mut lcdc = snap.lcdc;
+    let mut scy  = snap.scy;
+    let mut scx  = snap.scx;
+    let mut bgp  = snap.bgp;
+    let mut wx   = snap.wx;
+    let wy       = snap.wy;
 
-            let tile_index = if cpu.is_cgb {
-                cpu.cgb_vram[0][tile_map_addr - 0x8000]
+    let win_line_active = ly >= wy;
+    let mut log_idx     = 0usize;
+    let mut window_drawn = false;
+
+    // ── BG / Window tile-strided pass ────────────────────────────────────────
+    // We cache (b1, b2) tile bytes and render up to 8 pixels from them before
+    // fetching the next tile. Log-entry boundaries and the window left edge
+    // split runs shorter when needed. In the common case (no log entries) this
+    // gives ~20 tile fetches per scanline instead of 160 per-pixel fetches.
+    let mut screen_x = 0u32;
+    while screen_x < 160 {
+        let pixel_dot = mode3_dot.saturating_add(fine_x).saturating_add(screen_x as u16);
+
+        // Apply any log entries up to the current pixel.
+        while log_idx < log.len() && log[log_idx].dot <= pixel_dot {
+            let chg = log[log_idx];
+            match chg.addr {
+                0xFF40 => lcdc = chg.value,
+                0xFF42 => scy  = chg.value,
+                0xFF43 => scx  = chg.value,
+                0xFF47 => bgp  = chg.value,
+                0xFF4B => wx   = chg.value,
+                _ => {}
+            }
+            log_idx += 1;
+        }
+
+        // LCD killed mid-line → white fill for the rest of the scanline.
+        if lcdc & 0x80 == 0 {
+            for xi in screen_x..160 {
+                cpu.frame_buffer[buf_base + xi as usize] = pack_cgb_pixel(0xFF, 0xFF, 0xFF, 0, false);
+            }
+            break;
+        }
+
+        // How many screen-x columns until the next log entry fires?
+        let next_log_dot = log.get(log_idx).map(|e| e.dot).unwrap_or(0xFFFF);
+        let next_log_x: u32 = if next_log_dot == 0xFFFF {
+            160
+        } else {
+            next_log_dot.saturating_sub(mode3_dot).saturating_sub(fine_x) as u32
+        };
+
+        let master_bg = is_cgb || lcdc & 0x01 != 0;
+        let win_en    = lcdc & 0x20 != 0 && master_bg && win_line_active;
+        let win_left  = wx as i32 - 7;
+        let in_window = win_en && screen_x as i32 >= win_left;
+
+        let tile_data_base: usize = if lcdc & 0x10 != 0 { 0x8000 } else { 0x8800 };
+
+        if in_window {
+            // ── Window tile ─────────────────────────────────────────────────
+            window_drawn = true;
+            let wy_row       = cpu.window_line_counter;
+            let tile_map_base: usize = if lcdc & 0x40 != 0 { 0x9C00 } else { 0x9800 };
+            let wx_pos_start = (screen_x as i32 - win_left).max(0) as u32;
+            let tile_map_addr = tile_map_base + (wy_row as usize / 8) * 32 + (wx_pos_start as usize / 8);
+
+            let (tile_index, attr) = if is_cgb {
+                (cpu.cgb_vram[0][tile_map_addr - 0x8000],
+                 cpu.cgb_vram[1][tile_map_addr - 0x8000])
             } else {
-                cpu.memory[tile_map_addr]
+                (cpu.memory[tile_map_addr], 0u8)
             };
-
-            let attr = if cpu.is_cgb {
-                cpu.cgb_vram[1][tile_map_addr - 0x8000]
-            } else {
-                0
-            };
-
-            let vram_bank = if cpu.is_cgb { ((attr >> 3) & 1) as usize } else { 0 };
-            let flip_x = cpu.is_cgb && (attr & 0x20) != 0;
-            let flip_y = cpu.is_cgb && (attr & 0x40) != 0;
-            let cgb_pal = attr & 0x07;
-            let bg_priority = cpu.is_cgb && (attr & 0x80) != 0;
-
+            let vram_bank = if is_cgb { ((attr >> 3) & 1) as usize } else { 0 };
+            let flip_x    = is_cgb && (attr & 0x20) != 0;
+            let flip_y    = is_cgb && (attr & 0x40) != 0;
+            let cgb_pal   = attr & 0x07;
+            let bg_prio   = is_cgb && (attr & 0x80) != 0;
             let offset: u16 = if tile_data_base == 0x8000 {
                 tile_index as u16 * 16
             } else {
                 ((tile_index as i8 as i16 + 128) as u16) * 16
             };
-
-            let ty = if flip_y { 7 - (dy % 8) } else { dy % 8 };
-            let line_offset = offset + (ty as u16 * 2);
-
-            let addr = tile_data_base + line_offset as usize;
-
-            let b1 = if cpu.is_cgb {
-                let base = addr - 0x8000;
-                cpu.cgb_vram[vram_bank][base]
+            let t_row = if flip_y { 7 - (wy_row % 8) } else { wy_row % 8 };
+            let addr  = tile_data_base + (offset + t_row as u16 * 2) as usize;
+            let (b1, b2) = if is_cgb {
+                (cpu.cgb_vram[vram_bank][addr - 0x8000],
+                 cpu.cgb_vram[vram_bank][addr - 0x8000 + 1])
             } else {
-                cpu.memory[addr]
+                (cpu.memory[addr], cpu.memory[addr + 1])
             };
 
-            let b2 = if cpu.is_cgb {
-                let base = addr - 0x8000;
-                cpu.cgb_vram[vram_bank][base + 1]
+            // Run to end of this window tile or next log entry.
+            let tile_run = 8 - (wx_pos_start % 8);
+            let run_end  = (screen_x + tile_run).min(next_log_x).min(160);
+
+            for xi in screen_x..run_end {
+                let wx_pos = (xi as i32 - win_left) as u8;
+                let px  = if flip_x { 7 - (wx_pos % 8) } else { wx_pos % 8 };
+                let raw = get_color_index(b1, b2, px);
+                let pixel = if is_cgb {
+                    let (r, g, b) = get_cgb_color(&cpu.cgb_bg_palettes, cgb_pal, raw);
+                    pack_cgb_pixel(r, g, b, raw, bg_prio)
+                } else {
+                    let ci    = apply_dmg_palette(raw, bgp);
+                    let color = &palettes[PAL_BG as usize][ci as usize];
+                    pack_cgb_pixel(color[0], color[1], color[2], raw, bg_prio)
+                };
+                cpu.frame_buffer[buf_base + xi as usize] = pixel;
+            }
+            screen_x = run_end;
+        } else {
+            // ── Background tile ──────────────────────────────────────────────
+            let dy    = ly.wrapping_add(scy);
+            let t_row = dy % 8;
+            let tile_map_base: usize = if lcdc & 0x08 != 0 { 0x9C00 } else { 0x9800 };
+            let dx = ((screen_x as u16 + scx as u16) & 0xFF) as u8;
+            let tile_map_addr = tile_map_base + (dy as usize / 8) * 32 + (dx as usize / 8);
+
+            let (tile_index, attr) = if is_cgb {
+                (cpu.cgb_vram[0][tile_map_addr - 0x8000],
+                 cpu.cgb_vram[1][tile_map_addr - 0x8000])
             } else {
-                cpu.memory[addr + 1]
+                (cpu.memory[tile_map_addr], 0u8)
+            };
+            let vram_bank = if is_cgb { ((attr >> 3) & 1) as usize } else { 0 };
+            let flip_x    = is_cgb && (attr & 0x20) != 0;
+            let flip_y    = is_cgb && (attr & 0x40) != 0;
+            let cgb_pal   = attr & 0x07;
+            let bg_prio   = is_cgb && (attr & 0x80) != 0;
+            let offset: u16 = if tile_data_base == 0x8000 {
+                tile_index as u16 * 16
+            } else {
+                ((tile_index as i8 as i16 + 128) as u16) * 16
+            };
+            let ty   = if flip_y { 7 - t_row } else { t_row };
+            let addr = tile_data_base + (offset + ty as u16 * 2) as usize;
+            let (b1, b2) = if is_cgb {
+                (cpu.cgb_vram[vram_bank][addr - 0x8000],
+                 cpu.cgb_vram[vram_bank][addr - 0x8000 + 1])
+            } else {
+                (cpu.memory[addr], cpu.memory[addr + 1])
             };
 
-            let px = if flip_x { 7 - (dx % 8) } else { dx % 8 };
-            let raw = get_color_index(b1, b2, px);
+            // Run to tile boundary, next log entry, window left edge, or screen end.
+            let tile_run: u32 = 8 - (dx % 8) as u32;
+            let win_boundary: u32 = if win_en && win_left > screen_x as i32 {
+                (win_left as u32).min(160)
+            } else { 160 };
+            let run_end = (screen_x + tile_run).min(next_log_x).min(win_boundary).min(160);
 
-            let (r, g, b) = if cpu.is_cgb {
-                get_cgb_color(&cpu.cgb_bg_palettes, cgb_pal, raw)
-            } else {
-                let raw_effective = if master_bg_enable { raw } else { 0 };
-                let ci = apply_dmg_palette(raw_effective, bgp);
-                let color = &palettes[PAL_BG as usize][ci as usize];
-                (color[0], color[1], color[2])
-            };
+            for xi in screen_x..run_end {
+                let dxi = ((xi as u16 + scx as u16) & 0xFF) as u8;
+                let px  = if flip_x { 7 - (dxi % 8) } else { dxi % 8 };
+                let raw = get_color_index(b1, b2, px);
+                let pixel = if is_cgb {
+                    let (r, g, b) = get_cgb_color(&cpu.cgb_bg_palettes, cgb_pal, raw);
+                    pack_cgb_pixel(r, g, b, raw, bg_prio)
+                } else {
+                    let raw_eff = if master_bg { raw } else { 0 };
+                    let ci      = apply_dmg_palette(raw_eff, bgp);
+                    let color   = &palettes[PAL_BG as usize][ci as usize];
+                    pack_cgb_pixel(color[0], color[1], color[2], raw, bg_prio)
+                };
+                cpu.frame_buffer[buf_base + xi as usize] = pixel;
+            }
+            screen_x = run_end;
+        }
+    }
 
-            cpu.frame_buffer[(ly as usize * 160) + x as usize] = pack_cgb_pixel(r, g, b, raw, bg_priority);
+    if window_drawn {
+        cpu.window_line_counter += 1;
+    }
+
+    // ── Sprite pass ──────────────────────────────────────────────────────────
+    if snap.lcdc & 0x02 != 0 {
+        let sprite_height: i16 = if snap.lcdc & 0x04 != 0 { 16 } else { 8 };
+        let ly_i16 = ly as i16;
+
+        let mut line_sprites: [(u8, i16); 10] = [(0, 0); 10];
+        let mut count = 0usize;
+
+        for i in 0..40u8 {
+            let base     = 0xFE00 + (i as usize) * 4;
+            let sprite_y = cpu.memory[base] as i16 - 16;
+            if ly_i16 >= sprite_y && ly_i16 < sprite_y + sprite_height {
+                let sprite_x = cpu.memory[base + 1] as i16 - 8;
+                line_sprites[count] = (i, sprite_x);
+                count += 1;
+                if count >= 10 { break; }
+            }
         }
 
-        // 2. DRAW WINDOW FOR THIS LINE
-        if lcd_control & 0x20 != 0 && master_bg_enable {
-            let window_y = cpu.memory[0xFF4A];
-            let window_x = cpu.memory[0xFF4B] as i32 - 7;
-            let window_tile_map_base: usize = if lcd_control & 0x40 != 0 { 0x9C00 } else { 0x9800 };
-
-            if ly >= window_y {
-                let wy = cpu.window_line_counter;
-                for screen_x in 0..160i32 {
-                    if screen_x >= window_x {
-                        let wx = (screen_x - window_x) as u8;
-                        let tile_map_addr = window_tile_map_base + (wy as usize / 8) * 32 + (wx as usize / 8);
-
-                        let tile_index = if cpu.is_cgb {
-                            cpu.cgb_vram[0][tile_map_addr - 0x8000]
-                        } else {
-                            cpu.memory[tile_map_addr]
-                        };
-
-                        let attr = if cpu.is_cgb {
-                            cpu.cgb_vram[1][tile_map_addr - 0x8000]
-                        } else {
-                            0
-                        };
-
-                        let vram_bank = if cpu.is_cgb { ((attr >> 3) & 1) as usize } else { 0 };
-                        let flip_x = cpu.is_cgb && (attr & 0x20) != 0;
-                        let flip_y = cpu.is_cgb && (attr & 0x40) != 0;
-                        let cgb_pal = attr & 0x07;
-                        let bg_priority = cpu.is_cgb && (attr & 0x80) != 0;
-
-                        let offset: u16 = if tile_data_base == 0x8000 {
-                            tile_index as u16 * 16
-                        } else {
-                            ((tile_index as i8 as i16 + 128) as u16) * 16
-                        };
-
-                        let ty = if flip_y { 7 - (wy % 8) } else { wy % 8 };
-                        let line_offset = offset + (ty as u16 * 2);
-
-                        let addr = tile_data_base + line_offset as usize;
-
-                        let b1 = if cpu.is_cgb {
-                            let base = addr - 0x8000;
-                            cpu.cgb_vram[vram_bank][base]
-                        } else {
-                            cpu.memory[addr]
-                        };
-
-                        let b2 = if cpu.is_cgb {
-                            let base = addr - 0x8000;
-                            cpu.cgb_vram[vram_bank][base + 1]
-                        } else {
-                            cpu.memory[addr + 1]
-                        };
-
-                        let px = if flip_x { 7 - (wx % 8) } else { wx % 8 };
-                        let raw = get_color_index(b1, b2, px);
-
-                        let (r, g, b) = if cpu.is_cgb {
-                            get_cgb_color(&cpu.cgb_bg_palettes, cgb_pal, raw)
-                        } else {
-                            let ci = apply_dmg_palette(raw, bgp);
-                            let color = &palettes[PAL_BG as usize][ci as usize];
-                            (color[0], color[1], color[2])
-                        };
-
-                        cpu.frame_buffer[(ly as usize * 160) + screen_x as usize] = pack_cgb_pixel(r, g, b, raw, bg_priority);
-                    }
-                }
-                cpu.window_line_counter += 1;
-            }
+        let sprites = &mut line_sprites[..count];
+        if !is_cgb {
+            sprites.sort_by(|a, b| a.1.cmp(&b.1));
         }
 
-        // 3. DRAW SPRITES FOR THIS LINE
-        if lcd_control & 0x02 != 0 {
-            let sprite_height: i16 = if lcd_control & 0x04 != 0 { 16 } else { 8 };
-            let obp0 = cpu.memory[0xFF48];
-            let obp1 = cpu.memory[0xFF49];
-            let ly_i16 = ly as i16;
+        for idx in (0..count).rev() {
+            let (oam_idx, sprite_x) = sprites[idx];
+            let base        = 0xFE00 + (oam_idx as usize) * 4;
+            let sprite_y    = cpu.memory[base] as i16 - 16;
+            let mut tile_index = cpu.memory[base + 2];
+            let attributes  = cpu.memory[base + 3];
 
-            let mut line_sprites: [(u8, i16); 10] =[(0, 0); 10]; // (oam_index, sprite_x)
-            let mut count = 0usize;
+            let pal_type     = if attributes & 0x10 != 0 { PAL_OBJ1 } else { PAL_OBJ0 };
+            let flip_x       = attributes & 0x20 != 0;
+            let flip_y       = attributes & 0x40 != 0;
+            let obj_priority = (attributes & 0x80) == 0;
+            let vram_bank    = if is_cgb { ((attributes >> 3) & 1) as usize } else { 0 };
+            let cgb_pal      = attributes & 0x07;
 
-            for i in 0..40u8 {
-                let base = 0xFE00 + (i as usize) * 4;
-                let sprite_y = cpu.memory[base] as i16 - 16;
-                if ly_i16 >= sprite_y && ly_i16 < sprite_y + sprite_height {
-                    let sprite_x = cpu.memory[base + 1] as i16 - 8;
-                    line_sprites[count] = (i, sprite_x);
-                    count += 1;
-                    if count >= 10 { break; }
-                }
+            let mut row = (ly_i16 - sprite_y) as u8;
+            if sprite_height == 16 {
+                tile_index &= 0xFE;
+                if flip_y { row = 15 - row; }
+                if row >= 8 { tile_index |= 0x01; row -= 8; }
+            } else {
+                if flip_y { row = 7 - row; }
             }
 
-            let sprites = &mut line_sprites[..count];
-            if !cpu.is_cgb {
-                sprites.sort_by(|a, b| a.1.cmp(&b.1));
-            }
+            let line_offset = (tile_index as u16) * 16 + (row as u16) * 2;
+            let addr        = 0x8000 + line_offset as usize;
+            let b1 = if is_cgb { cpu.cgb_vram[vram_bank][addr - 0x8000]     } else { cpu.memory[addr]     };
+            let b2 = if is_cgb { cpu.cgb_vram[vram_bank][addr - 0x8000 + 1] } else { cpu.memory[addr + 1] };
 
-            for idx in (0..count).rev() {
-                let (oam_idx, sprite_x) = sprites[idx];
-                let base = 0xFE00 + (oam_idx as usize) * 4;
-                let sprite_y = cpu.memory[base] as i16 - 16;
-                let mut tile_index = cpu.memory[base + 2];
-                let attributes = cpu.memory[base + 3];
+            for px in 0..8u8 {
+                let sx = sprite_x as i32 + px as i32;
+                if sx < 0 || sx >= 160 { continue; }
+                let sx = sx as usize;
 
-                let obp = if attributes & 0x10 != 0 { obp1 } else { obp0 };
-                let pal_type = if attributes & 0x10 != 0 { PAL_OBJ1 } else { PAL_OBJ0 };
-                let flip_x = attributes & 0x20 != 0;
-                let flip_y = attributes & 0x40 != 0;
-                let obj_priority = (attributes & 0x80) == 0;
-                let vram_bank = if cpu.is_cgb { ((attributes >> 3) & 1) as usize } else { 0 };
-                let cgb_pal = attributes & 0x07;
+                let dx  = if flip_x { 7 - px } else { px };
+                let raw = get_color_index(b1, b2, dx);
+                if raw == 0 { continue; }
 
-                let mut row = (ly_i16 - sprite_y) as u8;
-                if sprite_height == 16 {
-                    tile_index &= 0xFE;
-                    if flip_y { row = 15 - row; }
-                    if row >= 8 {
-                        tile_index |= 0x01;
-                        row -= 8;
-                    }
+                // O(1) lookup via pre-built per-pixel palette state.
+                let cur_lcdc = px_lcdc_sp[sx];
+                if cur_lcdc & 0x02 == 0 { continue; }
+                let obp = if attributes & 0x10 != 0 { px_obp1[sx] } else { px_obp0[sx] };
+
+                let bg_pixel         = cpu.frame_buffer[buf_base + sx];
+                let meta             = (bg_pixel >> 24) as u8;
+                let bg_raw           = meta & 0x03;
+                let bg_priority_attr = (meta & 0x04) != 0;
+                let lcdc_b0          = cur_lcdc & 0x01 != 0;
+
+                let draw = if is_cgb {
+                    if !lcdc_b0                            { true  }
+                    else if bg_priority_attr || !obj_priority { bg_raw == 0 }
+                    else                                   { true  }
                 } else {
-                    if flip_y { row = 7 - row; }
-                }
-
-                let line_offset = (tile_index as u16) * 16 + (row as u16) * 2;
-
-                let addr = 0x8000 + line_offset as usize;
-
-                let b1 = if cpu.is_cgb {
-                    cpu.cgb_vram[vram_bank][addr - 0x8000]
-                } else {
-                    cpu.memory[addr]
+                    obj_priority || bg_raw == 0
                 };
 
-                let b2 = if cpu.is_cgb {
-                    cpu.cgb_vram[vram_bank][addr - 0x8000 + 1]
-                } else {
-                    cpu.memory[addr + 1]
-                };
-
-                for px in 0..8u8 {
-                    let screen_x = sprite_x as i32 + px as i32;
-                    if screen_x < 0 || screen_x >= 160 { continue; }
-
-                    let dx = if flip_x { 7 - px } else { px };
-                    let raw = get_color_index(b1, b2, dx);
-                    if raw == 0 { continue; }
-
-                    let buffer_idx = ly as usize * 160 + screen_x as usize;
-                    let bg_pixel = cpu.frame_buffer[buffer_idx];
-                    let meta = (bg_pixel >> 24) as u8;
-                    let bg_raw = meta & 0x03;
-                    let bg_priority_attr = (meta & 0x04) != 0;
-
-                    let mut draw = true;
-                    if cpu.is_cgb {
-                        if !lcdc_bit0 {
-                            draw = true;
-                        } else if bg_priority_attr || !obj_priority {
-                            if bg_raw != 0 { draw = false; }
-                        }
+                if draw {
+                    let (r, g, b) = if is_cgb {
+                        get_cgb_color(&cpu.cgb_obj_palettes, cgb_pal, raw)
                     } else {
-                        if !obj_priority && bg_raw != 0 {
-                            draw = false;
-                        }
-                    }
-
-                    if draw {
-                        let (r, g, b) = if cpu.is_cgb {
-                            get_cgb_color(&cpu.cgb_obj_palettes, cgb_pal, raw)
-                        } else {
-                            let ci = apply_dmg_palette(raw, obp);
-                            let color = &palettes[pal_type as usize][ci as usize];
-                            (color[0], color[1], color[2])
-                        };
-                        cpu.frame_buffer[buffer_idx] = pack_cgb_pixel(r, g, b, raw, false);
-                    }
+                        let ci    = apply_dmg_palette(raw, obp);
+                        let color = &palettes[pal_type as usize][ci as usize];
+                        (color[0], color[1], color[2])
+                    };
+                    cpu.frame_buffer[buf_base + sx] = pack_cgb_pixel(r, g, b, raw, false);
                 }
             }
         }

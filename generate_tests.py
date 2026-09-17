@@ -256,7 +256,8 @@ fn run_blargg_test(rom_path: &str) {
         lines.append(f'}}')
         lines.append('')
 
-    # Generate gbmicrotest tests (these use Mooneye pass/fail convention)
+    # Generate GBMicrotest tests. The harness checks their FF82 pass flag and
+    # skips older visual/testbench ROMs that do not publish one.
     lines.append('// ══════════════════════════════════════════════════════════════════')
     lines.append('// GBMicrotest tests')
     lines.append('// ══════════════════════════════════════════════════════════════════')
@@ -320,4 +321,3 @@ fn timer_div_reset_causes_tick() {
 
 if __name__ == '__main__':
     main()
-

@@ -89,10 +89,65 @@ pub struct Mbc {
     has_rtc: bool,
     /// True when the cartridge has a battery-backed save (set at init time).
     pub has_battery: bool,
+    /// Set only when persistent cartridge state changes. This keeps the web
+    /// autosave timer from serializing unchanged RAM every five seconds.
+    save_dirty: bool,
 }
 
 impl Mbc {
     const RTC_SAVE_MAGIC: [u8; 6] = *b"RBRTC1";
+
+    /// Append the mutable cartridge-controller state to an emulator snapshot.
+    /// The ROM itself is deliberately excluded: save states are tied to the
+    /// already-loaded cartridge by the CPU-level ROM fingerprint.
+    pub(crate) fn export_state(&self, out: &mut Vec<u8>) {
+        let (tag, a, b, c) = match self.kind {
+            MbcKind::None => (0, 0, 0, 0),
+            MbcKind::Mbc1 { bank2, mode, ram_enable, multicart } =>
+                (1, bank2, mode, (ram_enable as u8) | ((multicart as u8) << 1)),
+            MbcKind::Mbc2 { ram_enable } => (2, ram_enable as u8, 0, 0),
+            MbcKind::Mbc3 { ram_enable } => (3, ram_enable as u8, 0, 0),
+            MbcKind::Mbc5 { ram_enable } => (5, ram_enable as u8, 0, 0),
+            MbcKind::Unknown(value) => (255, value, 0, 0),
+        };
+        out.extend_from_slice(&[tag, a, b, c]);
+        out.extend_from_slice(&self.rombank.to_le_bytes());
+        out.push(self.rambank);
+        for bank in &self.ram { out.extend_from_slice(bank); }
+        out.extend_from_slice(&self.rtc_registers);
+        out.extend_from_slice(&self.rtc_latched_registers);
+        out.push(self.rtc_latch_active as u8);
+        out.push(self.rtc_latch_armed as u8);
+        out.extend_from_slice(&self.rtc_last_update_unix.to_le_bytes());
+        out.push(self.save_dirty as u8);
+    }
+
+    pub(crate) fn import_state(&mut self, input: &mut &[u8]) -> Result<(), &'static str> {
+        fn take<'a>(input: &mut &'a [u8], n: usize) -> Result<&'a [u8], &'static str> {
+            if input.len() < n { return Err("truncated cartridge state"); }
+            let (head, tail) = input.split_at(n); *input = tail; Ok(head)
+        }
+        let header = take(input, 4)?;
+        self.kind = match header[0] {
+            0 => MbcKind::None,
+            1 => MbcKind::Mbc1 { bank2: header[1], mode: header[2], ram_enable: header[3] & 1 != 0, multicart: header[3] & 2 != 0 },
+            2 => MbcKind::Mbc2 { ram_enable: header[1] != 0 },
+            3 => MbcKind::Mbc3 { ram_enable: header[1] != 0 },
+            5 => MbcKind::Mbc5 { ram_enable: header[1] != 0 },
+            255 => MbcKind::Unknown(header[1]),
+            _ => return Err("invalid cartridge state"),
+        };
+        self.rombank = u16::from_le_bytes(take(input, 2)?.try_into().unwrap());
+        self.rambank = take(input, 1)?[0];
+        for bank in &mut self.ram { bank.copy_from_slice(take(input, 0x2000)?); }
+        self.rtc_registers.copy_from_slice(take(input, 5)?);
+        self.rtc_latched_registers.copy_from_slice(take(input, 5)?);
+        self.rtc_latch_active = take(input, 1)?[0] != 0;
+        self.rtc_latch_armed = take(input, 1)?[0] != 0;
+        self.rtc_last_update_unix = u64::from_le_bytes(take(input, 8)?.try_into().unwrap());
+        self.save_dirty = take(input, 1)?[0] != 0;
+        Ok(())
+    }
 
     // ─── Construction ────────────────────────────────────────────────────────
 
@@ -142,6 +197,7 @@ impl Mbc {
             rtc_last_update_unix: rtc_now,
             has_rtc,
             has_battery,
+            save_dirty: false,
         }
     }
 
@@ -162,6 +218,7 @@ impl Mbc {
             rtc_last_update_unix: Self::now_unix_seconds(),
             has_rtc: false,
             has_battery: false,
+            save_dirty: false,
         }
     }
 
@@ -272,6 +329,9 @@ impl Mbc {
             }
             _ => {}
         }
+        if self.has_battery {
+            self.save_dirty = true;
+        }
     }
 
     // ─── Read / Write dispatch ────────────────────────────────────────────────
@@ -377,8 +437,9 @@ impl Mbc {
             // In RAM-banking mode with a large enough ROM, bank2 shifts the
             // base address of the bank-0 window (allows accessing e.g. bank
             // 0x20/0x40/0x60 for standard MBC1, or slot start for MBC1M).
-            // MBC1M multicarts keep this window fixed at bank 0.
-            if !multicart && mode == 1 && self.rom_bank_mask >= bank2_threshold {
+            // MBC1M uses the same mode-1 remap with a four-bit shift, making
+            // each selected 16-bank game visible through its own bank 0.
+            if mode == 1 && self.rom_bank_mask >= bank2_threshold {
                 let bank = ((bank2 as usize) << shift) & (self.rom_bank_mask as usize);
                 return self.rom.get(address + bank * 0x4000).copied().unwrap_or(0xFF);
             }
@@ -435,7 +496,11 @@ impl Mbc {
             };
             if ram_enable {
                 let r_bank = (if mode == 1 { bank2 as usize } else { 0 }) & self.ram_bank_mask;
-                self.ram[r_bank][address - 0xA000] = data;
+                let slot = &mut self.ram[r_bank][address - 0xA000];
+                if *slot != data {
+                    *slot = data;
+                    self.save_dirty = self.has_battery;
+                }
             }
         }
     }
@@ -491,7 +556,11 @@ impl Mbc {
             };
             if ram_enable {
                 let idx = (address - 0xA000) & 0x1FF;
-                self.ram[0][idx] = data & 0x0F; // only the lower nibble is stored
+                let value = data & 0x0F; // only the lower nibble is stored
+                if self.ram[0][idx] != value {
+                    self.ram[0][idx] = value;
+                    self.save_dirty = self.has_battery;
+                }
             }
         }
     }
@@ -577,7 +646,11 @@ impl Mbc {
             };
             if ram_enable {
                 if self.rambank <= 0x03 {
-                    self.ram[self.rambank as usize][address - 0xA000] = data;
+                    let slot = &mut self.ram[self.rambank as usize][address - 0xA000];
+                    if *slot != data {
+                        *slot = data;
+                        self.save_dirty = self.has_battery;
+                    }
                 } else if self.rambank >= 0x08 && self.rambank <= 0x0C {
                     self.rtc_write_selected_register(data);
                 }
@@ -641,7 +714,11 @@ impl Mbc {
                 _ => return,
             };
             if ram_enable {
-                self.ram[self.rambank as usize][address - 0xA000] = data;
+                let slot = &mut self.ram[self.rambank as usize][address - 0xA000];
+                if *slot != data {
+                    *slot = data;
+                    self.save_dirty = self.has_battery;
+                }
             }
         }
     }
@@ -687,8 +764,20 @@ impl Mbc {
         data
     }
 
+    #[inline]
+    pub fn save_ram_is_dirty(&self) -> bool {
+        self.has_battery && self.save_dirty
+    }
+
+    #[inline]
+    pub fn mark_save_ram_clean(&mut self) {
+        self.save_dirty = false;
+    }
+
     /// Restore RAM banks from a previously saved blob.
     pub fn import_save_ram(&mut self, data: &[u8]) {
+        // Loading an existing save establishes the persisted baseline.
+        self.save_dirty = false;
         let ram_size = self.get_ram_size();
         let num_banks = (ram_size / 0x2000).max(1);
         let ram_blob_len = num_banks * 0x2000;
@@ -726,6 +815,16 @@ impl Mbc {
             // progression from current wall-clock time.
             self.rtc_last_update_unix = Self::now_unix_seconds();
         }
+    }
+
+    pub fn clear_save_ram(&mut self) {
+        for bank in &mut self.ram { bank.fill(0); }
+        self.rtc_registers = [0; 5];
+        self.rtc_latched_registers = [0; 5];
+        self.rtc_latch_active = false;
+        self.rtc_latch_armed = false;
+        self.rtc_last_update_unix = Self::now_unix_seconds();
+        self.save_dirty = false;
     }
 }
 
@@ -768,11 +867,41 @@ mod tests {
         assert_eq!(mbc2.rtc_registers[3], 0xAB);
         assert_eq!(mbc2.rtc_registers[4] & 0xC1, 0x41);
     }
+
+    #[test]
+    fn battery_ram_is_only_dirty_after_a_changed_write() {
+        let mut rom = vec![0u8; 0x8000];
+        rom[0x147] = 0x03; // MBC1 + RAM + Battery
+        rom[0x149] = 0x02; // 8 KiB RAM
+        let mut mbc = Mbc::new(rom, 0x2000);
+
+        assert!(!mbc.save_ram_is_dirty());
+        mbc.write(0x2000, 2); // Banking state is not persistent.
+        assert!(!mbc.save_ram_is_dirty());
+
+        mbc.write(0x0000, 0x0A);
+        mbc.write(0xA123, 0x5A);
+        assert!(mbc.save_ram_is_dirty());
+
+        mbc.mark_save_ram_clean();
+        mbc.write(0xA123, 0x5A); // Rewriting the same byte changes nothing.
+        assert!(!mbc.save_ram_is_dirty());
+        mbc.write(0xA123, 0xA5);
+        assert!(mbc.save_ram_is_dirty());
+
+        let blob = mbc.export_save_ram();
+        mbc.import_save_ram(&blob);
+        assert!(!mbc.save_ram_is_dirty());
+    }
+
+    #[test]
+    fn rtc_register_write_marks_save_dirty() {
+        let mut mbc = make_mbc3_timer();
+        mbc.write(0x0000, 0x0A);
+        mbc.write(0x4000, 0x08);
+        mbc.write(0xA000, 42);
+        assert!(mbc.save_ram_is_dirty());
+    }
 }
-
-
-
-
-
 
 

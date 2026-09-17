@@ -12,6 +12,112 @@ macro_rules! console_log {
     ($($t:tt)*) => { console::log_1(&format!($($t)*).into()) }
 }
 
+#[cfg(test)]
+mod save_state_tests {
+    use super::CPU;
+
+    fn cpu_with_rom(marker: u8) -> CPU {
+        let mut rom = vec![0; 0x8000];
+        rom[0x134..0x139].copy_from_slice(b"STATE");
+        rom[0x150] = marker;
+        let mut cpu = CPU::new();
+        cpu.load_rom(rom);
+        cpu
+    }
+
+    fn state_for_rom(marker: u8) -> Vec<u8> {
+        cpu_with_rom(marker).export_state()
+    }
+
+    #[test]
+    fn save_state_roundtrip_restores_mutable_core_state() {
+        let mut cpu = cpu_with_rom(1);
+        cpu.reg_a = 0x42;
+        cpu.program_counter = 0x3456;
+        cpu.memory[0xC123] = 0x9A;
+        cpu.cgb_vram[1][77] = 0xBC;
+        cpu.mbc.ram[3][99] = 0xDE;
+        let state = cpu.export_state();
+
+        cpu.reg_a = 0;
+        cpu.program_counter = 0;
+        cpu.memory[0xC123] = 0;
+        cpu.cgb_vram[1][77] = 0;
+        cpu.mbc.ram[3][99] = 0;
+        cpu.import_state(&state).unwrap();
+
+        assert_eq!(cpu.reg_a, 0x42);
+        assert_eq!(cpu.program_counter, 0x3456);
+        assert_eq!(cpu.memory[0xC123], 0x9A);
+        assert_eq!(cpu.cgb_vram[1][77], 0xBC);
+        assert_eq!(cpu.mbc.ram[3][99], 0xDE);
+    }
+
+    #[test]
+    fn save_state_rejects_corruption() {
+        let mut cpu = cpu_with_rom(1);
+        let mut corrupt_state = cpu.export_state();
+        corrupt_state[30] ^= 1;
+        assert!(cpu.import_state(&corrupt_state).is_err());
+    }
+
+    #[test]
+    fn save_state_rejects_another_rom() {
+        let valid_state = state_for_rom(1);
+        let mut other_cpu = cpu_with_rom(2);
+        assert!(other_cpu.import_state(&valid_state).is_err());
+    }
+
+    #[test]
+    fn cgb_hdma_started_in_hblank_copies_immediately() {
+        let mut cpu = cpu_with_rom(1);
+        cpu.is_cgb = true;
+        cpu.memory[0xFF40] = 0x80;
+        cpu.memory[0xFF41] = 0;
+        for i in 0..16 { cpu.cgb_wram[0][i] = i as u8 + 1; }
+        cpu.hdma_src = 0xC000;
+        cpu.hdma_dst = 0;
+        cpu.start_hdma(0x80);
+        assert_eq!(&cpu.cgb_vram[0][..16], &(1u8..=16).collect::<Vec<_>>());
+        assert!(!cpu.hdma_active);
+        assert_eq!(cpu.hdma_len, 0xFF);
+    }
+
+    #[test]
+    fn cgb_hdma_with_lcd_off_finishes_all_blocks() {
+        let mut cpu = cpu_with_rom(1);
+        cpu.is_cgb = true;
+        cpu.memory[0xFF40] = 0;
+        for i in 0..32 { cpu.cgb_wram[0][i] = i as u8; }
+        cpu.hdma_src = 0xC000;
+        cpu.hdma_dst = 0x100;
+        cpu.start_hdma(0x81);
+        assert_eq!(&cpu.cgb_vram[0][0x100..0x120], &(0u8..32).collect::<Vec<_>>());
+        assert!(!cpu.hdma_active);
+    }
+
+    #[test]
+    fn reset_power_cycles_core_and_preserves_battery_ram() {
+        let mut rom = vec![0; 0x8000];
+        rom[0x147] = 0x03;
+        rom[0x149] = 0x02;
+        let mut cpu = CPU::new();
+        cpu.bootload(vec![0x31; 0x100]);
+        cpu.load_rom(rom);
+        cpu.mbc.ram[0][7] = 0xA5;
+        cpu.program_counter = 0x4567;
+        cpu.memory[0xC000] = 0xCC;
+
+        cpu.reset();
+
+        assert!(cpu.booting);
+        assert_eq!(cpu.program_counter, 0);
+        assert_eq!(cpu.peek_byte(0), 0x31);
+        assert_eq!(cpu.memory[0xC000], 0);
+        assert_eq!(cpu.mbc.ram[0][7], 0xA5);
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 macro_rules! console_log {
     ($($t:tt)*) => { }
@@ -54,8 +160,6 @@ pub struct CPU {
     consolelog: bool,
     pub show_vram: bool,
     pub keys: [bool; 256],
-    ppu_cycles: u32,
-    ppu_mcycle_countdown: u32,
     scanline: u8,
     pub go_next: AtomicBool,
     ei_pending: bool,
@@ -73,6 +177,8 @@ pub struct CPU {
     oam_dma_source: u16,
     oam_dma_index: u8,
     halt_bug: bool,
+    halt_wakeup_delay_stat: bool,
+    suppress_mode2_stat_once: bool,
     prev_stat_line: bool,
     timer_ticks_this_instr: u32,
     pub serial_output: Vec<u8>,
@@ -99,9 +205,150 @@ pub struct CPU {
     pub ppu_t_cycle_accum: u32,
     pub dma_pause_mcycles: u32,
     pub window_line_counter: u8,
+
+    // Mid-scanline register-change tracking.
+    /// T-cycles elapsed since Mode 2 started for the current scanline.
+    pub ppu_scanline_dot: u16,
+    /// ppu_scanline_dot value at the moment Mode 3 began.
+    pub ppu_mode3_start_dot: u16,
+    /// Dot at which pixel transfer ends for the current line. Calculated once
+    /// at Mode 3 entry so the hot PPU clock remains constant-time.
+    ppu_mode3_end_dot: u16,
+    /// The first scanline after enabling LCDC starts four dots late on DMG.
+    ppu_first_line_after_enable: bool,
+    /// Small ring of register writes that happened during Mode 3.
+    /// Entries are appended in chronological order.
+    pub ppu_reg_log: [crate::ppu::PpuRegChange; 32],
+    pub ppu_reg_log_len: usize,
+    /// Number of Mode 3 register writes dropped after the fixed log filled.
+    /// Cumulative for the current CPU instance so rare overflows remain visible.
+    pub ppu_reg_log_dropped: u64,
+    /// Snapshot of all rendering-relevant registers at the Mode 2 → 3 boundary.
+    pub ppu_line_snapshot: crate::ppu::PpuLineSnapshot,
 }
 
 impl CPU {
+    const STATE_MAGIC: [u8; 4] = *b"RBST";
+    const STATE_VERSION: u16 = 1;
+
+    fn rom_fingerprint(&self) -> u64 {
+        self.mbc.rom.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
+            (hash ^ *byte as u64).wrapping_mul(0x100000001b3)
+        })
+    }
+
+    pub fn state_id(&self) -> String {
+        format!("{:016x}", self.rom_fingerprint())
+    }
+
+    /// Versioned, ROM-bound snapshot of mutable emulation state.
+    pub fn export_state(&self) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(270_000);
+        macro_rules! bytes { ($value:expr) => { payload.extend_from_slice(&$value.to_le_bytes()) }; }
+        payload.extend_from_slice(&[self.reg_a, self.reg_b, self.reg_c, self.reg_d, self.reg_e, self.reg_h, self.reg_l, self.reg_f]);
+        bytes!(self.stackpointer); bytes!(self.program_counter);
+        payload.extend_from_slice(&[self.interrupt_master_enable as u8, self.booting as u8, self.halt as u8, self.ei_pending as u8]);
+        bytes!(self.cycles); bytes!(self.total_cycles); bytes!(self.sys_counter);
+        payload.extend_from_slice(&[self.prev_timer_bit as u8, self.scanline, self.halt_bug as u8, self.halt_wakeup_delay_stat as u8, self.suppress_mode2_stat_once as u8, self.prev_stat_line as u8]);
+        bytes!(self.timer_ticks_this_instr);
+        payload.extend_from_slice(&[self.tima_reload_delay, self.tima_reloaded_this_cycle as u8, self.is_lcd_turning_on as u8]);
+        payload.extend_from_slice(&self.memory);
+        self.mbc.export_state(&mut payload);
+        payload.extend_from_slice(&[self.oam_dma_active as u8]); bytes!(self.oam_dma_remaining);
+        payload.extend_from_slice(&[self.oam_dma_delay]); bytes!(self.oam_dma_source); payload.push(self.oam_dma_index);
+        payload.extend_from_slice(&[self.is_cgb as u8, self.double_speed as u8, self.key1, self.vram_bank, self.wram_bank]);
+        for bank in &self.cgb_wram { payload.extend_from_slice(bank); }
+        for bank in &self.cgb_vram { payload.extend_from_slice(bank); }
+        payload.push(self.bgpi); payload.extend_from_slice(&self.cgb_bg_palettes);
+        payload.push(self.obpi); payload.extend_from_slice(&self.cgb_obj_palettes);
+        bytes!(self.hdma_src); bytes!(self.hdma_dst); payload.extend_from_slice(&[self.hdma_len, self.hdma_active as u8]);
+        bytes!(self.ppu_t_cycle_accum); bytes!(self.dma_pause_mcycles); payload.push(self.window_line_counter);
+        bytes!(self.ppu_scanline_dot); bytes!(self.ppu_mode3_start_dot); bytes!(self.ppu_mode3_end_dot);
+        payload.push(self.ppu_first_line_after_enable as u8);
+        payload.extend_from_slice(&[
+            self.ppu_line_snapshot.lcdc, self.ppu_line_snapshot.scy, self.ppu_line_snapshot.scx,
+            self.ppu_line_snapshot.bgp, self.ppu_line_snapshot.obp0, self.ppu_line_snapshot.obp1,
+            self.ppu_line_snapshot.wx, self.ppu_line_snapshot.wy,
+        ]);
+        payload.push(self.ppu_reg_log_len.min(self.ppu_reg_log.len()) as u8);
+        for change in &self.ppu_reg_log {
+            bytes!(change.dot); bytes!(change.addr); payload.push(change.value);
+        }
+        bytes!(self.ppu_reg_log_dropped);
+        payload.extend_from_slice(&self.gbc_palettes.iter().flatten().flatten().copied().collect::<Vec<_>>());
+        payload.push(self.color_mode);
+
+        let checksum = payload.iter().fold(0x811c9dc5u32, |hash, byte| (hash ^ *byte as u32).wrapping_mul(0x01000193));
+        let mut out = Vec::with_capacity(payload.len() + 22);
+        out.extend_from_slice(&Self::STATE_MAGIC);
+        out.extend_from_slice(&Self::STATE_VERSION.to_le_bytes());
+        out.extend_from_slice(&self.rom_fingerprint().to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&checksum.to_le_bytes());
+        out.extend_from_slice(&payload);
+        out
+    }
+
+    pub fn import_state(&mut self, data: &[u8]) -> Result<(), &'static str> {
+        fn take<'a>(input: &mut &'a [u8], n: usize) -> Result<&'a [u8], &'static str> {
+            if input.len() < n { return Err("truncated save state"); }
+            let (head, tail) = input.split_at(n); *input = tail; Ok(head)
+        }
+        if data.len() < 22 || data[..4] != Self::STATE_MAGIC { return Err("not a RustBoy save state"); }
+        let version = u16::from_le_bytes(data[4..6].try_into().unwrap());
+        if version != Self::STATE_VERSION { return Err("unsupported save-state version"); }
+        let fingerprint = u64::from_le_bytes(data[6..14].try_into().unwrap());
+        if fingerprint != self.rom_fingerprint() { return Err("save state belongs to a different ROM"); }
+        let len = u32::from_le_bytes(data[14..18].try_into().unwrap()) as usize;
+        if len != data.len() - 22 { return Err("invalid save-state length"); }
+        let expected = u32::from_le_bytes(data[18..22].try_into().unwrap());
+        let actual = data[22..].iter().fold(0x811c9dc5u32, |hash, byte| (hash ^ *byte as u32).wrapping_mul(0x01000193));
+        if expected != actual { return Err("corrupt save state"); }
+
+        let mut input = &data[22..];
+        macro_rules! one { () => { take(&mut input, 1)?[0] }; }
+        macro_rules! num { ($ty:ty) => {{
+            let bytes: [u8; std::mem::size_of::<$ty>()] = take(&mut input, std::mem::size_of::<$ty>())?.try_into().unwrap();
+            <$ty>::from_le_bytes(bytes)
+        }}; }
+        self.reg_a=one!(); self.reg_b=one!(); self.reg_c=one!(); self.reg_d=one!(); self.reg_e=one!(); self.reg_h=one!(); self.reg_l=one!(); self.reg_f=one!();
+        self.stackpointer=num!(u16); self.program_counter=num!(u16);
+        self.interrupt_master_enable=one!()!=0; self.booting=one!()!=0; self.halt=one!()!=0; self.ei_pending=one!()!=0;
+        self.cycles=num!(u32); self.total_cycles=num!(u64); self.sys_counter=num!(u16);
+        self.prev_timer_bit=one!()!=0; self.scanline=one!(); self.halt_bug=one!()!=0; self.halt_wakeup_delay_stat=one!()!=0; self.suppress_mode2_stat_once=one!()!=0; self.prev_stat_line=one!()!=0;
+        self.timer_ticks_this_instr=num!(u32);
+        self.tima_reload_delay=one!(); self.tima_reloaded_this_cycle=one!()!=0; self.is_lcd_turning_on=one!()!=0;
+        self.memory.copy_from_slice(take(&mut input, 0x10000)?);
+        self.mbc.import_state(&mut input)?;
+        self.oam_dma_active=one!()!=0; self.oam_dma_remaining=num!(u32); self.oam_dma_delay=one!(); self.oam_dma_source=num!(u16); self.oam_dma_index=one!();
+        self.is_cgb=one!()!=0; self.double_speed=one!()!=0; self.key1=one!(); self.vram_bank=one!(); self.wram_bank=one!();
+        for bank in &mut self.cgb_wram { bank.copy_from_slice(take(&mut input, 0x1000)?); }
+        for bank in &mut self.cgb_vram { bank.copy_from_slice(take(&mut input, 0x2000)?); }
+        self.bgpi=one!(); self.cgb_bg_palettes.copy_from_slice(take(&mut input, 64)?);
+        self.obpi=one!(); self.cgb_obj_palettes.copy_from_slice(take(&mut input, 64)?);
+        self.hdma_src=num!(u16); self.hdma_dst=num!(u16); self.hdma_len=one!(); self.hdma_active=one!()!=0;
+        self.ppu_t_cycle_accum=num!(u32); self.dma_pause_mcycles=num!(u32); self.window_line_counter=one!();
+        self.ppu_scanline_dot=num!(u16); self.ppu_mode3_start_dot=num!(u16); self.ppu_mode3_end_dot=num!(u16); self.ppu_first_line_after_enable=one!()!=0;
+        self.ppu_line_snapshot = crate::ppu::PpuLineSnapshot {
+            lcdc: one!(), scy: one!(), scx: one!(), bgp: one!(),
+            obp0: one!(), obp1: one!(), wx: one!(), wy: one!(),
+        };
+        self.ppu_reg_log_len = (one!() as usize).min(self.ppu_reg_log.len());
+        for change in &mut self.ppu_reg_log {
+            change.dot=num!(u16); change.addr=num!(u16); change.value=one!();
+        }
+        self.ppu_reg_log_dropped=num!(u64);
+        for value in self.gbc_palettes.iter_mut().flatten().flatten() { *value = one!(); }
+        self.color_mode=one!();
+        if !input.is_empty() { return Err("save state contains unexpected data"); }
+
+        self.apu = APU::restore_from_memory(&self.memory, self.is_cgb);
+        self.is_paused.store(false, Ordering::Relaxed);
+        self.go_next.store(false, Ordering::Relaxed);
+        self.keys.fill(false);
+        self.serial_output.clear();
+        Ok(())
+    }
     pub fn get_reg_a(&self) -> u8 { self.reg_a }
     pub fn get_reg_b(&self) -> u8 { self.reg_b }
     pub fn get_reg_c(&self) -> u8 { self.reg_c }
@@ -135,13 +382,15 @@ impl CPU {
             cycles: 0,
             total_cycles: 0,
             is_paused: AtomicBool::new(false),
-            sys_counter: 0,
+            // DMG power-on divider phase. The boot ROM consumes a fixed
+            // number of clocks and hands control to the cartridge at AB34;
+            // starting the hidden counter at zero leaves it 0x90 T-cycles
+            // late and breaks every acceptance test that keys off DIV.
+            sys_counter: 0xFF70,
             prev_timer_bit: false,
             consolelog: false,
             show_vram: false,
             keys:[false; 256],
-            ppu_cycles: 0,
-            ppu_mcycle_countdown: 0,
             scanline: 0,
             go_next: AtomicBool::new(false),
             ei_pending: false,
@@ -159,6 +408,8 @@ impl CPU {
             oam_dma_source: 0,
             oam_dma_index: 0,
             halt_bug: false,
+            halt_wakeup_delay_stat: false,
+            suppress_mode2_stat_once: false,
             prev_stat_line: false,
             timer_ticks_this_instr: 0,
             serial_output: Vec::new(),
@@ -183,6 +434,14 @@ impl CPU {
             ppu_t_cycle_accum: 0,
             dma_pause_mcycles: 0,
             window_line_counter: 0,
+            ppu_scanline_dot: 0,
+            ppu_mode3_start_dot: 0,
+            ppu_mode3_end_dot: 252,
+            ppu_first_line_after_enable: false,
+            ppu_reg_log: [crate::ppu::PpuRegChange::default(); 32],
+            ppu_reg_log_len: 0,
+            ppu_reg_log_dropped: 0,
+            ppu_line_snapshot: crate::ppu::PpuLineSnapshot::default(),
         }
     }
 
@@ -663,14 +922,14 @@ impl CPU {
                 }
             };
             if hit {
-                let desc = match bp {
+                let _desc = match bp {
                     Breakpoint::Pc(addr) => format!("PC == ${:04X}", addr),
                     Breakpoint::Reg(reg, val) => format!("{} == ${:04X}", reg.to_uppercase(), val),
                     Breakpoint::Mem(addr, val) => format!("[${:04X}] == ${:02X}", addr, val),
                     Breakpoint::Opcode(op) => format!("Opcode == ${:02X}", op),
                     Breakpoint::CbOpcode(op) => format!("CbOpcode == ${:02X}", op),
                 };
-                console_log!(" Breakpoint hit: {}  (PC=${:04X})", desc, self.program_counter);
+                console_log!(" Breakpoint hit: {}  (PC=${:04X})", _desc, self.program_counter);
                 self.consolelog = true;
                 self.is_paused.store(true, Ordering::Relaxed);
                 return true;
@@ -756,7 +1015,9 @@ impl CPU {
         }
 
         let cgb_flag = data.get(0x143).copied().unwrap_or(0);
-        self.is_cgb = cgb_flag == 0x80 || cgb_flag == 0xC0;
+        // Bit 7 set = CGB support (0x80 = CGB-compatible, 0xC0 = CGB-only,
+        // and any other value with bit 7 set that unofficial carts may use).
+        self.is_cgb = cgb_flag & 0x80 != 0;
         self.apu.set_cgb_mode(self.is_cgb);
 
         let cart_type = *data.get(0x147).unwrap_or(&0);
@@ -811,15 +1072,24 @@ impl CPU {
         self.mbc.export_save_ram()
     }
 
+    pub fn save_ram_is_dirty(&self) -> bool {
+        self.mbc.save_ram_is_dirty()
+    }
+
+    pub fn mark_save_ram_clean(&mut self) {
+        self.mbc.mark_save_ram_clean();
+    }
+
     pub fn import_save_ram(&mut self, data: &[u8]) {
         self.mbc.import_save_ram(data);
         console_log!("Loaded save RAM: {} bytes", data.len());
     }
 
-    fn get_ram_size(&self) -> usize {
-        self.mbc.get_ram_size()
+    pub fn clear_save_ram(&mut self) {
+        self.mbc.clear_save_ram();
     }
 
+    #[inline(always)]
     fn set_flag_bit(&mut self, bit: u8, value: bool) {
         if value {
             self.reg_f |= 1 << bit;
@@ -828,12 +1098,39 @@ impl CPU {
         }
     }
 
+    #[inline(always)]
     fn get_flag_bit(&self, bit: u8) -> bool {
         self.reg_f & (1 << bit) != 0
     }
 
+    #[inline(always)]
+
     pub fn write_byte(&mut self, address: usize, data: u8) {
         self.tick_timer_4t();
+
+        // ── Fast paths: ~90% of all memory writes hit these ─────────────────
+        // WRAM — game variables, stack.
+        if address >= 0xC000 && address < 0xE000 {
+            // OAM DMA blocks all bus access (except HRAM) on DMG.
+            if !self.is_cgb && self.oam_dma_active && self.oam_dma_delay == 0 {
+                return;
+            }
+            if self.is_cgb {
+                if address < 0xD000 { self.cgb_wram[0][address - 0xC000] = data; }
+                else { self.cgb_wram[self.wram_bank as usize][address - 0xD000] = data; }
+            } else if address < 0xDE00 {
+                self.memory[address] = data;
+                self.memory[address + 0x2000] = data;   // echo mirror C000-DDFF → E000-FDFF
+            } else {
+                self.memory[address] = data;
+            }
+            return;
+        }
+        // HRAM — tight-loop variables (also exempt from OAM DMA blocking).
+        if address >= 0xFF80 && address <= 0xFFFE {
+            self.memory[address] = data;
+            return;
+        }
 
         // DMG OAM DMA blocks CPU bus access except HRAM (FF80-FFFE) and FF46.
         if !self.is_cgb
@@ -1018,6 +1315,8 @@ impl CPU {
                 self.prev_timer_bit = new_bit;
             }
             0xFF40 => {
+                // Log if we're in Mode 3 BEFORE applying (for mid-scanline accuracy).
+                self.log_ppu_reg_change_if_mode3(0xFF40, data);
                 let was_on = (self.memory[0xFF40] & 0x80) != 0;
                 let is_on = (data & 0x80) != 0;
                 self.memory[0xFF40] = data;
@@ -1028,9 +1327,11 @@ impl CPU {
                     self.scanline = 0;
                     self.memory[0xFF44] = 0;
                     self.window_line_counter = 0;
-                    self.ppu_cycles = 0;
-                    self.ppu_mcycle_countdown = 0;
+                    self.ppu_scanline_dot = 0;
+                    self.ppu_first_line_after_enable = true;
+                    self.ppu_reg_log_len = 0;
                     self.is_lcd_turning_on = true;
+                    self.suppress_mode2_stat_once = true;
                     self.set_ppu_mode(0);
                     self.check_lyc();
                 }
@@ -1062,6 +1363,13 @@ impl CPU {
             }
 
             _ => {
+                // Log mid-Mode3 writes to rendering registers.
+                match address {
+                    0xFF42 | 0xFF43 | 0xFF47 | 0xFF48 | 0xFF49 | 0xFF4A | 0xFF4B => {
+                        self.log_ppu_reg_change_if_mode3(address as u16, data);
+                    }
+                    _ => {}
+                }
                 // Cartridge ROM space (MBC registers) and external RAM.
                 if address < 0x8000 || (address >= 0xA000 && address < 0xC000) {
                     self.mbc.write(address, data);
@@ -1083,22 +1391,45 @@ impl CPU {
     }
 
     fn start_hdma(&mut self, data: u8) {
-        if !self.hdma_active && (data & 0x80) == 0 {
+        if self.hdma_active && (data & 0x80) == 0 {
+            // A zero in bit 7 stops an active HBlank transfer. The remaining
+            // count stays readable with bit 7 set.
+            self.hdma_active = false;
+            self.hdma_len |= 0x80;
+        } else if (data & 0x80) == 0 {
             // General Purpose DMA
             let blocks = (data & 0x7F) as u16 + 1;
             for _ in 0..blocks {
                 self.do_hdma_block();
+                if self.hdma_dst == 0 { break; }
             }
             self.hdma_active = false;
             self.hdma_len = 0xFF;
-        } else if (data & 0x80) != 0 {
+        } else {
             // HBlank DMA Start
             self.hdma_len = data & 0x7F;
             self.hdma_active = true;
-        } else if self.hdma_active && (data & 0x80) == 0 {
-            // Cancel HBlank DMA
+
+            // Starting HDMA while already in HBlank begins the first block
+            // immediately. Several commercial CGB games rely on this despite
+            // old programming guides advising against it. With LCD disabled,
+            // mode 0 is constant, so the whole transfer proceeds as GDMA.
+            let lcd_enabled = self.memory[0xFF40] & 0x80 != 0;
+            if !lcd_enabled {
+                while self.hdma_active { self.advance_hdma_block(); }
+            } else if self.memory[0xFF41] & 0x03 == 0 {
+                self.advance_hdma_block();
+            }
+        }
+    }
+
+    fn advance_hdma_block(&mut self) {
+        self.do_hdma_block();
+        if self.hdma_len == 0 || self.hdma_dst == 0 {
             self.hdma_active = false;
-            self.hdma_len |= 0x80;
+            self.hdma_len = 0xFF;
+        } else {
+            self.hdma_len -= 1;
         }
     }
 
@@ -1113,14 +1444,41 @@ impl CPU {
 
         self.hdma_src = self.hdma_src.wrapping_add(16);
         self.hdma_dst = self.hdma_dst.wrapping_add(16);
-        if self.hdma_dst >= 0xA000 {
-            self.hdma_dst = 0x8000;
+        if self.hdma_dst >= 0x2000 {
+            // CGB stops a transfer when the 8 KiB VRAM destination window
+            // overflows; it does not wrap and overwrite the beginning.
+            self.hdma_dst = 0;
         }
 
         self.dma_pause_mcycles += if self.double_speed { 16 } else { 8 };
     }
 
+    #[inline(always)]
+
     pub fn peek_byte(&self, address: usize) -> u8 {
+        // ── Fast paths: ~95% of all memory reads hit these ───────────────────
+        // ROM / cartridge — instruction fetches and most data reads.
+        // After booting, `self.booting` is false so this is just 1 branch + MBC call.
+        if address < 0x8000 {
+            if self.booting && self.boot_rom_maps_address(address) {
+                return self.boot_mem[address];
+            }
+            return self.mbc.read(address);
+        }
+        // WRAM — game variables, stack.
+        if address >= 0xC000 && address < 0xE000 {
+            if self.is_cgb {
+                if address < 0xD000 { return self.cgb_wram[0][address - 0xC000]; }
+                return self.cgb_wram[self.wram_bank as usize][address - 0xD000];
+            }
+            return self.memory[address];
+        }
+        // HRAM + IE register — tight-loop variables and interrupt enable.
+        if address >= 0xFF80 {
+            return self.memory[address];
+        }
+        // ── Slow path: VRAM, external RAM, OAM, echo RAM, I/O registers ─────
+
         if address >= 0xFE00 && address < 0xFEA0 {
             if self.oam_dma_active && self.oam_dma_delay == 0 {
                 return 0xFF;
@@ -1151,7 +1509,7 @@ impl CPU {
                     0xFF4D => return (self.key1 & 0x7E) | (if self.double_speed { 0x80 } else { 0 }) | (self.key1 & 0x01) | 0x7E,
                     0xFF4F => return self.vram_bank | 0xFE,
                     0xFF51..=0xFF54 => return 0xFF,
-                    0xFF55 => return if self.hdma_active { self.hdma_len & 0x7F } else { 0xFF },
+                    0xFF55 => return if self.hdma_active { self.hdma_len & 0x7F } else { self.hdma_len | 0x80 },
                     0xFF68 => return self.bgpi | 0x40,
                     0xFF69 => return self.cgb_bg_palettes[(self.bgpi & 0x3F) as usize],
                     0xFF6A => return self.obpi | 0x40,
@@ -1254,53 +1612,45 @@ impl CPU {
     }
 
     pub fn reset(&mut self) {
-        self.reg_a = if self.is_cgb { 0x11 } else { 0x01 };
-        self.reg_b = 0;
-        self.reg_c = 0;
-        self.reg_d = 0;
-        self.reg_e = 0;
-        self.reg_h = 0;
-        self.reg_l = 0;
-        self.reg_f = 0;
-        self.stackpointer = 0x100;
-        self.interrupt_master_enable = false;
-        self.ei_pending = false;
-        self.sys_counter = 0;
-        self.prev_timer_bit = false;
-        self.program_counter = 0;
-        self.oam_dma_remaining = 0;
-        self.oam_dma_active = false;
-        self.oam_dma_delay = 0;
-        self.oam_dma_source = 0;
-        self.oam_dma_index = 0;
-        self.prev_stat_line = false;
-        self.ppu_mcycle_countdown = 0;
-        self.halt = false;
-        self.tima_reload_delay = 0;
-        self.tima_reloaded_this_cycle = false;
-        self.is_lcd_turning_on = false;
-        self.double_speed = false;
-        self.key1 = 0;
-        self.vram_bank = 0;
-        self.wram_bank = 1;
-        self.hdma_active = false;
-        self.ppu_t_cycle_accum = 0;
-        self.dma_pause_mcycles = 0;
-        self.window_line_counter = 0;
+        if self.mbc.rom.is_empty() { return; }
+
+        let rom = self.mbc.rom.clone();
+        let save_ram = self.export_save_ram();
+        let boot_rom = self.boot_mem[..self.boot_rom_len].to_vec();
+        let speed_multiplier = self.speed_multiplier;
+        let color_mode = self.color_mode;
+        let show_vram = self.show_vram;
+        let consolelog = self.consolelog;
+        let breakpoints = std::mem::take(&mut self.breakpoints);
+
+        let mut fresh = CPU::new();
+        if !boot_rom.is_empty() { fresh.bootload(boot_rom); }
+        fresh.load_rom(rom);
+        if fresh.has_battery() { fresh.import_save_ram(&save_ram); }
+        fresh.speed_multiplier = speed_multiplier;
+        fresh.color_mode = color_mode;
+        fresh.show_vram = show_vram;
+        fresh.consolelog = consolelog;
+        fresh.breakpoints = breakpoints;
+        *self = fresh;
     }
 
+    #[inline(always)]
     fn hl(&self) -> u16 {
         (self.reg_h as u16) << 8 | self.reg_l as u16
     }
 
+    #[inline(always)]
     fn de(&self) -> u16 {
         (self.reg_d as u16) << 8 | self.reg_e as u16
     }
 
+    #[inline(always)]
     fn bc(&self) -> u16 {
         (self.reg_b as u16) << 8 | self.reg_c as u16
     }
 
+    #[inline(always)]
     fn af(&self) -> u16 {
         (self.reg_a as u16) << 8 | self.reg_f as u16
     }
@@ -1329,12 +1679,13 @@ impl CPU {
             }
         }
         format!(
-            "PC:{:04X} OP:{:02X} SP:{:04X}\nAF:{:04X} BC:{:04X}\nDE:{:04X} HL:{:04X}\nF:[{}] IME:{} HALT:{}\nLY:{:02X} STAT:{:02X} LCDC:{:02X}\nIE:{:02X} IF:{:02X}\nTAC:{:02X} TIMA:{:02X}\nROM:{:03X} RAM:{:02X} Cart:{:02X} Boot:{}\nMem@PC: {}\nCycles:{}",
+            "PC:{:04X} OP:{:02X} SP:{:04X}\nAF:{:04X} BC:{:04X}\nDE:{:04X} HL:{:04X}\nF:[{}] IME:{} HALT:{}\nLY:{:02X} STAT:{:02X} LCDC:{:02X}\nPPU log:{}/{} dropped:{}\nIE:{:02X} IF:{:02X}\nTAC:{:02X} TIMA:{:02X}\nROM:{:03X} RAM:{:02X} Cart:{:02X} Boot:{}\nMem@PC: {}\nCycles:{}",
             self.program_counter, opcode, self.stackpointer,
             self.af(), self.bc(),
             self.de(), self.hl(),
             flags, self.interrupt_master_enable as u8, self.halt as u8,
             ly, stat, lcdc,
+            self.ppu_reg_log_len, self.ppu_reg_log.len(), self.ppu_reg_log_dropped,
             ie, iflag,
             tac, tima,
             self.mbc.rombank, self.mbc.rambank, self.mbc.cart_type, self.booting as u8,
@@ -1375,6 +1726,7 @@ impl CPU {
         }
     }
 
+    #[inline(always)]
     fn timer_output_bit(&self) -> bool {
         let tac = self.memory[0xFF07];
         let enabled = tac & 0x04 != 0;
@@ -1431,7 +1783,12 @@ impl CPU {
             self.prev_timer_bit = false;
         }
 
-        let tick_ppu_apu = if self.double_speed {
+        // The PPU keeps its 4.194 MHz dot clock in CGB double-speed mode.
+        // Advancing by two dots every CPU M-cycle preserves sub-M-cycle PPU
+        // boundaries without changing the CPU instruction granularity.
+        self.ppu_advance_dots(if self.double_speed { 2 } else { 4 });
+
+        let tick_apu = if self.double_speed {
             self.ppu_t_cycle_accum += 1;
             if self.ppu_t_cycle_accum >= 2 {
                 self.ppu_t_cycle_accum -= 2;
@@ -1443,8 +1800,7 @@ impl CPU {
             true
         };
 
-        if tick_ppu_apu {
-            self.ppu_tick_mcycle();
+        if tick_apu {
             self.apu.tick(4);
         }
 
@@ -1467,93 +1823,193 @@ impl CPU {
         }
     }
 
-    fn ppu_tick_mcycle(&mut self) {
+    #[inline]
+    fn ppu_advance_dots(&mut self, dots: u16) {
         let lcd_on = (self.memory[0xFF40] & 0x80) != 0;
         if !lcd_on {
             return;
         }
 
-        if self.ppu_mcycle_countdown > 0 {
-            self.ppu_mcycle_countdown -= 1;
+        // LCD startup exposes Mode 2 after the first PPU tick. Keeping this as
+        // a one-time branch preserves the boot-ROM timing without burdening
+        // every dot with a startup state machine.
+        if self.is_lcd_turning_on {
+            self.is_lcd_turning_on = false;
+            // LCD startup exposes Mode 2 four dots into its first visible
+            // machine cycle on DMG.
+            self.ppu_scanline_dot = 4;
+            self.set_ppu_mode(2);
+            return;
         }
 
-        if self.scanline == 153 && self.ppu_mcycle_countdown == 113 {
+        let old_dot = self.ppu_scanline_dot;
+        let new_dot = old_dot + dots;
+        self.ppu_scanline_dot = new_dot;
+
+        // LY reads as zero for most of line 153, beginning at dot 4.
+        if self.scanline == 153 && old_dot < 4 && new_dot >= 4 {
             self.memory[0xFF44] = 0;
             self.check_lyc();
         }
 
-        let current_mode = self.memory[0xFF41] & 0b11;
-
-        if self.ppu_mcycle_countdown == 1 && current_mode == 3 {
-            self.update_stat_irq_line();
+        let mode = self.memory[0xFF41] & 0x03;
+        if mode == 2 && old_dot < 80 && new_dot >= 80 {
+            self.ppu_mode3_start_dot = 80;
+            self.ppu_mode3_end_dot = 80 + self.ppu_mode3_length_dots();
+            self.ppu_reg_log_len = 0;
+            self.ppu_line_snapshot = crate::ppu::PpuLineSnapshot {
+                lcdc: self.memory[0xFF40],
+                scy:  self.memory[0xFF42],
+                scx:  self.memory[0xFF43],
+                bgp:  self.memory[0xFF47],
+                obp0: self.memory[0xFF48],
+                obp1: self.memory[0xFF49],
+                wx:   self.memory[0xFF4B],
+                wy:   self.memory[0xFF4A],
+            };
+            self.set_ppu_mode(3);
+        } else if mode == 3 && old_dot < self.ppu_mode3_end_dot && new_dot >= self.ppu_mode3_end_dot {
+            crate::ppu::draw_scanline(self);
+            self.set_ppu_mode(0);
         }
 
-        if self.ppu_mcycle_countdown > 0 {
+        let line_end = if self.ppu_first_line_after_enable { 452 } else { 456 };
+        if new_dot < line_end {
             return;
         }
 
-        match current_mode {
-            2 => {
-                let scroll_adjust = self.ppu_scroll_adjust();
-                self.ppu_mcycle_countdown = 43 + scroll_adjust;
-                self.set_ppu_mode(3);
-            }
-            3 => {
-                let scroll_adjust = self.ppu_scroll_adjust();
-                self.ppu_mcycle_countdown = 50 - scroll_adjust;
-                crate::ppu::draw_scanline(self);
-                self.set_ppu_mode(0);
-            }
-            0 => {
-                if self.is_lcd_turning_on {
-                    self.is_lcd_turning_on = false;
-                    self.ppu_mcycle_countdown = 19;
-                    self.set_ppu_mode(2);
-                    return;
-                }
-                self.scanline += 1;
-                self.memory[0xFF44] = self.scanline;
-                self.check_lyc();
+        self.ppu_scanline_dot = new_dot - line_end;
+        self.ppu_first_line_after_enable = false;
+        self.scanline = self.scanline.wrapping_add(1);
 
-                if self.scanline >= 144 {
-                    self.ppu_mcycle_countdown = 114;
-                    self.set_ppu_mode(1);
-                    self.request_interrupt(0);
-                } else {
-                    self.ppu_mcycle_countdown = 21;
-                    self.set_ppu_mode(2);
-                }
-            }
-            1 => {
-                self.scanline += 1;
-
-                if self.scanline > 153 {
-                    self.scanline = 0;
-                    self.memory[0xFF44] = 0;
-                    self.window_line_counter = 0;
-                    self.check_lyc();
-                    self.ppu_mcycle_countdown = 21;
-                    self.set_ppu_mode(2);
-                } else {
-                    if self.scanline == 153 {
-                        self.memory[0xFF44] = 153;
-                    } else {
-                        self.memory[0xFF44] = self.scanline;
-                    }
-                    self.check_lyc();
-                    self.ppu_mcycle_countdown = 114;
-                }
-            }
-            _ => unreachable!(),
+        if self.scanline == 144 {
+            self.memory[0xFF44] = 144;
+            self.pulse_oam_stat_edge();
+            self.check_lyc();
+            self.set_ppu_mode(1);
+            self.request_interrupt(0);
+        } else if self.scanline > 153 {
+            self.scanline = 0;
+            self.memory[0xFF44] = 0;
+            self.window_line_counter = 0;
+            self.check_lyc();
+            self.set_ppu_mode(2);
+        } else if self.scanline < 144 {
+            self.memory[0xFF44] = self.scanline;
+            // On DMG the Mode-2 STAT source is evaluated roughly one dot
+            // before STAT exposes Mode 2 and before the new LY comparison.
+            self.pulse_oam_stat_edge();
+            self.memory[0xFF41] = (self.memory[0xFF41] & 0xFC) | 2;
+            self.check_lyc();
+        } else {
+            self.memory[0xFF44] = self.scanline;
+            self.check_lyc();
         }
     }
 
-    fn ppu_scroll_adjust(&self) -> u32 {
-        let scx = self.memory[0xFF43] % 8;
-        match scx {
-            5..=7 => 2,
-            1..=4 => 1,
-            _ => 0,
+    /// Evaluate the DMG's early OAM STAT source without exposing Mode 2 yet.
+    /// This preserves the one-dot interrupt lead while keeping the common PPU
+    /// path at CPU M-cycle granularity.
+    #[inline]
+    fn pulse_oam_stat_edge(&mut self) {
+        if self.is_cgb || self.memory[0xFF40] & 0x80 == 0 {
+            return;
+        }
+        let stat = self.memory[0xFF41];
+        let line = stat & 0x20 != 0 || (stat & 0x44 == 0x44);
+        if line && !self.prev_stat_line {
+            self.request_interrupt(1);
+        }
+        self.prev_stat_line = line;
+    }
+
+    /// Calculate Mode 3 once per visible line. This models the documented FIFO
+    /// stalls without stepping a pixel fetcher 4.2 million times per second.
+    fn ppu_mode3_length_dots(&self) -> u16 {
+        let lcdc = self.memory[0xFF40];
+        let scx = self.memory[0xFF43];
+        let ly = self.scanline;
+        let sprite_height = if lcdc & 0x04 != 0 { 16i16 } else { 8i16 };
+
+        let mut length = 170u16 + (scx & 7) as u16;
+        let window_active = lcdc & 0x20 != 0
+            && (self.is_cgb || lcdc & 0x01 != 0)
+            && ly >= self.memory[0xFF4A]
+            && self.memory[0xFF4B] <= 166;
+        if window_active {
+            // Window startup includes the six-dot fetch restart plus the
+            // two-dot pipeline phase represented by the 170-dot baseline.
+            length += 8;
+            if self.memory[0xFF4B] == 0 && scx & 7 != 0 {
+                length -= 1;
+            }
+        }
+
+        if lcdc & 0x02 != 0 {
+            // Mode 2 selects the first ten vertically-overlapping OBJs in OAM
+            // order. Mode 3 processes those from left to right on DMG.
+            let mut sprites = [(0i16, 0u8, 0u8); 10]; // (screen x, OAM index, raw x)
+            let mut sprite_count = 0usize;
+            for index in 0..40usize {
+                let base = 0xFE00 + index * 4;
+                let top = self.memory[base] as i16 - 16;
+                if (ly as i16) < top || (ly as i16) >= top + sprite_height {
+                    continue;
+                }
+                let raw_x = self.memory[base + 1];
+                sprites[sprite_count] = (raw_x as i16 - 8, index as u8, raw_x);
+                sprite_count += 1;
+                if sprite_count == 10 { break; }
+            }
+            if sprites[..sprite_count].iter().any(|&(_, _, raw_x)| raw_x != 0) {
+                // The first OBJ stalls the fetcher while it switches from the
+                // background pipeline; per-OBJ penalties below start after it.
+                length += 3;
+            }
+            sprites[..sprite_count].sort_unstable_by_key(|&(x, index, _)| (x, index));
+
+            let win_left = self.memory[0xFF4B] as i16 - 7;
+            let mut seen_tiles = [u16::MAX; 10];
+            let mut seen_count = 0usize;
+            for &(screen_x, _, raw_x) in &sprites[..sprite_count] {
+                if raw_x == 0 {
+                    length += 11;
+                    continue;
+                }
+                let (tile_key, pixel_in_tile) = if window_active && screen_x >= win_left {
+                    let window_x = (screen_x - win_left).max(0) as u16;
+                    (0x100 | (window_x / 8), (window_x & 7) as u8)
+                } else {
+                    let bg_x = (screen_x + scx as i16).rem_euclid(256) as u16;
+                    (bg_x / 8, (bg_x & 7) as u8)
+                };
+
+                if !seen_tiles[..seen_count].contains(&tile_key) {
+                    seen_tiles[seen_count] = tile_key;
+                    seen_count += 1;
+                    let pixels_right = 7u8 - pixel_in_tile;
+                    length += pixels_right.saturating_sub(2) as u16;
+                }
+                length += 6;
+            }
+        }
+
+        length.min(289)
+    }
+
+    /// If the PPU is currently in Mode 3, record a register write so
+    /// `draw_scanline` can replay it at the right pixel. The fixed-size buffer
+    /// avoids allocation in the hot path; overflow remains observable.
+    #[inline]
+    fn log_ppu_reg_change_if_mode3(&mut self, addr: u16, value: u8) {
+        let mode = self.memory[0xFF41] & 0x03;
+        if mode == 3 && self.ppu_reg_log_len < self.ppu_reg_log.len() {
+            let dot = self.ppu_scanline_dot;
+            let idx = self.ppu_reg_log_len;
+            self.ppu_reg_log[idx] = crate::ppu::PpuRegChange { dot, addr, value };
+            self.ppu_reg_log_len += 1;
+        } else if mode == 3 {
+            self.ppu_reg_log_dropped = self.ppu_reg_log_dropped.saturating_add(1);
         }
     }
 
@@ -1584,10 +2040,13 @@ impl CPU {
     fn handle_lcd_off(&mut self) {
         self.memory[0xFF44] = 0;
         self.memory[0xFF41] &= 0xFC;
-        self.ppu_cycles = 0;
-        self.ppu_mcycle_countdown = 0;
         self.scanline = 0;
         self.window_line_counter = 0;
+        self.ppu_scanline_dot = 0;
+        self.ppu_mode3_start_dot = 0;
+        self.ppu_first_line_after_enable = false;
+        self.ppu_reg_log_len = 0;
+        self.suppress_mode2_stat_once = false;
         self.prev_stat_line = false;
     }
 
@@ -1596,17 +2055,26 @@ impl CPU {
         self.memory[0xFF41] = (self.memory[0xFF41] & 0b11111100) | (mode & 0x03);
 
         if (self.memory[0xFF40] & 0x80) != 0 {
-            self.update_stat_irq_line();
+            if mode == 2 && self.suppress_mode2_stat_once {
+                self.suppress_mode2_stat_once = false;
+
+                let stat = self.memory[0xFF41];
+                let mode_now = stat & 0x03;
+                let ly = self.memory[0xFF44];
+                let lyc = self.memory[0xFF45];
+                let hblank_trigger = mode_now == 0 && (stat & 0x08 != 0);
+                let vblank_trigger = mode_now == 1 && (stat & 0x10 != 0);
+                self.prev_stat_line = hblank_trigger
+                    || vblank_trigger
+                    || (mode_now == 2 && stat & 0x20 != 0)
+                    || (ly == lyc && stat & 0x40 != 0);
+            } else {
+                self.update_stat_irq_line();
+            }
         }
 
         if self.is_cgb && mode == 0 && old_mode != 0 && self.hdma_active {
-            self.do_hdma_block();
-            if self.hdma_len == 0 {
-                self.hdma_active = false;
-                self.hdma_len = 0xFF;
-            } else {
-                self.hdma_len -= 1;
-            }
+            self.advance_hdma_block();
         }
     }
 
@@ -1667,6 +2135,18 @@ impl CPU {
         self.timer_ticks_this_instr = 0;
         let cycles_before = self.cycles;
 
+        if self.halt_wakeup_delay_stat {
+            self.halt_wakeup_delay_stat = false;
+            self.tick_timer_4t();
+            self.cycles += 1;
+
+            if was_ei_pending && self.ei_pending {
+                self.interrupt_master_enable = true;
+                self.ei_pending = false;
+            }
+            return;
+        }
+
         let pending_interrupts = self.memory[0xFF0F] & self.memory[0xFFFF] & 0x1F;
         if self.interrupt_master_enable && pending_interrupts != 0 && !self.halt {
             self.interrupt_master_enable = false;
@@ -1708,6 +2188,14 @@ impl CPU {
             let valid_interrupts = self.memory[0xFF0F] & self.memory[0xFFFF] & 0x1F;
             if valid_interrupts != 0 {
                 self.halt = false;
+                // HBlank STAT wakeup is still one M-cycle early in HALT paths.
+                let stat_mode = self.memory[0xFF41] & 0x03;
+                if self.interrupt_master_enable
+                    && (valid_interrupts & 0x02) != 0
+                    && stat_mode == 0
+                {
+                    self.halt_wakeup_delay_stat = true;
+                }
             }
 
             if was_ei_pending && self.ei_pending {
@@ -2008,6 +2496,7 @@ impl CPU {
         }
     }
 
+    #[allow(dead_code)]
     fn execute_cb(&mut self) {
         let opcode = self.read();
         self.execute_cb_with_opcode(opcode);
