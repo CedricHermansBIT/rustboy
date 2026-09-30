@@ -1,0 +1,8 @@
+/target/
+/pkg/
+/roms/
+/testroms/
+/.idea/
+/perf.data*
+/trace_*.csv
+**/__pycache__/

@@ -1,0 +1,38 @@
+name: Emulator checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  core-and-browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      RUSTUP_TOOLCHAIN: 1.98.1
+      RUSTBOY_BROWSER: google-chrome
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install matching Rust and WASM tools
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --target wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --locked --version 0.2.118
+      - name: Native and JavaScript regressions
+        run: python3 scripts/check.py
+      - name: Regenerated ROM registry stays in sync
+        run: |
+          python3 generate_tests.py
+          git diff --exit-code -- tests/headless.rs
+      - name: Build without local boot ROMs or game files
+        run: python3 scripts/build_web.py
+      - name: Real-browser initialization and upload-error smoke test
+        run: node tests/browser_smoke.mjs
+      # Licensed/local ROM and boot-ROM suites are a separate release gate:
+      # python3 scripts/check.py --roms --browser
