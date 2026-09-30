@@ -1,0 +1,3234 @@
+[
+  {
+    "name": "mooneye_add_sp_e_timing",
+    "runner": "mooneye",
+    "path": "testroms/add_sp_e_timing.gb"
+  },
+  {
+    "name": "mooneye_basic",
+    "runner": "mooneye",
+    "path": "testroms/basic.gb"
+  },
+  {
+    "name": "mooneye_bits_bank1",
+    "runner": "mooneye",
+    "path": "testroms/bits_bank1.gb"
+  },
+  {
+    "name": "mooneye_bits_bank2",
+    "runner": "mooneye",
+    "path": "testroms/bits_bank2.gb"
+  },
+  {
+    "name": "mooneye_bits_mode",
+    "runner": "mooneye",
+    "path": "testroms/bits_mode.gb"
+  },
+  {
+    "name": "mooneye_bits_ramg",
+    "runner": "mooneye",
+    "path": "testroms/bits_ramg.gb"
+  },
+  {
+    "name": "mooneye_boot_div_dmgabcmgb",
+    "runner": "mooneye",
+    "path": "testroms/boot_div-dmgABCmgb.gb"
+  },
+  {
+    "name": "mooneye_boot_hwio_dmgabcmgb",
+    "runner": "mooneye",
+    "path": "testroms/boot_hwio-dmgABCmgb.gb"
+  },
+  {
+    "name": "mooneye_boot_regs_dmgabc",
+    "runner": "mooneye",
+    "path": "testroms/boot_regs-dmgABC.gb"
+  },
+  {
+    "name": "mooneye_call_cc_timing",
+    "runner": "mooneye",
+    "path": "testroms/call_cc_timing.gb"
+  },
+  {
+    "name": "mooneye_call_cc_timing2",
+    "runner": "mooneye",
+    "path": "testroms/call_cc_timing2.gb"
+  },
+  {
+    "name": "mooneye_call_timing",
+    "runner": "mooneye",
+    "path": "testroms/call_timing.gb"
+  },
+  {
+    "name": "mooneye_call_timing2",
+    "runner": "mooneye",
+    "path": "testroms/call_timing2.gb"
+  },
+  {
+    "name": "mooneye_daa",
+    "runner": "mooneye",
+    "path": "testroms/daa.gb"
+  },
+  {
+    "name": "mooneye_di_timing_gs",
+    "runner": "mooneye",
+    "path": "testroms/di_timing-GS.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_div_timing",
+    "runner": "mooneye",
+    "path": "testroms/div_timing.gb"
+  },
+  {
+    "name": "mooneye_ei_sequence",
+    "runner": "mooneye",
+    "path": "testroms/ei_sequence.gb"
+  },
+  {
+    "name": "mooneye_ei_timing",
+    "runner": "mooneye",
+    "path": "testroms/ei_timing.gb"
+  },
+  {
+    "name": "mooneye_halt_ime0_ei",
+    "runner": "mooneye",
+    "path": "testroms/halt_ime0_ei.gb"
+  },
+  {
+    "name": "mooneye_halt_ime0_nointr_timing",
+    "runner": "mooneye",
+    "path": "testroms/halt_ime0_nointr_timing.gb"
+  },
+  {
+    "name": "mooneye_halt_ime1_timing",
+    "runner": "mooneye",
+    "path": "testroms/halt_ime1_timing.gb"
+  },
+  {
+    "name": "mooneye_halt_ime1_timing2_gs",
+    "runner": "mooneye",
+    "path": "testroms/halt_ime1_timing2-GS.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_if_ie_registers",
+    "runner": "mooneye",
+    "path": "testroms/if_ie_registers.gb"
+  },
+  {
+    "name": "mooneye_intr_timing",
+    "runner": "mooneye",
+    "path": "testroms/intr_timing.gb"
+  },
+  {
+    "name": "mooneye_jp_cc_timing",
+    "runner": "mooneye",
+    "path": "testroms/jp_cc_timing.gb"
+  },
+  {
+    "name": "mooneye_jp_timing",
+    "runner": "mooneye",
+    "path": "testroms/jp_timing.gb"
+  },
+  {
+    "name": "mooneye_ld_hl_sp_e_timing",
+    "runner": "mooneye",
+    "path": "testroms/ld_hl_sp_e_timing.gb"
+  },
+  {
+    "name": "mooneye_m2_win_en_toggle",
+    "runner": "mooneye",
+    "path": "testroms/m2_win_en_toggle.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_bgp_change",
+    "runner": "mooneye",
+    "path": "testroms/m3_bgp_change.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_bgp_change_sprites",
+    "runner": "mooneye",
+    "path": "testroms/m3_bgp_change_sprites.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_lcdc_bg_en_change",
+    "runner": "mooneye",
+    "path": "testroms/m3_lcdc_bg_en_change.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_lcdc_bg_en_change2",
+    "runner": "mooneye",
+    "path": "testroms/m3_lcdc_bg_en_change2.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_lcdc_bg_map_change",
+    "runner": "mooneye",
+    "path": "testroms/m3_lcdc_bg_map_change.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_lcdc_bg_map_change2",
+    "runner": "mooneye",
+    "path": "testroms/m3_lcdc_bg_map_change2.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_lcdc_obj_en_change",
+    "runner": "mooneye",
+    "path": "testroms/m3_lcdc_obj_en_change.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_lcdc_obj_en_change_variant",
+    "runner": "mooneye",
+    "path": "testroms/m3_lcdc_obj_en_change_variant.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_lcdc_obj_size_change",
+    "runner": "mooneye",
+    "path": "testroms/m3_lcdc_obj_size_change.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_lcdc_obj_size_change_scx",
+    "runner": "mooneye",
+    "path": "testroms/m3_lcdc_obj_size_change_scx.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_lcdc_tile_sel_change",
+    "runner": "mooneye",
+    "path": "testroms/m3_lcdc_tile_sel_change.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_lcdc_tile_sel_change2",
+    "runner": "mooneye",
+    "path": "testroms/m3_lcdc_tile_sel_change2.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_lcdc_tile_sel_win_change",
+    "runner": "mooneye",
+    "path": "testroms/m3_lcdc_tile_sel_win_change.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_lcdc_tile_sel_win_change2",
+    "runner": "mooneye",
+    "path": "testroms/m3_lcdc_tile_sel_win_change2.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_lcdc_win_en_change_multiple",
+    "runner": "mooneye",
+    "path": "testroms/m3_lcdc_win_en_change_multiple.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_lcdc_win_en_change_multiple_wx",
+    "runner": "mooneye",
+    "path": "testroms/m3_lcdc_win_en_change_multiple_wx.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_lcdc_win_map_change",
+    "runner": "mooneye",
+    "path": "testroms/m3_lcdc_win_map_change.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_lcdc_win_map_change2",
+    "runner": "mooneye",
+    "path": "testroms/m3_lcdc_win_map_change2.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_obp0_change",
+    "runner": "mooneye",
+    "path": "testroms/m3_obp0_change.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_scx_high_5_bits",
+    "runner": "mooneye",
+    "path": "testroms/m3_scx_high_5_bits.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_scx_high_5_bits_change2",
+    "runner": "mooneye",
+    "path": "testroms/m3_scx_high_5_bits_change2.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_scx_low_3_bits",
+    "runner": "mooneye",
+    "path": "testroms/m3_scx_low_3_bits.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_scy_change",
+    "runner": "mooneye",
+    "path": "testroms/m3_scy_change.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_scy_change2",
+    "runner": "mooneye",
+    "path": "testroms/m3_scy_change2.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_window_timing",
+    "runner": "mooneye",
+    "path": "testroms/m3_window_timing.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_window_timing_wx_0",
+    "runner": "mooneye",
+    "path": "testroms/m3_window_timing_wx_0.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_wx_4_change",
+    "runner": "mooneye",
+    "path": "testroms/m3_wx_4_change.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_wx_4_change_sprites",
+    "runner": "mooneye",
+    "path": "testroms/m3_wx_4_change_sprites.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_wx_5_change",
+    "runner": "mooneye",
+    "path": "testroms/m3_wx_5_change.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_m3_wx_6_change",
+    "runner": "mooneye",
+    "path": "testroms/m3_wx_6_change.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "mooneye_multicart_rom_8mb",
+    "runner": "mooneye",
+    "path": "testroms/multicart_rom_8Mb.gb"
+  },
+  {
+    "name": "mooneye_oam_dma_restart",
+    "runner": "mooneye",
+    "path": "testroms/oam_dma_restart.gb"
+  },
+  {
+    "name": "mooneye_oam_dma_start",
+    "runner": "mooneye",
+    "path": "testroms/oam_dma_start.gb"
+  },
+  {
+    "name": "mooneye_oam_dma_timing",
+    "runner": "mooneye",
+    "path": "testroms/oam_dma_timing.gb"
+  },
+  {
+    "name": "mooneye_pop_timing",
+    "runner": "mooneye",
+    "path": "testroms/pop_timing.gb"
+  },
+  {
+    "name": "mooneye_push_timing",
+    "runner": "mooneye",
+    "path": "testroms/push_timing.gb"
+  },
+  {
+    "name": "mooneye_ram_256kb",
+    "runner": "mooneye",
+    "path": "testroms/ram_256kb.gb"
+  },
+  {
+    "name": "mooneye_ram_64kb",
+    "runner": "mooneye",
+    "path": "testroms/ram_64kb.gb"
+  },
+  {
+    "name": "mooneye_rapid_di_ei",
+    "runner": "mooneye",
+    "path": "testroms/rapid_di_ei.gb"
+  },
+  {
+    "name": "mooneye_reg_read",
+    "runner": "mooneye",
+    "path": "testroms/reg_read.gb"
+  },
+  {
+    "name": "mooneye_ret_cc_timing",
+    "runner": "mooneye",
+    "path": "testroms/ret_cc_timing.gb"
+  },
+  {
+    "name": "mooneye_ret_timing",
+    "runner": "mooneye",
+    "path": "testroms/ret_timing.gb"
+  },
+  {
+    "name": "mooneye_reti_intr_timing",
+    "runner": "mooneye",
+    "path": "testroms/reti_intr_timing.gb"
+  },
+  {
+    "name": "mooneye_reti_timing",
+    "runner": "mooneye",
+    "path": "testroms/reti_timing.gb"
+  },
+  {
+    "name": "mooneye_rom_16mb",
+    "runner": "mooneye",
+    "path": "testroms/rom_16Mb.gb"
+  },
+  {
+    "name": "mooneye_rom_1mb",
+    "runner": "mooneye",
+    "path": "testroms/rom_1Mb.gb"
+  },
+  {
+    "name": "mooneye_rom_2mb",
+    "runner": "mooneye",
+    "path": "testroms/rom_2Mb.gb"
+  },
+  {
+    "name": "mooneye_rom_4mb",
+    "runner": "mooneye",
+    "path": "testroms/rom_4Mb.gb"
+  },
+  {
+    "name": "mooneye_rom_512kb",
+    "runner": "mooneye",
+    "path": "testroms/rom_512kb.gb"
+  },
+  {
+    "name": "mooneye_rom_8mb",
+    "runner": "mooneye",
+    "path": "testroms/rom_8Mb.gb"
+  },
+  {
+    "name": "mooneye_rst_timing",
+    "runner": "mooneye",
+    "path": "testroms/rst_timing.gb"
+  },
+  {
+    "name": "mooneye_sources_gs",
+    "runner": "mooneye",
+    "path": "testroms/sources-GS.gb",
+    "ignore": "Different hardware model or visual-only ROM (pre-existing exclusion)"
+  },
+  {
+    "name": "blargg_n01_registers",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cgb_sound/rom_singles/01-registers.gb"
+  },
+  {
+    "name": "blargg_n02_len_ctr",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cgb_sound/rom_singles/02-len ctr.gb"
+  },
+  {
+    "name": "blargg_n03_trigger",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cgb_sound/rom_singles/03-trigger.gb"
+  },
+  {
+    "name": "blargg_n04_sweep",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cgb_sound/rom_singles/04-sweep.gb"
+  },
+  {
+    "name": "blargg_n05_sweep_details",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cgb_sound/rom_singles/05-sweep details.gb"
+  },
+  {
+    "name": "blargg_n06_overflow_on_trigger",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cgb_sound/rom_singles/06-overflow on trigger.gb"
+  },
+  {
+    "name": "blargg_n07_len_sweep_period_sync",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cgb_sound/rom_singles/07-len sweep period sync.gb"
+  },
+  {
+    "name": "blargg_n08_len_ctr_during_power",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cgb_sound/rom_singles/08-len ctr during power.gb",
+    "ignore": "CGB-specific: length counter behavior differs from DMG"
+  },
+  {
+    "name": "blargg_n09_wave_read_while_on",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cgb_sound/rom_singles/09-wave read while on.gb",
+    "ignore": "CGB-specific: wave read timing differs from DMG"
+  },
+  {
+    "name": "blargg_n10_wave_trigger_while_on",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cgb_sound/rom_singles/10-wave trigger while on.gb",
+    "ignore": "CGB-specific: wave trigger behavior differs from DMG"
+  },
+  {
+    "name": "blargg_n11_regs_after_power",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cgb_sound/rom_singles/11-regs after power.gb",
+    "ignore": "CGB-specific: register clearing on power off differs from DMG"
+  },
+  {
+    "name": "blargg_n12_wave",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cgb_sound/rom_singles/12-wave.gb"
+  },
+  {
+    "name": "blargg_cpu_instrs",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cpu_instrs/cpu_instrs.gb"
+  },
+  {
+    "name": "blargg_n01_special",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cpu_instrs/individual/01-special.gb"
+  },
+  {
+    "name": "blargg_n02_interrupts",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cpu_instrs/individual/02-interrupts.gb"
+  },
+  {
+    "name": "blargg_n03_op_sp_hl",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cpu_instrs/individual/03-op sp,hl.gb"
+  },
+  {
+    "name": "blargg_n04_op_r_imm",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cpu_instrs/individual/04-op r,imm.gb"
+  },
+  {
+    "name": "blargg_n05_op_rp",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cpu_instrs/individual/05-op rp.gb"
+  },
+  {
+    "name": "blargg_n06_ld_r_r",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cpu_instrs/individual/06-ld r,r.gb"
+  },
+  {
+    "name": "blargg_n07_jr_jp_call_ret_rst",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cpu_instrs/individual/07-jr,jp,call,ret,rst.gb"
+  },
+  {
+    "name": "blargg_n08_misc_instrs",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cpu_instrs/individual/08-misc instrs.gb"
+  },
+  {
+    "name": "blargg_n09_op_r_r",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cpu_instrs/individual/09-op r,r.gb"
+  },
+  {
+    "name": "blargg_n10_bit_ops",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cpu_instrs/individual/10-bit ops.gb"
+  },
+  {
+    "name": "blargg_n11_op_a_hl",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/cpu_instrs/individual/11-op a,(hl).gb"
+  },
+  {
+    "name": "blargg_dmg_sound",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/dmg_sound/dmg_sound.gb"
+  },
+  {
+    "name": "blargg_dmg_n09_wave_read_while_on",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/dmg_sound/rom_singles/09-wave read while on.gb"
+  },
+  {
+    "name": "blargg_dmg_n10_wave_trigger_while_on",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/dmg_sound/rom_singles/10-wave trigger while on.gb"
+  },
+  {
+    "name": "blargg_n12_wave_write_while_on",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/dmg_sound/rom_singles/12-wave write while on.gb"
+  },
+  {
+    "name": "blargg_halt_bug",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/halt_bug.gb"
+  },
+  {
+    "name": "blargg_instr_timing",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/instr_timing/instr_timing.gb"
+  },
+  {
+    "name": "blargg_interrupt_time",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/interrupt_time/interrupt_time.gb"
+  },
+  {
+    "name": "blargg_mem_timing",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/mem_timing-2/mem_timing.gb"
+  },
+  {
+    "name": "blargg_n01_read_timing",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/mem_timing-2/rom_singles/01-read_timing.gb"
+  },
+  {
+    "name": "blargg_n02_write_timing",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/mem_timing-2/rom_singles/02-write_timing.gb"
+  },
+  {
+    "name": "blargg_n03_modify_timing",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/mem_timing-2/rom_singles/03-modify_timing.gb"
+  },
+  {
+    "name": "blargg_oam_bug",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/oam_bug/oam_bug.gb",
+    "ignore": "OAM corruption bug not implemented"
+  },
+  {
+    "name": "blargg_n1_lcd_sync",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/oam_bug/rom_singles/1-lcd_sync.gb",
+    "ignore": "OAM corruption bug not implemented"
+  },
+  {
+    "name": "blargg_n2_causes",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/oam_bug/rom_singles/2-causes.gb",
+    "ignore": "OAM corruption bug not implemented"
+  },
+  {
+    "name": "blargg_n3_non_causes",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/oam_bug/rom_singles/3-non_causes.gb"
+  },
+  {
+    "name": "blargg_n4_scanline_timing",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/oam_bug/rom_singles/4-scanline_timing.gb",
+    "ignore": "OAM corruption bug not implemented"
+  },
+  {
+    "name": "blargg_n5_timing_bug",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/oam_bug/rom_singles/5-timing_bug.gb",
+    "ignore": "OAM corruption bug not implemented"
+  },
+  {
+    "name": "blargg_n6_timing_no_bug",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/oam_bug/rom_singles/6-timing_no_bug.gb",
+    "ignore": "OAM corruption bug not implemented"
+  },
+  {
+    "name": "blargg_n7_timing_effect",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/oam_bug/rom_singles/7-timing_effect.gb",
+    "ignore": "OAM corruption bug not implemented"
+  },
+  {
+    "name": "blargg_n8_instr_effect",
+    "runner": "blargg",
+    "path": "testroms/artifacts/blargg/oam_bug/rom_singles/8-instr_effect.gb",
+    "ignore": "OAM corruption bug not implemented"
+  },
+  {
+    "name": "micro_n000_oam_lock",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/000-oam_lock.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_n000_write_to_x8000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/000-write_to_x8000.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_n001_vram_unlocked",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/001-vram_unlocked.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_n002_vram_locked",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/002-vram_locked.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_n004_tima_boot_phase",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/004-tima_boot_phase.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_n004_tima_cycle_timer",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/004-tima_cycle_timer.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_n007_lcd_on_stat",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/007-lcd_on_stat.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_n400_dma",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/400-dma.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_n500_scx_timing",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/500-scx-timing.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_n800_ppu_latch_scx",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/800-ppu-latch-scx.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_n801_ppu_latch_scy",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/801-ppu-latch-scy.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_n802_ppu_latch_tileselect",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/802-ppu-latch-tileselect.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_n803_ppu_latch_bgdisplay",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/803-ppu-latch-bgdisplay.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_audio_testbench",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/audio_testbench.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_cpu_bus_1",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/cpu_bus_1.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_div_inc_timing_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/div_inc_timing_a.gb"
+  },
+  {
+    "name": "micro_div_inc_timing_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/div_inc_timing_b.gb"
+  },
+  {
+    "name": "micro_dma_0x1000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/dma_0x1000.gb"
+  },
+  {
+    "name": "micro_dma_0x9000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/dma_0x9000.gb"
+  },
+  {
+    "name": "micro_dma_0xa000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/dma_0xA000.gb"
+  },
+  {
+    "name": "micro_dma_0xc000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/dma_0xC000.gb"
+  },
+  {
+    "name": "micro_dma_0xe000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/dma_0xE000.gb"
+  },
+  {
+    "name": "micro_dma_basic",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/dma_basic.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_dma_timing_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/dma_timing_a.gb"
+  },
+  {
+    "name": "micro_flood_vram",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/flood_vram.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_halt_bug",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/halt_bug.gb"
+  },
+  {
+    "name": "micro_halt_op_dupe",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/halt_op_dupe.gb"
+  },
+  {
+    "name": "micro_halt_op_dupe_delay",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/halt_op_dupe_delay.gb"
+  },
+  {
+    "name": "micro_hblank_int_di_timing_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_di_timing_a.gb"
+  },
+  {
+    "name": "micro_hblank_int_di_timing_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_di_timing_b.gb"
+  },
+  {
+    "name": "micro_hblank_int_if_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_if_a.gb"
+  },
+  {
+    "name": "micro_hblank_int_if_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_if_b.gb"
+  },
+  {
+    "name": "micro_hblank_int_l0",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_l0.gb"
+  },
+  {
+    "name": "micro_hblank_int_l1",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_l1.gb"
+  },
+  {
+    "name": "micro_hblank_int_l2",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_l2.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx0",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx0.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx0_if_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx0_if_a.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx0_if_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx0_if_b.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx0_if_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx0_if_c.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx0_if_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx0_if_d.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx1",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx1.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx1_if_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx1_if_a.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx1_if_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx1_if_b.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx1_if_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx1_if_c.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx1_if_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx1_if_d.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx1_nops_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx1_nops_a.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx1_nops_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx1_nops_b.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx2",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx2.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx2_if_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx2_if_a.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx2_if_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx2_if_b.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx2_if_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx2_if_c.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx2_if_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx2_if_d.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx2_nops_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx2_nops_a.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx2_nops_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx2_nops_b.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx3",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx3.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx3_if_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx3_if_a.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx3_if_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx3_if_b.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx3_if_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx3_if_c.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx3_if_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx3_if_d.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx3_nops_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx3_nops_a.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx3_nops_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx3_nops_b.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx4",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx4.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx4_if_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx4_if_a.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx4_if_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx4_if_b.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx4_if_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx4_if_c.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx4_if_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx4_if_d.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx4_nops_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx4_nops_a.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx4_nops_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx4_nops_b.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx5",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx5.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx5_if_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx5_if_a.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx5_if_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx5_if_b.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx5_if_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx5_if_c.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx5_if_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx5_if_d.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx5_nops_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx5_nops_a.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx5_nops_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx5_nops_b.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx6",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx6.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx6_if_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx6_if_a.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx6_if_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx6_if_b.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx6_if_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx6_if_c.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx6_if_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx6_if_d.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx6_nops_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx6_nops_a.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx6_nops_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx6_nops_b.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx7",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx7.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx7_if_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx7_if_a.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx7_if_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx7_if_b.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx7_if_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx7_if_c.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx7_if_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx7_if_d.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx7_nops_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx7_nops_a.gb"
+  },
+  {
+    "name": "micro_hblank_int_scx7_nops_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_int_scx7_nops_b.gb"
+  },
+  {
+    "name": "micro_hblank_scx2_if_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_scx2_if_a.gb"
+  },
+  {
+    "name": "micro_hblank_scx3_if_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_scx3_if_a.gb"
+  },
+  {
+    "name": "micro_hblank_scx3_if_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_scx3_if_b.gb"
+  },
+  {
+    "name": "micro_hblank_scx3_if_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_scx3_if_c.gb"
+  },
+  {
+    "name": "micro_hblank_scx3_if_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_scx3_if_d.gb"
+  },
+  {
+    "name": "micro_hblank_scx3_int_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_scx3_int_a.gb"
+  },
+  {
+    "name": "micro_hblank_scx3_int_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/hblank_scx3_int_b.gb"
+  },
+  {
+    "name": "micro_int_hblank_halt_bug_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_halt_bug_a.gb"
+  },
+  {
+    "name": "micro_int_hblank_halt_bug_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_halt_bug_b.gb"
+  },
+  {
+    "name": "micro_int_hblank_halt_scx0",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_halt_scx0.gb"
+  },
+  {
+    "name": "micro_int_hblank_halt_scx1",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_halt_scx1.gb"
+  },
+  {
+    "name": "micro_int_hblank_halt_scx2",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_halt_scx2.gb"
+  },
+  {
+    "name": "micro_int_hblank_halt_scx3",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_halt_scx3.gb"
+  },
+  {
+    "name": "micro_int_hblank_halt_scx4",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_halt_scx4.gb"
+  },
+  {
+    "name": "micro_int_hblank_halt_scx5",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_halt_scx5.gb"
+  },
+  {
+    "name": "micro_int_hblank_halt_scx6",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_halt_scx6.gb"
+  },
+  {
+    "name": "micro_int_hblank_halt_scx7",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_halt_scx7.gb"
+  },
+  {
+    "name": "micro_int_hblank_incs_scx0",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_incs_scx0.gb"
+  },
+  {
+    "name": "micro_int_hblank_incs_scx1",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_incs_scx1.gb"
+  },
+  {
+    "name": "micro_int_hblank_incs_scx2",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_incs_scx2.gb"
+  },
+  {
+    "name": "micro_int_hblank_incs_scx3",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_incs_scx3.gb"
+  },
+  {
+    "name": "micro_int_hblank_incs_scx4",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_incs_scx4.gb"
+  },
+  {
+    "name": "micro_int_hblank_incs_scx5",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_incs_scx5.gb"
+  },
+  {
+    "name": "micro_int_hblank_incs_scx6",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_incs_scx6.gb"
+  },
+  {
+    "name": "micro_int_hblank_incs_scx7",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_incs_scx7.gb"
+  },
+  {
+    "name": "micro_int_hblank_nops_scx0",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_nops_scx0.gb"
+  },
+  {
+    "name": "micro_int_hblank_nops_scx1",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_nops_scx1.gb"
+  },
+  {
+    "name": "micro_int_hblank_nops_scx2",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_nops_scx2.gb"
+  },
+  {
+    "name": "micro_int_hblank_nops_scx3",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_nops_scx3.gb"
+  },
+  {
+    "name": "micro_int_hblank_nops_scx4",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_nops_scx4.gb"
+  },
+  {
+    "name": "micro_int_hblank_nops_scx5",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_nops_scx5.gb"
+  },
+  {
+    "name": "micro_int_hblank_nops_scx6",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_nops_scx6.gb"
+  },
+  {
+    "name": "micro_int_hblank_nops_scx7",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_hblank_nops_scx7.gb"
+  },
+  {
+    "name": "micro_int_lyc_halt",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_lyc_halt.gb"
+  },
+  {
+    "name": "micro_int_lyc_incs",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_lyc_incs.gb"
+  },
+  {
+    "name": "micro_int_lyc_nops",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_lyc_nops.gb"
+  },
+  {
+    "name": "micro_int_oam_halt",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_oam_halt.gb"
+  },
+  {
+    "name": "micro_int_oam_incs",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_oam_incs.gb"
+  },
+  {
+    "name": "micro_int_oam_nops",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_oam_nops.gb"
+  },
+  {
+    "name": "micro_int_timer_halt",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_timer_halt.gb"
+  },
+  {
+    "name": "micro_int_timer_halt_div_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_timer_halt_div_a.gb"
+  },
+  {
+    "name": "micro_int_timer_halt_div_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_timer_halt_div_b.gb"
+  },
+  {
+    "name": "micro_int_timer_incs",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_timer_incs.gb"
+  },
+  {
+    "name": "micro_int_timer_nops",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_timer_nops.gb"
+  },
+  {
+    "name": "micro_int_timer_nops_div_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_timer_nops_div_a.gb"
+  },
+  {
+    "name": "micro_int_timer_nops_div_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_timer_nops_div_b.gb"
+  },
+  {
+    "name": "micro_int_vblank1_halt",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_vblank1_halt.gb"
+  },
+  {
+    "name": "micro_int_vblank1_incs",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_vblank1_incs.gb"
+  },
+  {
+    "name": "micro_int_vblank1_nops",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_vblank1_nops.gb"
+  },
+  {
+    "name": "micro_int_vblank2_halt",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_vblank2_halt.gb"
+  },
+  {
+    "name": "micro_int_vblank2_incs",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_vblank2_incs.gb"
+  },
+  {
+    "name": "micro_int_vblank2_nops",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/int_vblank2_nops.gb"
+  },
+  {
+    "name": "micro_is_if_set_during_ime0",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/is_if_set_during_ime0.gb"
+  },
+  {
+    "name": "micro_lcdon_halt_to_vblank_int_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_halt_to_vblank_int_a.gb"
+  },
+  {
+    "name": "micro_lcdon_halt_to_vblank_int_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_halt_to_vblank_int_b.gb"
+  },
+  {
+    "name": "micro_lcdon_nops_to_vblank_int_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_nops_to_vblank_int_a.gb"
+  },
+  {
+    "name": "micro_lcdon_nops_to_vblank_int_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_nops_to_vblank_int_b.gb"
+  },
+  {
+    "name": "micro_lcdon_to_if_oam_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_if_oam_a.gb"
+  },
+  {
+    "name": "micro_lcdon_to_if_oam_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_if_oam_b.gb"
+  },
+  {
+    "name": "micro_lcdon_to_ly1_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_ly1_a.gb"
+  },
+  {
+    "name": "micro_lcdon_to_ly1_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_ly1_b.gb"
+  },
+  {
+    "name": "micro_lcdon_to_ly2_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_ly2_a.gb"
+  },
+  {
+    "name": "micro_lcdon_to_ly2_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_ly2_b.gb"
+  },
+  {
+    "name": "micro_lcdon_to_ly3_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_ly3_a.gb"
+  },
+  {
+    "name": "micro_lcdon_to_ly3_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_ly3_b.gb"
+  },
+  {
+    "name": "micro_lcdon_to_lyc1_int",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_lyc1_int.gb"
+  },
+  {
+    "name": "micro_lcdon_to_lyc2_int",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_lyc2_int.gb"
+  },
+  {
+    "name": "micro_lcdon_to_lyc3_int",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_lyc3_int.gb"
+  },
+  {
+    "name": "micro_lcdon_to_oam_int_l0",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_oam_int_l0.gb"
+  },
+  {
+    "name": "micro_lcdon_to_oam_int_l1",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_oam_int_l1.gb"
+  },
+  {
+    "name": "micro_lcdon_to_oam_int_l2",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_oam_int_l2.gb"
+  },
+  {
+    "name": "micro_lcdon_to_oam_unlock_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_oam_unlock_a.gb"
+  },
+  {
+    "name": "micro_lcdon_to_oam_unlock_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_oam_unlock_b.gb"
+  },
+  {
+    "name": "micro_lcdon_to_oam_unlock_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_oam_unlock_c.gb"
+  },
+  {
+    "name": "micro_lcdon_to_oam_unlock_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_oam_unlock_d.gb"
+  },
+  {
+    "name": "micro_lcdon_to_stat0_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_stat0_a.gb"
+  },
+  {
+    "name": "micro_lcdon_to_stat0_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_stat0_b.gb"
+  },
+  {
+    "name": "micro_lcdon_to_stat0_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_stat0_c.gb"
+  },
+  {
+    "name": "micro_lcdon_to_stat0_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_stat0_d.gb"
+  },
+  {
+    "name": "micro_lcdon_to_stat1_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_stat1_a.gb"
+  },
+  {
+    "name": "micro_lcdon_to_stat1_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_stat1_b.gb"
+  },
+  {
+    "name": "micro_lcdon_to_stat1_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_stat1_c.gb"
+  },
+  {
+    "name": "micro_lcdon_to_stat1_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_stat1_d.gb"
+  },
+  {
+    "name": "micro_lcdon_to_stat1_e",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_stat1_e.gb"
+  },
+  {
+    "name": "micro_lcdon_to_stat2_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_stat2_a.gb"
+  },
+  {
+    "name": "micro_lcdon_to_stat2_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_stat2_b.gb"
+  },
+  {
+    "name": "micro_lcdon_to_stat2_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_stat2_c.gb"
+  },
+  {
+    "name": "micro_lcdon_to_stat2_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_stat2_d.gb"
+  },
+  {
+    "name": "micro_lcdon_to_stat3_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_stat3_a.gb"
+  },
+  {
+    "name": "micro_lcdon_to_stat3_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_stat3_b.gb"
+  },
+  {
+    "name": "micro_lcdon_to_stat3_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_stat3_c.gb"
+  },
+  {
+    "name": "micro_lcdon_to_stat3_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_to_stat3_d.gb"
+  },
+  {
+    "name": "micro_lcdon_write_timing",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lcdon_write_timing.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_line_144_oam_int_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_144_oam_int_a.gb"
+  },
+  {
+    "name": "micro_line_144_oam_int_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_144_oam_int_b.gb"
+  },
+  {
+    "name": "micro_line_144_oam_int_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_144_oam_int_c.gb"
+  },
+  {
+    "name": "micro_line_144_oam_int_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_144_oam_int_d.gb"
+  },
+  {
+    "name": "micro_line_153_ly_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_ly_a.gb"
+  },
+  {
+    "name": "micro_line_153_ly_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_ly_b.gb"
+  },
+  {
+    "name": "micro_line_153_ly_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_ly_c.gb"
+  },
+  {
+    "name": "micro_line_153_ly_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_ly_d.gb"
+  },
+  {
+    "name": "micro_line_153_ly_e",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_ly_e.gb"
+  },
+  {
+    "name": "micro_line_153_ly_f",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_ly_f.gb"
+  },
+  {
+    "name": "micro_line_153_lyc0_int_inc_sled",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc0_int_inc_sled.gb"
+  },
+  {
+    "name": "micro_line_153_lyc0_stat_timing_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc0_stat_timing_a.gb"
+  },
+  {
+    "name": "micro_line_153_lyc0_stat_timing_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc0_stat_timing_b.gb"
+  },
+  {
+    "name": "micro_line_153_lyc0_stat_timing_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc0_stat_timing_c.gb"
+  },
+  {
+    "name": "micro_line_153_lyc0_stat_timing_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc0_stat_timing_d.gb"
+  },
+  {
+    "name": "micro_line_153_lyc0_stat_timing_e",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc0_stat_timing_e.gb"
+  },
+  {
+    "name": "micro_line_153_lyc0_stat_timing_f",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc0_stat_timing_f.gb"
+  },
+  {
+    "name": "micro_line_153_lyc0_stat_timing_g",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc0_stat_timing_g.gb"
+  },
+  {
+    "name": "micro_line_153_lyc0_stat_timing_h",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc0_stat_timing_h.gb"
+  },
+  {
+    "name": "micro_line_153_lyc0_stat_timing_i",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc0_stat_timing_i.gb"
+  },
+  {
+    "name": "micro_line_153_lyc0_stat_timing_j",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc0_stat_timing_j.gb"
+  },
+  {
+    "name": "micro_line_153_lyc0_stat_timing_k",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc0_stat_timing_k.gb"
+  },
+  {
+    "name": "micro_line_153_lyc0_stat_timing_l",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc0_stat_timing_l.gb"
+  },
+  {
+    "name": "micro_line_153_lyc0_stat_timing_m",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc0_stat_timing_m.gb"
+  },
+  {
+    "name": "micro_line_153_lyc0_stat_timing_n",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc0_stat_timing_n.gb"
+  },
+  {
+    "name": "micro_line_153_lyc153_stat_timing_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc153_stat_timing_a.gb"
+  },
+  {
+    "name": "micro_line_153_lyc153_stat_timing_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc153_stat_timing_b.gb"
+  },
+  {
+    "name": "micro_line_153_lyc153_stat_timing_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc153_stat_timing_c.gb"
+  },
+  {
+    "name": "micro_line_153_lyc153_stat_timing_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc153_stat_timing_d.gb"
+  },
+  {
+    "name": "micro_line_153_lyc153_stat_timing_e",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc153_stat_timing_e.gb"
+  },
+  {
+    "name": "micro_line_153_lyc153_stat_timing_f",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc153_stat_timing_f.gb"
+  },
+  {
+    "name": "micro_line_153_lyc_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc_a.gb"
+  },
+  {
+    "name": "micro_line_153_lyc_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc_b.gb"
+  },
+  {
+    "name": "micro_line_153_lyc_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc_c.gb"
+  },
+  {
+    "name": "micro_line_153_lyc_int_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc_int_a.gb"
+  },
+  {
+    "name": "micro_line_153_lyc_int_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_153_lyc_int_b.gb"
+  },
+  {
+    "name": "micro_line_65_ly",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/line_65_ly.gb"
+  },
+  {
+    "name": "micro_ly_while_lcd_off",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ly_while_lcd_off.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_lyc1_int_halt_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lyc1_int_halt_a.gb"
+  },
+  {
+    "name": "micro_lyc1_int_halt_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lyc1_int_halt_b.gb"
+  },
+  {
+    "name": "micro_lyc1_int_if_edge_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lyc1_int_if_edge_a.gb"
+  },
+  {
+    "name": "micro_lyc1_int_if_edge_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lyc1_int_if_edge_b.gb"
+  },
+  {
+    "name": "micro_lyc1_int_if_edge_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lyc1_int_if_edge_c.gb"
+  },
+  {
+    "name": "micro_lyc1_int_if_edge_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lyc1_int_if_edge_d.gb"
+  },
+  {
+    "name": "micro_lyc1_int_nops_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lyc1_int_nops_a.gb"
+  },
+  {
+    "name": "micro_lyc1_int_nops_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lyc1_int_nops_b.gb"
+  },
+  {
+    "name": "micro_lyc1_write_timing_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lyc1_write_timing_a.gb"
+  },
+  {
+    "name": "micro_lyc1_write_timing_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lyc1_write_timing_b.gb"
+  },
+  {
+    "name": "micro_lyc1_write_timing_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lyc1_write_timing_c.gb"
+  },
+  {
+    "name": "micro_lyc1_write_timing_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lyc1_write_timing_d.gb"
+  },
+  {
+    "name": "micro_lyc2_int_halt_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lyc2_int_halt_a.gb"
+  },
+  {
+    "name": "micro_lyc2_int_halt_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lyc2_int_halt_b.gb"
+  },
+  {
+    "name": "micro_lyc_int_halt_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lyc_int_halt_a.gb"
+  },
+  {
+    "name": "micro_lyc_int_halt_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/lyc_int_halt_b.gb"
+  },
+  {
+    "name": "micro_mbc1_ram_banks",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/mbc1_ram_banks.gb"
+  },
+  {
+    "name": "micro_mbc1_rom_banks",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/mbc1_rom_banks.gb"
+  },
+  {
+    "name": "micro_minimal",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/minimal.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_mode2_stat_int_to_oam_unlock",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/mode2_stat_int_to_oam_unlock.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_oam_int_halt_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_int_halt_a.gb"
+  },
+  {
+    "name": "micro_oam_int_halt_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_int_halt_b.gb"
+  },
+  {
+    "name": "micro_oam_int_if_edge_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_int_if_edge_a.gb"
+  },
+  {
+    "name": "micro_oam_int_if_edge_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_int_if_edge_b.gb"
+  },
+  {
+    "name": "micro_oam_int_if_edge_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_int_if_edge_c.gb"
+  },
+  {
+    "name": "micro_oam_int_if_edge_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_int_if_edge_d.gb"
+  },
+  {
+    "name": "micro_oam_int_if_level_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_int_if_level_c.gb"
+  },
+  {
+    "name": "micro_oam_int_if_level_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_int_if_level_d.gb"
+  },
+  {
+    "name": "micro_oam_int_inc_sled",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_int_inc_sled.gb"
+  },
+  {
+    "name": "micro_oam_int_nops_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_int_nops_a.gb"
+  },
+  {
+    "name": "micro_oam_int_nops_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_int_nops_b.gb"
+  },
+  {
+    "name": "micro_oam_read_l0_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_read_l0_a.gb"
+  },
+  {
+    "name": "micro_oam_read_l0_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_read_l0_b.gb"
+  },
+  {
+    "name": "micro_oam_read_l0_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_read_l0_c.gb"
+  },
+  {
+    "name": "micro_oam_read_l0_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_read_l0_d.gb"
+  },
+  {
+    "name": "micro_oam_read_l1_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_read_l1_a.gb"
+  },
+  {
+    "name": "micro_oam_read_l1_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_read_l1_b.gb"
+  },
+  {
+    "name": "micro_oam_read_l1_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_read_l1_c.gb"
+  },
+  {
+    "name": "micro_oam_read_l1_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_read_l1_d.gb"
+  },
+  {
+    "name": "micro_oam_read_l1_e",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_read_l1_e.gb"
+  },
+  {
+    "name": "micro_oam_read_l1_f",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_read_l1_f.gb"
+  },
+  {
+    "name": "micro_oam_sprite_trashing",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_sprite_trashing.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_oam_write_l0_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_write_l0_a.gb"
+  },
+  {
+    "name": "micro_oam_write_l0_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_write_l0_b.gb"
+  },
+  {
+    "name": "micro_oam_write_l0_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_write_l0_c.gb"
+  },
+  {
+    "name": "micro_oam_write_l0_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_write_l0_d.gb"
+  },
+  {
+    "name": "micro_oam_write_l0_e",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_write_l0_e.gb"
+  },
+  {
+    "name": "micro_oam_write_l1_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_write_l1_a.gb"
+  },
+  {
+    "name": "micro_oam_write_l1_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_write_l1_b.gb"
+  },
+  {
+    "name": "micro_oam_write_l1_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_write_l1_c.gb"
+  },
+  {
+    "name": "micro_oam_write_l1_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_write_l1_d.gb"
+  },
+  {
+    "name": "micro_oam_write_l1_e",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_write_l1_e.gb"
+  },
+  {
+    "name": "micro_oam_write_l1_f",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/oam_write_l1_f.gb"
+  },
+  {
+    "name": "micro_poweron",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_poweron_bgp_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_bgp_000.gb"
+  },
+  {
+    "name": "micro_poweron_div_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_div_000.gb"
+  },
+  {
+    "name": "micro_poweron_div_004",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_div_004.gb"
+  },
+  {
+    "name": "micro_poweron_div_005",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_div_005.gb"
+  },
+  {
+    "name": "micro_poweron_dma_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_dma_000.gb"
+  },
+  {
+    "name": "micro_poweron_if_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_if_000.gb"
+  },
+  {
+    "name": "micro_poweron_joy_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_joy_000.gb"
+  },
+  {
+    "name": "micro_poweron_lcdc_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_lcdc_000.gb"
+  },
+  {
+    "name": "micro_poweron_ly_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_ly_000.gb"
+  },
+  {
+    "name": "micro_poweron_ly_119",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_ly_119.gb"
+  },
+  {
+    "name": "micro_poweron_ly_120",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_ly_120.gb"
+  },
+  {
+    "name": "micro_poweron_ly_233",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_ly_233.gb"
+  },
+  {
+    "name": "micro_poweron_ly_234",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_ly_234.gb"
+  },
+  {
+    "name": "micro_poweron_lyc_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_lyc_000.gb"
+  },
+  {
+    "name": "micro_poweron_oam_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_oam_000.gb"
+  },
+  {
+    "name": "micro_poweron_oam_005",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_oam_005.gb"
+  },
+  {
+    "name": "micro_poweron_oam_006",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_oam_006.gb"
+  },
+  {
+    "name": "micro_poweron_oam_069",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_oam_069.gb"
+  },
+  {
+    "name": "micro_poweron_oam_070",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_oam_070.gb"
+  },
+  {
+    "name": "micro_poweron_oam_119",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_oam_119.gb"
+  },
+  {
+    "name": "micro_poweron_oam_120",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_oam_120.gb"
+  },
+  {
+    "name": "micro_poweron_oam_121",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_oam_121.gb"
+  },
+  {
+    "name": "micro_poweron_oam_183",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_oam_183.gb"
+  },
+  {
+    "name": "micro_poweron_oam_184",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_oam_184.gb"
+  },
+  {
+    "name": "micro_poweron_oam_233",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_oam_233.gb"
+  },
+  {
+    "name": "micro_poweron_oam_234",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_oam_234.gb"
+  },
+  {
+    "name": "micro_poweron_oam_235",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_oam_235.gb"
+  },
+  {
+    "name": "micro_poweron_obp0_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_obp0_000.gb"
+  },
+  {
+    "name": "micro_poweron_obp1_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_obp1_000.gb"
+  },
+  {
+    "name": "micro_poweron_sb_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_sb_000.gb"
+  },
+  {
+    "name": "micro_poweron_sc_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_sc_000.gb"
+  },
+  {
+    "name": "micro_poweron_scx_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_scx_000.gb"
+  },
+  {
+    "name": "micro_poweron_scy_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_scy_000.gb"
+  },
+  {
+    "name": "micro_poweron_stat_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_stat_000.gb"
+  },
+  {
+    "name": "micro_poweron_stat_005",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_stat_005.gb"
+  },
+  {
+    "name": "micro_poweron_stat_006",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_stat_006.gb"
+  },
+  {
+    "name": "micro_poweron_stat_007",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_stat_007.gb"
+  },
+  {
+    "name": "micro_poweron_stat_026",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_stat_026.gb"
+  },
+  {
+    "name": "micro_poweron_stat_027",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_stat_027.gb"
+  },
+  {
+    "name": "micro_poweron_stat_069",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_stat_069.gb"
+  },
+  {
+    "name": "micro_poweron_stat_070",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_stat_070.gb"
+  },
+  {
+    "name": "micro_poweron_stat_119",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_stat_119.gb"
+  },
+  {
+    "name": "micro_poweron_stat_120",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_stat_120.gb"
+  },
+  {
+    "name": "micro_poweron_stat_121",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_stat_121.gb"
+  },
+  {
+    "name": "micro_poweron_stat_140",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_stat_140.gb"
+  },
+  {
+    "name": "micro_poweron_stat_141",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_stat_141.gb"
+  },
+  {
+    "name": "micro_poweron_stat_183",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_stat_183.gb"
+  },
+  {
+    "name": "micro_poweron_stat_184",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_stat_184.gb"
+  },
+  {
+    "name": "micro_poweron_stat_234",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_stat_234.gb"
+  },
+  {
+    "name": "micro_poweron_stat_235",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_stat_235.gb"
+  },
+  {
+    "name": "micro_poweron_tac_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_tac_000.gb"
+  },
+  {
+    "name": "micro_poweron_tima_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_tima_000.gb"
+  },
+  {
+    "name": "micro_poweron_tma_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_tma_000.gb"
+  },
+  {
+    "name": "micro_poweron_vram_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_vram_000.gb"
+  },
+  {
+    "name": "micro_poweron_vram_025",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_vram_025.gb"
+  },
+  {
+    "name": "micro_poweron_vram_026",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_vram_026.gb"
+  },
+  {
+    "name": "micro_poweron_vram_069",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_vram_069.gb"
+  },
+  {
+    "name": "micro_poweron_vram_070",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_vram_070.gb"
+  },
+  {
+    "name": "micro_poweron_vram_139",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_vram_139.gb"
+  },
+  {
+    "name": "micro_poweron_vram_140",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_vram_140.gb"
+  },
+  {
+    "name": "micro_poweron_vram_183",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_vram_183.gb"
+  },
+  {
+    "name": "micro_poweron_vram_184",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_vram_184.gb"
+  },
+  {
+    "name": "micro_poweron_wx_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_wx_000.gb"
+  },
+  {
+    "name": "micro_poweron_wy_000",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/poweron_wy_000.gb"
+  },
+  {
+    "name": "micro_ppu_scx_vs_bgp",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_scx_vs_bgp.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_ppu_sprite0_scx0_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_sprite0_scx0_a.gb"
+  },
+  {
+    "name": "micro_ppu_sprite0_scx0_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_sprite0_scx0_b.gb"
+  },
+  {
+    "name": "micro_ppu_sprite0_scx1_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_sprite0_scx1_a.gb"
+  },
+  {
+    "name": "micro_ppu_sprite0_scx1_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_sprite0_scx1_b.gb"
+  },
+  {
+    "name": "micro_ppu_sprite0_scx2_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_sprite0_scx2_a.gb"
+  },
+  {
+    "name": "micro_ppu_sprite0_scx2_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_sprite0_scx2_b.gb"
+  },
+  {
+    "name": "micro_ppu_sprite0_scx3_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_sprite0_scx3_a.gb"
+  },
+  {
+    "name": "micro_ppu_sprite0_scx3_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_sprite0_scx3_b.gb"
+  },
+  {
+    "name": "micro_ppu_sprite0_scx4_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_sprite0_scx4_a.gb"
+  },
+  {
+    "name": "micro_ppu_sprite0_scx4_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_sprite0_scx4_b.gb"
+  },
+  {
+    "name": "micro_ppu_sprite0_scx5_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_sprite0_scx5_a.gb"
+  },
+  {
+    "name": "micro_ppu_sprite0_scx5_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_sprite0_scx5_b.gb"
+  },
+  {
+    "name": "micro_ppu_sprite0_scx6_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_sprite0_scx6_a.gb"
+  },
+  {
+    "name": "micro_ppu_sprite0_scx6_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_sprite0_scx6_b.gb"
+  },
+  {
+    "name": "micro_ppu_sprite0_scx7_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_sprite0_scx7_a.gb"
+  },
+  {
+    "name": "micro_ppu_sprite0_scx7_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_sprite0_scx7_b.gb"
+  },
+  {
+    "name": "micro_ppu_sprite_testbench",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_sprite_testbench.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_ppu_spritex_vs_scx",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_spritex_vs_scx.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_ppu_win_vs_wx",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_win_vs_wx.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_ppu_wx_early",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/ppu_wx_early.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_sprite4_0_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite4_0_a.gb"
+  },
+  {
+    "name": "micro_sprite4_0_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite4_0_b.gb"
+  },
+  {
+    "name": "micro_sprite4_1_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite4_1_a.gb"
+  },
+  {
+    "name": "micro_sprite4_1_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite4_1_b.gb"
+  },
+  {
+    "name": "micro_sprite4_2_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite4_2_a.gb"
+  },
+  {
+    "name": "micro_sprite4_2_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite4_2_b.gb"
+  },
+  {
+    "name": "micro_sprite4_3_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite4_3_a.gb"
+  },
+  {
+    "name": "micro_sprite4_3_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite4_3_b.gb"
+  },
+  {
+    "name": "micro_sprite4_4_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite4_4_a.gb"
+  },
+  {
+    "name": "micro_sprite4_4_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite4_4_b.gb"
+  },
+  {
+    "name": "micro_sprite4_5_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite4_5_a.gb"
+  },
+  {
+    "name": "micro_sprite4_5_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite4_5_b.gb"
+  },
+  {
+    "name": "micro_sprite4_6_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite4_6_a.gb"
+  },
+  {
+    "name": "micro_sprite4_6_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite4_6_b.gb"
+  },
+  {
+    "name": "micro_sprite4_7_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite4_7_a.gb"
+  },
+  {
+    "name": "micro_sprite4_7_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite4_7_b.gb"
+  },
+  {
+    "name": "micro_sprite_0_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite_0_a.gb"
+  },
+  {
+    "name": "micro_sprite_0_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite_0_b.gb"
+  },
+  {
+    "name": "micro_sprite_1_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite_1_a.gb"
+  },
+  {
+    "name": "micro_sprite_1_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/sprite_1_b.gb"
+  },
+  {
+    "name": "micro_stat_write_glitch_l0_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/stat_write_glitch_l0_a.gb"
+  },
+  {
+    "name": "micro_stat_write_glitch_l0_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/stat_write_glitch_l0_b.gb"
+  },
+  {
+    "name": "micro_stat_write_glitch_l0_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/stat_write_glitch_l0_c.gb"
+  },
+  {
+    "name": "micro_stat_write_glitch_l143_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/stat_write_glitch_l143_a.gb"
+  },
+  {
+    "name": "micro_stat_write_glitch_l143_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/stat_write_glitch_l143_b.gb"
+  },
+  {
+    "name": "micro_stat_write_glitch_l143_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/stat_write_glitch_l143_c.gb"
+  },
+  {
+    "name": "micro_stat_write_glitch_l143_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/stat_write_glitch_l143_d.gb"
+  },
+  {
+    "name": "micro_stat_write_glitch_l154_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/stat_write_glitch_l154_a.gb"
+  },
+  {
+    "name": "micro_stat_write_glitch_l154_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/stat_write_glitch_l154_b.gb"
+  },
+  {
+    "name": "micro_stat_write_glitch_l154_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/stat_write_glitch_l154_c.gb"
+  },
+  {
+    "name": "micro_stat_write_glitch_l154_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/stat_write_glitch_l154_d.gb"
+  },
+  {
+    "name": "micro_stat_write_glitch_l1_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/stat_write_glitch_l1_a.gb"
+  },
+  {
+    "name": "micro_stat_write_glitch_l1_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/stat_write_glitch_l1_b.gb"
+  },
+  {
+    "name": "micro_stat_write_glitch_l1_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/stat_write_glitch_l1_c.gb"
+  },
+  {
+    "name": "micro_stat_write_glitch_l1_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/stat_write_glitch_l1_d.gb"
+  },
+  {
+    "name": "micro_temp",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/temp.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_timer_div_phase_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_div_phase_c.gb"
+  },
+  {
+    "name": "micro_timer_div_phase_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_div_phase_d.gb"
+  },
+  {
+    "name": "micro_timer_tima_inc_256k_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_inc_256k_a.gb"
+  },
+  {
+    "name": "micro_timer_tima_inc_256k_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_inc_256k_b.gb"
+  },
+  {
+    "name": "micro_timer_tima_inc_256k_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_inc_256k_c.gb"
+  },
+  {
+    "name": "micro_timer_tima_inc_256k_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_inc_256k_d.gb"
+  },
+  {
+    "name": "micro_timer_tima_inc_256k_e",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_inc_256k_e.gb"
+  },
+  {
+    "name": "micro_timer_tima_inc_256k_f",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_inc_256k_f.gb"
+  },
+  {
+    "name": "micro_timer_tima_inc_256k_g",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_inc_256k_g.gb"
+  },
+  {
+    "name": "micro_timer_tima_inc_256k_h",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_inc_256k_h.gb"
+  },
+  {
+    "name": "micro_timer_tima_inc_256k_i",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_inc_256k_i.gb"
+  },
+  {
+    "name": "micro_timer_tima_inc_256k_j",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_inc_256k_j.gb"
+  },
+  {
+    "name": "micro_timer_tima_inc_256k_k",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_inc_256k_k.gb"
+  },
+  {
+    "name": "micro_timer_tima_inc_64k_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_inc_64k_a.gb"
+  },
+  {
+    "name": "micro_timer_tima_inc_64k_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_inc_64k_b.gb"
+  },
+  {
+    "name": "micro_timer_tima_inc_64k_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_inc_64k_c.gb"
+  },
+  {
+    "name": "micro_timer_tima_inc_64k_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_inc_64k_d.gb"
+  },
+  {
+    "name": "micro_timer_tima_phase_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_phase_a.gb"
+  },
+  {
+    "name": "micro_timer_tima_phase_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_phase_b.gb"
+  },
+  {
+    "name": "micro_timer_tima_phase_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_phase_c.gb"
+  },
+  {
+    "name": "micro_timer_tima_phase_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_phase_d.gb"
+  },
+  {
+    "name": "micro_timer_tima_phase_e",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_phase_e.gb"
+  },
+  {
+    "name": "micro_timer_tima_phase_f",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_phase_f.gb"
+  },
+  {
+    "name": "micro_timer_tima_phase_g",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_phase_g.gb"
+  },
+  {
+    "name": "micro_timer_tima_phase_h",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_phase_h.gb"
+  },
+  {
+    "name": "micro_timer_tima_phase_i",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_phase_i.gb"
+  },
+  {
+    "name": "micro_timer_tima_phase_j",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_phase_j.gb"
+  },
+  {
+    "name": "micro_timer_tima_reload_256k_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_reload_256k_a.gb"
+  },
+  {
+    "name": "micro_timer_tima_reload_256k_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_reload_256k_b.gb"
+  },
+  {
+    "name": "micro_timer_tima_reload_256k_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_reload_256k_c.gb"
+  },
+  {
+    "name": "micro_timer_tima_reload_256k_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_reload_256k_d.gb"
+  },
+  {
+    "name": "micro_timer_tima_reload_256k_e",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_reload_256k_e.gb"
+  },
+  {
+    "name": "micro_timer_tima_reload_256k_f",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_reload_256k_f.gb"
+  },
+  {
+    "name": "micro_timer_tima_reload_256k_g",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_reload_256k_g.gb"
+  },
+  {
+    "name": "micro_timer_tima_reload_256k_h",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_reload_256k_h.gb"
+  },
+  {
+    "name": "micro_timer_tima_reload_256k_i",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_reload_256k_i.gb"
+  },
+  {
+    "name": "micro_timer_tima_reload_256k_j",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_reload_256k_j.gb"
+  },
+  {
+    "name": "micro_timer_tima_reload_256k_k",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_reload_256k_k.gb"
+  },
+  {
+    "name": "micro_timer_tima_write_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tima_write_a.gb"
+  },
+  {
+    "name": "micro_timer_tima_write_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/timer_tma_write_b.gb"
+  },
+  {
+    "name": "micro_toggle_lcdc",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/toggle_lcdc.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_vblank2_int_halt_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank2_int_halt_a.gb"
+  },
+  {
+    "name": "micro_vblank2_int_halt_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank2_int_halt_b.gb"
+  },
+  {
+    "name": "micro_vblank2_int_if_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank2_int_if_a.gb"
+  },
+  {
+    "name": "micro_vblank2_int_if_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank2_int_if_b.gb"
+  },
+  {
+    "name": "micro_vblank2_int_if_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank2_int_if_c.gb"
+  },
+  {
+    "name": "micro_vblank2_int_if_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank2_int_if_d.gb"
+  },
+  {
+    "name": "micro_vblank2_int_inc_sled",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank2_int_inc_sled.gb"
+  },
+  {
+    "name": "micro_vblank2_int_nops_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank2_int_nops_a.gb"
+  },
+  {
+    "name": "micro_vblank2_int_nops_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank2_int_nops_b.gb"
+  },
+  {
+    "name": "micro_vblank_int_halt_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank_int_halt_a.gb"
+  },
+  {
+    "name": "micro_vblank_int_halt_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank_int_halt_b.gb"
+  },
+  {
+    "name": "micro_vblank_int_if_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank_int_if_a.gb"
+  },
+  {
+    "name": "micro_vblank_int_if_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank_int_if_b.gb"
+  },
+  {
+    "name": "micro_vblank_int_if_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank_int_if_c.gb"
+  },
+  {
+    "name": "micro_vblank_int_if_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank_int_if_d.gb"
+  },
+  {
+    "name": "micro_vblank_int_inc_sled",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank_int_inc_sled.gb"
+  },
+  {
+    "name": "micro_vblank_int_nops_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank_int_nops_a.gb"
+  },
+  {
+    "name": "micro_vblank_int_nops_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vblank_int_nops_b.gb"
+  },
+  {
+    "name": "micro_vram_read_l0_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vram_read_l0_a.gb"
+  },
+  {
+    "name": "micro_vram_read_l0_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vram_read_l0_b.gb"
+  },
+  {
+    "name": "micro_vram_read_l0_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vram_read_l0_c.gb"
+  },
+  {
+    "name": "micro_vram_read_l0_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vram_read_l0_d.gb"
+  },
+  {
+    "name": "micro_vram_read_l1_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vram_read_l1_a.gb"
+  },
+  {
+    "name": "micro_vram_read_l1_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vram_read_l1_b.gb"
+  },
+  {
+    "name": "micro_vram_read_l1_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vram_read_l1_c.gb"
+  },
+  {
+    "name": "micro_vram_read_l1_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vram_read_l1_d.gb"
+  },
+  {
+    "name": "micro_vram_write_l0_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vram_write_l0_a.gb"
+  },
+  {
+    "name": "micro_vram_write_l0_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vram_write_l0_b.gb"
+  },
+  {
+    "name": "micro_vram_write_l0_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vram_write_l0_c.gb"
+  },
+  {
+    "name": "micro_vram_write_l0_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vram_write_l0_d.gb"
+  },
+  {
+    "name": "micro_vram_write_l1_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vram_write_l1_a.gb"
+  },
+  {
+    "name": "micro_vram_write_l1_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vram_write_l1_b.gb"
+  },
+  {
+    "name": "micro_vram_write_l1_c",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vram_write_l1_c.gb"
+  },
+  {
+    "name": "micro_vram_write_l1_d",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/vram_write_l1_d.gb"
+  },
+  {
+    "name": "micro_wave_write_to_0xc003",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/wave_write_to_0xC003.gb",
+    "ignore": "Visual/testbench ROM: no FF82 automated result publisher"
+  },
+  {
+    "name": "micro_win0_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win0_a.gb"
+  },
+  {
+    "name": "micro_win0_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win0_b.gb"
+  },
+  {
+    "name": "micro_win0_scx3_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win0_scx3_a.gb"
+  },
+  {
+    "name": "micro_win0_scx3_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win0_scx3_b.gb"
+  },
+  {
+    "name": "micro_win10_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win10_a.gb"
+  },
+  {
+    "name": "micro_win10_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win10_b.gb"
+  },
+  {
+    "name": "micro_win10_scx3_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win10_scx3_a.gb"
+  },
+  {
+    "name": "micro_win10_scx3_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win10_scx3_b.gb"
+  },
+  {
+    "name": "micro_win11_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win11_a.gb"
+  },
+  {
+    "name": "micro_win11_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win11_b.gb"
+  },
+  {
+    "name": "micro_win12_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win12_a.gb"
+  },
+  {
+    "name": "micro_win12_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win12_b.gb"
+  },
+  {
+    "name": "micro_win13_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win13_a.gb"
+  },
+  {
+    "name": "micro_win13_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win13_b.gb"
+  },
+  {
+    "name": "micro_win14_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win14_a.gb"
+  },
+  {
+    "name": "micro_win14_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win14_b.gb"
+  },
+  {
+    "name": "micro_win15_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win15_a.gb"
+  },
+  {
+    "name": "micro_win15_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win15_b.gb"
+  },
+  {
+    "name": "micro_win1_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win1_a.gb"
+  },
+  {
+    "name": "micro_win1_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win1_b.gb"
+  },
+  {
+    "name": "micro_win2_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win2_a.gb"
+  },
+  {
+    "name": "micro_win2_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win2_b.gb"
+  },
+  {
+    "name": "micro_win3_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win3_a.gb"
+  },
+  {
+    "name": "micro_win3_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win3_b.gb"
+  },
+  {
+    "name": "micro_win4_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win4_a.gb"
+  },
+  {
+    "name": "micro_win4_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win4_b.gb"
+  },
+  {
+    "name": "micro_win5_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win5_a.gb"
+  },
+  {
+    "name": "micro_win5_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win5_b.gb"
+  },
+  {
+    "name": "micro_win6_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win6_a.gb"
+  },
+  {
+    "name": "micro_win6_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win6_b.gb"
+  },
+  {
+    "name": "micro_win7_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win7_a.gb"
+  },
+  {
+    "name": "micro_win7_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win7_b.gb"
+  },
+  {
+    "name": "micro_win8_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win8_a.gb"
+  },
+  {
+    "name": "micro_win8_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win8_b.gb"
+  },
+  {
+    "name": "micro_win9_a",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win9_a.gb"
+  },
+  {
+    "name": "micro_win9_b",
+    "runner": "micro",
+    "path": "testroms/artifacts/gbmicrotest/win9_b.gb"
+  }
+]
