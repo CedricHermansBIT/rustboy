@@ -1345,7 +1345,10 @@
         try { await stateRecord('delete', stateKey(slot)); toast(`Deleted ${slot === 'auto' ? 'autosave' : `state ${slot}`}`); refreshSaveManager(); buildList(); }
         catch (e) { toast('Could not delete state', true); }
       }
-      function clearAudioQueue() { audioWritePos = audioReadPos = audioSamplesAvailable = 0; }
+      function clearAudioQueue() {
+        audioWritePos = audioReadPos = audioSamplesAvailable = 0;
+        audioPrimed = false;
+      }
       async function refreshStateIndex() {
         try {
           const db = await openStateDb();
@@ -1380,10 +1383,13 @@
       let audioCtx = null, audioNode = null, gainNode = null;
       let audioVolume = 0.3; // 0.0–1.0, default 30%
       try { const sv = localStorage.getItem('rustboy_volume'); if (sv !== null) audioVolume = parseFloat(sv); } catch(e) {}
-      const AUDIO_BUF_SIZE = 8192;
+      const AUDIO_BUF_SIZE = 32768;
+      const AUDIO_CALLBACK_SIZE = 4096;
+      const AUDIO_PREBUFFER_SIZE = AUDIO_CALLBACK_SIZE * 2;
       let audioLeftBuf = new Float32Array(AUDIO_BUF_SIZE);
       let audioRightBuf = new Float32Array(AUDIO_BUF_SIZE);
       let audioWritePos = 0, audioReadPos = 0, audioSamplesAvailable = 0;
+      let audioPrimed = false;
       let audioMutedBefore = 0; // stores volume before mute
       let audioUnlockBound = false;
       let audioUnlockCleanup = null;
@@ -1439,14 +1445,21 @@
           audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
           gainNode = audioCtx.createGain();
           gainNode.gain.value = audioVolume;
-          audioNode = audioCtx.createScriptProcessor(2048, 0, 2);
+          audioNode = audioCtx.createScriptProcessor(AUDIO_CALLBACK_SIZE, 0, 2);
           audioNode.onaudioprocess = function(e) {
             const L = e.outputBuffer.getChannelData(0), R = e.outputBuffer.getChannelData(1);
+            if (!audioPrimed) {
+              if (audioSamplesAvailable < AUDIO_PREBUFFER_SIZE) {
+                L.fill(0); R.fill(0);
+                return;
+              }
+              audioPrimed = true;
+            }
             for (let i = 0; i < L.length; i++) {
               if (audioSamplesAvailable > 0) {
                 L[i] = audioLeftBuf[audioReadPos]; R[i] = audioRightBuf[audioReadPos];
                 audioReadPos = (audioReadPos + 1) % AUDIO_BUF_SIZE; audioSamplesAvailable--;
-              } else { L[i] = 0; R[i] = 0; }
+              } else { L[i] = 0; R[i] = 0; audioPrimed = false; }
             }
           };
           audioNode.connect(gainNode);
