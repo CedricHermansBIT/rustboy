@@ -7,16 +7,16 @@ Verified on 2026-10-01 in the original checkout. ROM fixtures remain unchanged.
 | Mooneye | 46 | 0 | 3 |
 | Blargg | 43 | 1 | 0 |
 | GBMicrotest (including raw-byte publishers) | 484 | 2 | 21 |
-| Mealybug screenshot comparisons | 8 | 23 | 0 |
-| Total registered ROMs | 581 | 26 | 24 |
+| Mealybug screenshot comparisons | 10 | 21 | 0 |
+| Total registered ROMs | 583 | 24 | 24 |
 
 The ignored count has fallen from 77 to 24. This does **not** mean all newly
-enabled cases pass: 23 graphics failures and one unresolved Blargg ROM are now
+enabled cases pass: 21 graphics failures and one unresolved Blargg ROM are now
 visible instead of excluded. Only the three Super Game Boy cases are outside
 the target hardware; the 21 remaining older testbenches have no curated
 automated oracle yet. They are not counted as validated.
 
-Separate checks pass: 37 core unit tests, 2 PPU regressions, 5 boot/timer
+Separate checks pass: 39 core unit tests, 2 PPU regressions, 5 boot/timer
 diagnostics, and both DMG/CGB Acid2 reference images. Both optional Pinball
 diagnostics pass with the locally supplied games. Browser smoke checks pass
 for DMG and CGB loading, nonblank rendering, pause/resume, and malformed-upload
@@ -33,7 +33,8 @@ these cases use the graphics runner, not Mooneye's register signature.
 
 Passing: `m2_win_en_toggle`, `m3_bgp_change`, `m3_bgp_change_sprites`,
 `m3_obp0_change`, `m3_scx_low_3_bits`, `m3_window_timing`, and
-`m3_window_timing_wx_0`, and `m3_lcdc_win_en_change_multiple`.
+`m3_window_timing_wx_0`, `m3_lcdc_win_en_change_multiple`,
+`m3_lcdc_bg_map_change`, and `m3_scx_high_5_bits`.
 Remaining failures involve mid-line tile/map/scroll
 fetches, OBJ enable/size changes, and window activation/restart behavior.
 They are emulator compatibility gaps, not accepted fixture exceptions.
@@ -49,6 +50,9 @@ Clipped-window startup and several WX-change glitches remain unresolved.
 Window tiles retain their fetched map index and bitplanes across register
 writes, with SCY affecting only background fetches. Window map/tile-select
 captures still expose remaining fetch-stage timing differences.
+Map reads precede CPU writes recorded on the same dot. Visible OBJ stalls
+must not move an already-started background map read; left-clipped objects
+instead delay startup. These orderings have dedicated unit regressions.
 CGB KEY0 compatibility mode is locked after boot; monochrome cartridges no
 longer accidentally use native palette/VRAM banking.
 
@@ -117,7 +121,7 @@ ab1656911841d9fdcbe34aad21dc44f554e84a6eef5a82558dc27c8e9a89250c  halt_op_dupe_d
 ## Reproduction
 
 ```sh
-# All original cases: currently exits nonzero (581 pass / 26 fail / 24 ignore).
+# All original cases: currently exits nonzero (583 pass / 24 fail / 24 ignore).
 cargo test --locked --offline --release --no-default-features --test headless
 
 # Self-contained regressions; no ROMs/BIOS needed.

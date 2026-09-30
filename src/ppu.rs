@@ -362,13 +362,41 @@ mod raster_tests {
             PpuRegChange { dot: 104, addr: 0xFF42, value: 7 }];
         assert_eq!(fetch_window_tile(&cpu, snap, &changes, 2, 0, 100), (0xA5, 0x3C, 0));
     }
+
+    #[test]
+    fn map_read_precedes_a_register_write_on_the_same_dot() {
+        let mut cpu = crate::cpu::CPU::new();
+        let snap = PpuLineSnapshot { lcdc: 0x91, ..Default::default() };
+        cpu.memory[0x9800] = 1;
+        cpu.memory[0x9801] = 2;
+        cpu.memory[0x8010] = 0xA5;
+        cpu.memory[0x8020] = 0x3C;
+        let changes = [PpuRegChange { dot: 100, addr: 0xFF43, value: 8 }];
+        assert_eq!(fetch_background_tile(&cpu, snap, &changes, 0, 0, 100).0, 0xA5);
+        assert_eq!(fetch_background_tile(&cpu, snap, &changes, 0, 0, 101).0, 0x3C);
+    }
+
+    #[test]
+    fn clipped_objects_delay_startup_but_visible_objects_interrupt_prefetch() {
+        let mut cpu = crate::cpu::CPU::new();
+        let snap = PpuLineSnapshot { lcdc: 0x93, ..Default::default() };
+        cpu.memory[0xFE00] = 16;
+        cpu.memory[0xFE01] = 1;
+        let (pauses, prefetch) = object_fetch_pauses(&cpu, snap, 0);
+        assert!(pauses[0] >= 6);
+        assert_eq!(prefetch[0], 0);
+        cpu.memory[0xFE01] = 8;
+        let (pauses, prefetch) = object_fetch_pauses(&cpu, snap, 0);
+        assert_eq!(pauses[0], 11);
+        assert_eq!(prefetch[0], 11);
+    }
 }
 
 /// Visible pixel clocks include fetcher pauses; raster register writes must
 /// not be projected onto a uniform one-pixel-per-dot line across those pauses.
-fn pixel_output_dots(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, ly: u8, first_dot: u16) -> [u16; 160] {
+fn object_fetch_pauses(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, ly: u8) -> ([u16; 160], [u16; 160]) {
     let mut pauses = [0u16; 160];
-    let fine = (snap.scx & 7) as u16;
+    let mut visible_pauses = [0u16; 160];
     let window = snap.lcdc & 0x20 != 0 && ly >= snap.wy && snap.wx <= 166
         && (cpu.cgb_native_mode() || snap.lcdc & 1 != 0);
     let window_left = snap.wx as i16 - 7;
@@ -392,6 +420,7 @@ fn pixel_output_dots(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, ly: u8, first
             if x >= 160 { continue; }
             let position = x.max(0) as usize;
             if raw_x == 0 { pauses[position] += 11; continue; }
+            let before = pauses[position];
             let (tile, pixel) = if window && x >= window_left {
                 let wx = (x - window_left).max(0) as u16;
                 (0x100 | (wx / 8), (wx & 7) as u8)
@@ -405,8 +434,15 @@ fn pixel_output_dots(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, ly: u8, first
                 pauses[position] += (7u8 - pixel).saturating_sub(2) as u16;
             }
             pauses[position] += 6;
+            if x >= 0 { visible_pauses[position] += pauses[position] - before; }
         }
     }
+    (pauses, visible_pauses)
+}
+
+fn pixel_output_dots(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, ly: u8, first_dot: u16) -> [u16; 160] {
+    let (pauses, _) = object_fetch_pauses(cpu, snap, ly);
+    let fine = (snap.scx & 7) as u16;
     let mut dots = [0; 160];
     let mut delay = fine;
     let mut window_regs = snap;
@@ -469,7 +505,8 @@ fn registers_at(mut registers: PpuLineSnapshot, changes: &[PpuRegChange], dot: u
 /// The map index and the two bitplanes are separate bus reads. Once fetched,
 /// a tile's pixels stay in the FIFO even if its source registers are changed.
 fn fetch_background_tile(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, changes: &[PpuRegChange], ly: u8, fetcher_x: u16, map_dot: u16) -> (u8, u8, u8) {
-    let map_regs = registers_at(snap, changes, map_dot);
+    // Peripheral reads precede the CPU bus write recorded at the same dot.
+    let map_regs = registers_at(snap, changes, map_dot.saturating_sub(1));
     let dy = ly.wrapping_add(map_regs.scy);
     let map = if map_regs.lcdc & 8 != 0 { 0x9C00 } else { 0x9800 };
     let address = map + (dy as usize / 8) * 32 + (((map_regs.scx as u16 / 8) + fetcher_x) & 31) as usize;
@@ -481,7 +518,7 @@ fn fetch_background_tile(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, changes: 
 }
 
 fn fetch_window_tile(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, changes: &[PpuRegChange], row: u8, fetcher_x: u16, map_dot: u16) -> (u8, u8, u8) {
-    let map_regs = registers_at(snap, changes, map_dot);
+    let map_regs = registers_at(snap, changes, map_dot.saturating_sub(1));
     let map = if map_regs.lcdc & 0x40 != 0 { 0x9C00 } else { 0x9800 };
     let address = map + (row as usize / 8) * 32 + (fetcher_x as usize & 31);
     let (index, attr) = if cpu.cgb_native_mode() {
@@ -585,6 +622,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
     let mut window_activations = 0u8;
     let mut bg_resume_shift = 0u16;
     let raster_fetch = log.iter().any(|change| matches!(change.addr, 0xFF40 | 0xFF42 | 0xFF43));
+    let prefetched_obj_pauses = if raster_fetch { object_fetch_pauses(cpu, snap, ly).1 } else { [0; 160] };
     let mut cached_bg_tile = None;
     let mut cached_window_tile = None;
 
@@ -769,8 +807,17 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                     // Fetch the next tile while the preceding tile drains.
                     // A sprite pause between that fetch and this tile's
                     // output must not move an already-completed map read.
-                    let map_dot = if tile_start >= 7 { pixel_dots[(tile_start - 7) as usize] }
+                    let mut map_dot = if tile_start >= 7 { pixel_dots[(tile_start - 7) as usize] }
                         else { mode3_dot.saturating_add((snap.scx & 7) as u16).saturating_sub(7).saturating_add(tile_start.max(0) as u16) };
+                    // The map read is already in flight while the previous
+                    // tile's first pixels drain. An OBJ at those positions
+                    // stops output, not that earlier map bus transaction.
+                    // Left-clipped objects act during startup instead.
+                    if tile_start >= 8 {
+                        let previous = (tile_start - 8) as usize;
+                        map_dot = map_dot.saturating_sub(prefetched_obj_pauses[previous]
+                            + prefetched_obj_pauses[previous + 1]);
+                    }
                     let (low, high, attributes) = fetch_background_tile(cpu, snap, log, ly, fetcher_x, map_dot);
                     cached_bg_tile = Some((fetcher_x, low, high, attributes));
                 }
