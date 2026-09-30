@@ -1362,6 +1362,8 @@
       }
       function autoResumeEnabled() { try { return localStorage.getItem(AUTO_RESUME_KEY) !== '0'; } catch (_) { return true; } }
       async function finishRomLoad() {
+        clearAudioQueue();
+        releaseAllTouchActions();
         if (autoResumeEnabled()) await loadState('auto', true).then(restored => { if (restored) toast('Resumed autosave'); });
         clearInterval(stateAutosaveInterval);
         stateAutosaveInterval = setInterval(() => saveState('auto', true), 30000);
@@ -1700,14 +1702,14 @@
           const romInfo = { name: rom.name, folder: tab.folder, tab: activeTab };
           const resp = await fetch(tab.folder + '/' + encodeURIComponent(rom.name));
           if (!resp.ok) throw new Error(resp.statusText);
-          Module._load_rom_data(new Uint8Array(await resp.arrayBuffer()));
+          await Module._load_rom_data(new Uint8Array(await resp.arrayBuffer()));
           currentRomInfo = romInfo;
           addToRecent(romInfo);
           romLoaded = true;
           await finishRomLoad();
           resumeAudioContext();
           updateSpeedBadge(); // show GBC/speed indicator immediately on load
-        } catch(e) { console.error('ROM load failed:', e); openPicker(); }
+        } catch(e) { console.error('ROM load failed:', e); toast(`Could not load ROM: ${e.message || e}`, true); openPicker(); }
       }
       async function loadRomFromBuffer(buf, name = 'Uploaded ROM') {
         if (!Module) {
@@ -1719,12 +1721,18 @@
         resumeAudioContext();
         // Uploaded ROMs cannot be reopened from the built-in picker, and must
         // not inherit the previously selected ROM's recent/save association.
-        currentRomInfo = { name, folder: 'uploads', tab: 'uploads', uploaded: true };
-        Module._load_rom_data(new Uint8Array(buf));
-        romLoaded = true;
-        await finishRomLoad();
-        resumeAudioContext();
-        updateSpeedBadge(); // show GBC/speed indicator immediately on load
+        try {
+          await Module._load_rom_data(new Uint8Array(buf));
+          currentRomInfo = { name, folder: 'uploads', tab: 'uploads', uploaded: true };
+          romLoaded = true;
+          await finishRomLoad();
+          resumeAudioContext();
+          updateSpeedBadge();
+        } catch (error) {
+          console.error('ROM load failed:', error);
+          toast(`Could not load ROM: ${error.message || error}`, true);
+          openPicker();
+        }
       }
 
       /* ── Upload ── */
@@ -1931,7 +1939,7 @@
         try {
           Module?._save_game?.();
           const romId = currentStateId(), title = Module?._get_rom_title?.() || 'game';
-          const batteryKey = `rustboy_save_${title}`, battery = localStorage.getItem(batteryKey);
+          const batteryKey = Module._get_save_key(), battery = localStorage.getItem(batteryKey);
           const states = [];
           for (const slot of ['auto','1','2','3']) {
             const record = await stateRecord('get', stateKey(slot));
@@ -1950,7 +1958,7 @@
           if (backup.format !== 'rustboy-backup' || backup.version !== 1) throw new Error('Unsupported backup file');
           if (backup.romId !== currentStateId()) throw new Error('Backup belongs to another ROM');
           if (backup.battery) {
-            localStorage.setItem(`rustboy_save_${Module._get_rom_title()}`, backup.battery);
+            localStorage.setItem(Module._get_save_key(), backup.battery);
             Module?._import_save_data?.(base64ToBytes(backup.battery));
           }
           for (const record of backup.states || []) await stateRecord('put', { ...record, data: base64ToBytes(record.data).buffer });
@@ -1961,6 +1969,7 @@
       document.getElementById('delete-saves').addEventListener('click', async () => {
         if (!confirm('Delete the battery save and all save states for this game?')) return;
         try {
+          localStorage.removeItem(Module._get_save_key());
           localStorage.removeItem(`rustboy_save_${Module._get_rom_title()}`);
           Module?._clear_save_data?.();
           for (const slot of ['auto','1','2','3']) await stateRecord('delete', stateKey(slot));
@@ -2110,6 +2119,7 @@
       window.addEventListener('pointercancel', finishTouchDrag);
       window.addEventListener('blur', () => {
         releaseAllTouchActions();
+        if (Module) Object.values(ACTION_TO_RUST).forEach(key => Module._set_key_state(key, false));
         if (activeTouchDrag) {
           activeTouchDrag.element.classList.remove('dragging');
           activeTouchDrag = null;
@@ -2193,10 +2203,11 @@
       // Import the namespace so optional/new exports do not prevent the entire
       // emulator from starting when a browser has an older generated bundle cached.
       import init, * as Rustboy from './out/rustboy.js';
+      import { loadWithBootRom } from './web/rom-loader.mjs';
       init().then(() => {
         Module = {
           _set_key_state: Rustboy.set_key_state,
-          _load_rom_data: Rustboy.load_rom_data,
+          _load_rom_data: data => loadWithBootRom(Rustboy.load_rom_data, data),
           _get_debug_state: Rustboy.get_debug_state,
           _save_game: Rustboy.save_game,
           _get_speed: Rustboy.get_speed,
@@ -2205,6 +2216,7 @@
           _import_state: Rustboy.import_state,
           _get_state_id: Rustboy.get_state_id,
           _get_rom_title: Rustboy.get_rom_title,
+          _get_save_key: Rustboy.get_save_key,
           _export_save_data: Rustboy.export_save_data,
           _import_save_data: Rustboy.import_save_data,
           _clear_save_data: Rustboy.clear_save_data,

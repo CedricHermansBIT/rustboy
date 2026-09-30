@@ -43,23 +43,21 @@ pub fn set_key_state(key_code: u32, is_pressed: bool) {
 }
 
 #[wasm_bindgen]
-pub fn load_rom_data(rom_data: &[u8]) {
+pub fn load_rom_data(rom_data: &[u8], boot_rom_data: &[u8]) -> Result<(), JsValue> {
+    crate::cartridge::validate_rom(rom_data).map_err(|error| JsValue::from_str(&error))?;
+    let use_cgb_boot = rom_data[0x143] & 0x80 != 0;
+    crate::cartridge::validate_boot_rom(boot_rom_data, use_cgb_boot).map_err(|error| JsValue::from_str(&error))?;
+    save_game();
     let prev_speed = CPU.with(|c| {
         c.borrow().as_ref().map(|rc| rc.borrow().speed_multiplier).unwrap_or(1)
     });
 
     let cgb_flag = rom_data.get(0x143).copied().unwrap_or(0);
     // Bit 7 set = CGB support; matches both 0x80 (compatible) and 0xC0 (CGB-only).
-    let use_cgb_boot = cgb_flag & 0x80 != 0;
-    let bootrom: &[u8] = if use_cgb_boot {
-        include_bytes!("../roms/cgb_boot.bin")
-    } else {
-        include_bytes!("../roms/dmg_boot.bin")
-    };
 
     let mut cpu = cpu::CPU::new();
     cpu.speed_multiplier = prev_speed;
-    cpu.bootload(bootrom.to_vec());
+    cpu.bootload(boot_rom_data.to_vec());
     cpu.load_rom(rom_data.to_vec());
 
     console::log_1(&format!(
@@ -69,18 +67,25 @@ pub fn load_rom_data(rom_data: &[u8]) {
     ).into());
 
     if cpu.has_battery() {
-        let key = format!("rustboy_save_{}", cpu.rom_title());
-        let save_js = loadSaveData(&key);
+        let key = cpu.save_key();
+        let mut save_js = loadSaveData(&key);
+        if save_js.is_undefined() || save_js.is_null() {
+            // Migrate old title-only saves without deleting the recoverable copy.
+            save_js = loadSaveData(&format!("rustboy_save_{}", cpu.rom_title()));
+        }
         if !save_js.is_undefined() && !save_js.is_null() {
             if let Ok(arr) = save_js.dyn_into::<js_sys::Uint8Array>() {
                 let data = arr.to_vec();
                 cpu.import_save_ram(&data);
+                storeSaveData(&key, &cpu.export_save_ram());
                 console::log_1(&format!("Restored save for '{}'", key).into());
             }
         }
     }
 
     let cpu = Rc::new(RefCell::new(cpu));
+    *KEYS.lock().unwrap() = [false; 256];
+    *PREVIOUS_KEYS.lock().unwrap() = [false; 256];
 
     CPU.with(|c| {
         *c.borrow_mut() = Some(cpu.clone());
@@ -92,6 +97,7 @@ pub fn load_rom_data(rom_data: &[u8]) {
             start_emulation_loop();
         }
     });
+    Ok(())
 }
 
 #[wasm_bindgen]
@@ -101,7 +107,7 @@ pub fn save_game() {
         if let Some(cpu_rc) = cpu_opt.as_ref() {
             let mut cpu = cpu_rc.borrow_mut();
             if cpu.has_battery() && cpu.save_ram_is_dirty() {
-                let key = format!("rustboy_save_{}", cpu.rom_title());
+                let key = cpu.save_key();
                 let data = cpu.export_save_ram();
                 if storeSaveData(&key, &data) {
                     cpu.mark_save_ram_clean();
@@ -133,6 +139,11 @@ pub fn get_state_id() -> String {
 #[wasm_bindgen]
 pub fn get_rom_title() -> String {
     CPU.with(|c| c.borrow().as_ref().map(|rc| rc.borrow().rom_title()).unwrap_or_default())
+}
+
+#[wasm_bindgen]
+pub fn get_save_key() -> String {
+    CPU.with(|c| c.borrow().as_ref().map(|rc| rc.borrow().save_key()).unwrap_or_default())
 }
 
 #[wasm_bindgen]
@@ -384,19 +395,18 @@ fn start_emulation_loop() {
     let f = Rc::new(RefCell::new(None));
     let g = f.clone();
 
-    const CYCLES_PER_FRAME: u32 = 70224;
+    let mut frame_clock = crate::pacing::FrameClock::default();
 
-    let mut cycles_this_frame: u32 = 0;
-
-    *g.borrow_mut() = Some(Closure::wrap(Box::new(move || {
+    *g.borrow_mut() = Some(Closure::wrap(Box::new(move |timestamp: f64| {
         let cpu_rc = CPU.with(|c| c.borrow().clone());
         let Some(cpu_rc) = cpu_rc else {
             request_animation_frame(f.borrow().as_ref().unwrap());
             return;
         };
         let mut cpu = cpu_rc.borrow_mut();
-
-        if cpu.is_paused.load(Ordering::Relaxed) {
+        let paused = cpu.is_paused.load(Ordering::Relaxed);
+        let target_cycles = frame_clock.target(timestamp, cpu.speed_multiplier, paused);
+        if paused {
             if cpu.go_next.load(Ordering::Relaxed) {
                 cpu.go_next.store(false, Ordering::Relaxed);
                 cpu.handle_interrupts();
@@ -412,8 +422,7 @@ fn start_emulation_loop() {
             return;
         }
 
-        let target_cycles = CYCLES_PER_FRAME * cpu.speed_multiplier;
-
+        let mut cycles_this_frame = 0;
         while cycles_this_frame < target_cycles {
             if cpu.check_breakpoints() {
                 break;
@@ -458,17 +467,15 @@ fn start_emulation_loop() {
             queueAudioSamples(&left, &right);
         }
 
-        if !cpu.is_paused.load(Ordering::Relaxed) {
-            cycles_this_frame %= target_cycles;
-        }
+        frame_clock.consume(cycles_this_frame);
 
         request_animation_frame(f.borrow().as_ref().unwrap());
-    }) as Box<dyn FnMut()>));
+    }) as Box<dyn FnMut(f64)>));
 
     request_animation_frame(g.borrow().as_ref().unwrap());
 }
 
-fn request_animation_frame(f: &Closure<dyn FnMut()>) {
+fn request_animation_frame(f: &Closure<dyn FnMut(f64)>) {
     web_sys::window()
         .unwrap()
         .request_animation_frame(f.as_ref().unchecked_ref())
