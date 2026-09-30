@@ -7,6 +7,9 @@ use crate::apu::APU;
 use crate::debug_tracer::InstructionTracer;
 use crate::mbc::Mbc;
 
+mod oam;
+use oam::OamAccess;
+
 #[cfg(target_arch = "wasm32")]
 macro_rules! console_log {
     ($($t:tt)*) => { console::log_1(&format!($($t)*).into()) }
@@ -69,6 +72,14 @@ mod save_state_tests {
     }
 
     #[test]
+    fn same_title_roms_have_separate_battery_save_keys() {
+        let first = cpu_with_rom(1);
+        let second = cpu_with_rom(2);
+        assert_eq!(first.rom_title(), second.rom_title());
+        assert_ne!(first.save_key(), second.save_key());
+    }
+
+    #[test]
     fn cgb_hdma_started_in_hblank_copies_immediately() {
         let mut cpu = cpu_with_rom(1);
         cpu.is_cgb = true;
@@ -94,6 +105,29 @@ mod save_state_tests {
         cpu.start_hdma(0x81);
         assert_eq!(&cpu.cgb_vram[0][0x100..0x120], &(0u8..32).collect::<Vec<_>>());
         assert!(!cpu.hdma_active);
+    }
+
+    #[test]
+    fn cgb_boot_selects_and_locks_monochrome_compatibility_mode() {
+        let mut cpu = cpu_with_rom(1);
+        cpu.is_cgb = true;
+        cpu.booting = true;
+        cpu.write_byte(0xFF4C, 4);
+        cpu.cgb_vram[0][0] = 0x5A;
+        cpu.cgb_wram[0][0] = 0xA5;
+        cpu.write_byte(0xFF50, 1);
+        assert!(!cpu.cgb_native_mode());
+        assert_eq!(cpu.peek_byte(0x8000), 0x5A);
+        assert_eq!(cpu.peek_byte(0xC000), 0xA5);
+        cpu.write_byte(0xC000, 0x42);
+        assert_eq!(cpu.peek_byte(0xE000), 0x42);
+        cpu.write_byte(0xFF4C, 0);
+        assert!(!cpu.cgb_native_mode(), "KEY0 cannot be unlocked after boot");
+        cpu.write_byte(0xFF4F, 1);
+        cpu.write_byte(0x8000, 0x33);
+        assert_eq!(cpu.peek_byte(0x8000), 0x33);
+        assert_eq!(cpu.peek_byte(0xFF4F), 0xFF);
+        assert_eq!(cpu.cgb_vram[1][0], 0);
     }
 
     #[test]
@@ -239,6 +273,10 @@ impl CPU {
 
     pub fn state_id(&self) -> String {
         format!("{:016x}", self.rom_fingerprint())
+    }
+
+    pub fn save_key(&self) -> String {
+        format!("rustboy_save_{}_{}", self.rom_title(), self.state_id())
     }
 
     /// Versioned, ROM-bound snapshot of mutable emulation state.
@@ -456,6 +494,13 @@ impl CPU {
                 self.reg_a = 0x11;
             }
         }
+    }
+
+    /// CGB hardware can run monochrome cartridges with native features locked.
+    /// KEY0 is selected by the boot ROM and cannot be changed after handoff.
+    #[inline]
+    pub fn cgb_native_mode(&self) -> bool {
+        self.is_cgb && (self.booting || self.memory[0xFF4C] & 4 == 0)
     }
 
     pub fn toggle_consolelog(&mut self) {
@@ -994,7 +1039,7 @@ impl CPU {
 
     pub fn bootload(&mut self, data: Vec<u8>) {
         self.boot_rom_len = data.len().min(self.boot_mem.len());
-        for i in 0..data.len() {
+        for i in 0..self.boot_rom_len {
             self.boot_mem[i] = data[i];
         }
     }
@@ -1111,6 +1156,7 @@ impl CPU {
 
     pub fn write_byte(&mut self, address: usize, data: u8) {
         self.tick_timer_4t();
+        self.corrupt_oam(address, OamAccess::Write);
 
         // ── Fast paths: ~90% of all memory writes hit these ─────────────────
         // WRAM — game variables, stack.
@@ -1120,7 +1166,7 @@ impl CPU {
                 && !(0x8000..0xA000).contains(&self.oam_dma_source) {
                 return;
             }
-            if self.is_cgb {
+            if self.cgb_native_mode() {
                 if address < 0xD000 { self.cgb_wram[0][address - 0xC000] = data; }
                 else { self.cgb_wram[self.wram_bank as usize][address - 0xD000] = data; }
             } else if address < 0xDE00 {
@@ -1167,7 +1213,7 @@ impl CPU {
             }
         }
 
-        if self.is_cgb {
+        if self.cgb_native_mode() {
             match address {
                 0xFF4D => {
                     self.key1 = (self.key1 & 0x80) | (data & 0x01);
@@ -1264,9 +1310,19 @@ impl CPU {
             return;
         }
         match address {
+            0xFF4C => {
+                if self.is_cgb && self.booting { self.memory[address] = data; }
+            }
             0xFF50 => {
                 if data != 0 {
                     self.booting = false;
+                    if self.is_cgb && !self.cgb_native_mode() {
+                        // The compatibility renderer/bus sees bank 0 VRAM and
+                        // fixed WRAM banks initialized by the CGB boot ROM.
+                        self.memory[0x8000..0xA000].copy_from_slice(&self.cgb_vram[0]);
+                        self.memory[0xC000..0xD000].copy_from_slice(&self.cgb_wram[0]);
+                        self.memory[0xD000..0xE000].copy_from_slice(&self.cgb_wram[1]);
+                    }
                 }
             }
             0xFF10..=0xFF3F => {
@@ -1475,7 +1531,7 @@ impl CPU {
         }
         // WRAM — game variables, stack.
         if address >= 0xC000 && address < 0xE000 {
-            if self.is_cgb {
+            if self.cgb_native_mode() {
                 if address < 0xD000 { return self.cgb_wram[0][address - 0xC000]; }
                 return self.cgb_wram[self.wram_bank as usize][address - 0xD000];
             }
@@ -1511,11 +1567,11 @@ impl CPU {
         if address == 0xFF0F { return self.memory[0xFF0F] | 0xE0; }
         if address == 0xFF41 { return self.memory[0xFF41] | 0x80; }
         if matches!(address, 0xFF03 | 0xFF08..=0xFF0E | 0xFF4C | 0xFF4E | 0xFF57..=0xFF67 | 0xFF6C..=0xFF6F | 0xFF71..=0xFF7F)
-            || (!self.is_cgb && (0xFF4D..=0xFF7F).contains(&address)) {
+            || (!self.cgb_native_mode() && (0xFF4D..=0xFF7F).contains(&address)) {
             return 0xFF;
         }
 
-        if self.is_cgb {
+        if self.cgb_native_mode() {
             if address >= 0xFF4C && address <= 0xFF7F && address != 0xFF50 {
                 match address {
                     0xFF4D => return (self.key1 & 0x7E) | (if self.double_speed { 0x80 } else { 0 }) | (self.key1 & 0x01) | 0x7E,
@@ -1595,6 +1651,7 @@ impl CPU {
 
     pub fn read_byte(&mut self, address: usize) -> u8 {
         self.tick_timer_4t();
+        self.corrupt_oam(address, OamAccess::Read);
         self.read_bus_byte(address)
     }
 
@@ -1615,7 +1672,7 @@ impl CPU {
     }
 
     fn read(&mut self) -> u8 {
-        let data = self.read_byte(self.program_counter as usize);
+        let data = self.read_byte_increment(self.program_counter as usize);
         self.program_counter = self.program_counter.wrapping_add(1);
         data
     }
@@ -1712,7 +1769,7 @@ impl CPU {
     }
 
     pub fn get_tile_data(&self, base: usize) -> &[u8] {
-        if self.is_cgb {
+        if self.cgb_native_mode() {
             &self.cgb_vram[self.vram_bank as usize][base - 0x8000 .. base - 0x8000 + 0x2000]
         } else {
             &self.memory[base..base + 0x2000]
@@ -2125,7 +2182,8 @@ impl CPU {
 
         let line = self.memory[0xFF40] & 0x80 != 0 && (hblank_trigger
             || vblank_trigger
-            || (self.scanline < 144 && !self.ppu_first_line_after_enable && self.ppu_scanline_dot < 4 && stat & 0x20 != 0)
+            || (self.scanline == 0 && mode == 2 && self.ppu_scanline_dot < 8 && stat & 0x20 != 0)
+            || (self.scanline != 0 && self.scanline < 144 && !self.ppu_first_line_after_enable && self.ppu_scanline_dot < 4 && stat & 0x20 != 0)
             || (stat & 0x44 == 0x44));
 
         if line && !self.prev_stat_line {
@@ -2144,6 +2202,7 @@ impl CPU {
     }
 
     fn push(&mut self, data: u16) {
+        self.corrupt_oam(self.stackpointer as usize, OamAccess::Write);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, (data >> 8) as u8);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -2246,6 +2305,7 @@ impl CPU {
             return;
         }
 
+        self.corrupt_oam(self.program_counter as usize, OamAccess::ReadIncrement);
         let opcode = self.read_bus_byte(self.program_counter as usize);
 
         if self.tracing {
@@ -2825,10 +2885,12 @@ impl CPU {
     }
 
     fn incbc(&mut self) {
+        let oam_address = self.bc() as usize;
         let data = ((self.reg_b as u16) << 8 | self.reg_c as u16).wrapping_add(1);
         self.reg_b = (data >> 8) as u8;
         self.reg_c = data as u8;
         self.tick_timer_4t();
+        self.corrupt_oam(oam_address, OamAccess::Write);
         self.cycles += 2;
     }
 
@@ -2886,10 +2948,12 @@ impl CPU {
     }
 
     fn decbc(&mut self) {
+        let oam_address = self.bc() as usize;
         let bc = self.bc().wrapping_sub(1);
         self.reg_b = (bc >> 8) as u8;
         self.reg_c = bc as u8;
         self.tick_timer_4t();
+        self.corrupt_oam(oam_address, OamAccess::Write);
         self.cycles += 2;
     }
 
@@ -2946,10 +3010,12 @@ impl CPU {
     }
 
     fn incde(&mut self) {
+        let oam_address = self.de() as usize;
         let de = self.de().wrapping_add(1);
         self.reg_d = (de >> 8) as u8;
         self.reg_e = de as u8;
         self.tick_timer_4t();
+        self.corrupt_oam(oam_address, OamAccess::Write);
         self.cycles += 2;
     }
 
@@ -3010,11 +3076,13 @@ impl CPU {
     }
 
     fn decde(&mut self) {
+        let oam_address = self.de() as usize;
         let de = self.de();
         let result = de.wrapping_sub(1);
         self.reg_d = (result >> 8) as u8;
         self.reg_e = result as u8;
         self.tick_timer_4t();
+        self.corrupt_oam(oam_address, OamAccess::Write);
         self.cycles += 2;
     }
 
@@ -3076,11 +3144,13 @@ impl CPU {
     }
 
     fn inchl(&mut self) {
+        let oam_address = self.hl() as usize;
         let mut hl = self.hl();
         hl = hl.wrapping_add(1);
         self.reg_h = (hl >> 8) as u8;
         self.reg_l = hl as u8;
         self.tick_timer_4t();
+        self.corrupt_oam(oam_address, OamAccess::Write);
         self.cycles += 2;
     }
 
@@ -3153,7 +3223,7 @@ impl CPU {
     }
 
     fn ldahlplus(&mut self) {
-        self.reg_a = self.read_byte(self.hl() as usize);
+        self.reg_a = self.read_byte_increment(self.hl() as usize);
         let hl = self.hl().wrapping_add(1);
         self.reg_h = (hl >> 8) as u8;
         self.reg_l = hl as u8;
@@ -3161,11 +3231,13 @@ impl CPU {
     }
 
     fn dechl(&mut self) {
+        let oam_address = self.hl() as usize;
         let mut hl = self.hl();
         hl = hl.wrapping_sub(1);
         self.reg_h = (hl >> 8) as u8;
         self.reg_l = hl as u8;
         self.tick_timer_4t();
+        self.corrupt_oam(oam_address, OamAccess::Write);
         self.cycles += 2;
     }
 
@@ -3220,8 +3292,10 @@ impl CPU {
     }
 
     fn incsp(&mut self) {
+        let oam_address = self.stackpointer as usize;
         self.stackpointer = self.stackpointer.wrapping_add(1);
         self.tick_timer_4t();
+        self.corrupt_oam(oam_address, OamAccess::Write);
         self.cycles += 2;
     }
 
@@ -3282,7 +3356,7 @@ impl CPU {
     }
 
     fn ldahlmin(&mut self) {
-        self.reg_a = self.read_byte(self.hl() as usize);
+        self.reg_a = self.read_byte_increment(self.hl() as usize);
         let hl = self.hl().wrapping_sub(1);
         self.reg_h = (hl >> 8) as u8;
         self.reg_l = hl as u8;
@@ -3290,8 +3364,10 @@ impl CPU {
     }
 
     fn decsp(&mut self) {
+        let oam_address = self.stackpointer as usize;
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.tick_timer_4t();
+        self.corrupt_oam(oam_address, OamAccess::Write);
         self.cycles += 2;
     }
 
@@ -4053,7 +4129,7 @@ impl CPU {
     }
 
     fn popbc(&mut self) {
-        self.reg_c = self.read_byte(self.stackpointer as usize);
+        self.reg_c = self.read_byte_increment(self.stackpointer as usize);
         self.stackpointer = self.stackpointer.wrapping_add(1);
         self.reg_b = self.read_byte(self.stackpointer as usize);
         self.stackpointer = self.stackpointer.wrapping_add(1);
@@ -4088,6 +4164,7 @@ impl CPU {
 
     fn pushbc(&mut self) {
         self.tick_timer_4t();
+        self.corrupt_oam(self.stackpointer as usize, OamAccess::Write);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, self.reg_b);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -4126,7 +4203,7 @@ impl CPU {
     }
 
     fn ret(&mut self) {
-        let l = self.read_byte(self.stackpointer as usize);
+        let l = self.read_byte_increment(self.stackpointer as usize);
         self.stackpointer = self.stackpointer.wrapping_add(1);
         let h = self.read_byte(self.stackpointer as usize);
         self.stackpointer = self.stackpointer.wrapping_add(1);
@@ -4200,7 +4277,7 @@ impl CPU {
     }
 
     fn popde(&mut self) {
-        self.reg_e = self.read_byte(self.stackpointer as usize);
+        self.reg_e = self.read_byte_increment(self.stackpointer as usize);
         self.stackpointer = self.stackpointer.wrapping_add(1);
         self.reg_d = self.read_byte(self.stackpointer as usize);
         self.stackpointer = self.stackpointer.wrapping_add(1);
@@ -4229,6 +4306,7 @@ impl CPU {
 
     fn pushde(&mut self) {
         self.tick_timer_4t();
+        self.corrupt_oam(self.stackpointer as usize, OamAccess::Write);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, self.reg_d);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -4320,7 +4398,7 @@ impl CPU {
     }
 
     fn pophl(&mut self) {
-        self.reg_l = self.read_byte(self.stackpointer as usize);
+        self.reg_l = self.read_byte_increment(self.stackpointer as usize);
         self.stackpointer = self.stackpointer.wrapping_add(1);
         self.reg_h = self.read_byte(self.stackpointer as usize);
         self.stackpointer = self.stackpointer.wrapping_add(1);
@@ -4334,6 +4412,7 @@ impl CPU {
 
     fn pushhl(&mut self) {
         self.tick_timer_4t();
+        self.corrupt_oam(self.stackpointer as usize, OamAccess::Write);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, self.reg_h);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
@@ -4407,7 +4486,7 @@ impl CPU {
     }
 
     fn popaf(&mut self) {
-        self.reg_f = self.read_byte(self.stackpointer as usize);
+        self.reg_f = self.read_byte_increment(self.stackpointer as usize);
         self.reg_f &= 0xF0;
         self.stackpointer = self.stackpointer.wrapping_add(1);
         self.reg_a = self.read_byte(self.stackpointer as usize);
@@ -4428,6 +4507,7 @@ impl CPU {
 
     fn pushaf(&mut self) {
         self.tick_timer_4t();
+        self.corrupt_oam(self.stackpointer as usize, OamAccess::Write);
         self.stackpointer = self.stackpointer.wrapping_sub(1);
         self.write_byte(self.stackpointer as usize, self.reg_a);
         self.stackpointer = self.stackpointer.wrapping_sub(1);

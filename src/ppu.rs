@@ -233,6 +233,135 @@ fn apply_dmg_palette(color_index: u8, palette_reg: u8) -> u8 {
     (palette_reg >> (color_index * 2)) & 0x03
 }
 
+#[cfg(test)]
+mod raster_tests {
+    use super::*;
+
+    #[test]
+    fn palette_edges_follow_visible_output_and_preserve_one_dot_overlap() {
+        let mut cpu = crate::cpu::CPU::new();
+        cpu.memory[0xFF44] = 1;
+        cpu.ppu_mode3_start_dot = 84;
+        cpu.ppu_line_snapshot = PpuLineSnapshot { lcdc: 0x91, ..Default::default() };
+        cpu.gbc_palettes = [[[255, 255, 255, 255], [170, 170, 170, 255], [85, 85, 85, 255], [0, 0, 0, 255]]; 3];
+        cpu.color_mode = 0;
+        cpu.ppu_reg_log[0] = PpuRegChange { dot: 100, addr: 0xFF47, value: 1 };
+        cpu.ppu_reg_log[1] = PpuRegChange { dot: 104, addr: 0xFF47, value: 0 };
+        cpu.ppu_reg_log_len = 2;
+        draw_scanline(&mut cpu);
+        for x in 0..160 {
+            let gray = (cpu.frame_buffer[160 + x] & 0xFF) as u8;
+            assert_eq!(gray, if (5..=9).contains(&x) { 170 } else { 255 }, "x={x}");
+        }
+    }
+
+    #[test]
+    fn invisible_objects_still_pause_the_raster_clock() {
+        let mut cpu = crate::cpu::CPU::new();
+        let snap = PpuLineSnapshot { lcdc: 0x93, scx: 3, ..Default::default() };
+        let before = pixel_output_dots(&cpu, snap, 1, 95);
+        cpu.memory[0xFE00] = 16;
+        cpu.memory[0xFE01] = 0;
+        let after = pixel_output_dots(&cpu, snap, 1, 95);
+        assert_eq!(before[0], 98);
+        for x in 0..160 { assert_eq!(after[x] - before[x], 11); }
+    }
+}
+
+/// Visible pixel clocks include fetcher pauses; raster register writes must
+/// not be projected onto a uniform one-pixel-per-dot line across those pauses.
+fn pixel_output_dots(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, ly: u8, first_dot: u16) -> [u16; 160] {
+    let mut pauses = [0u16; 160];
+    let fine = (snap.scx & 7) as u16;
+    let window = snap.lcdc & 0x20 != 0 && ly >= snap.wy && snap.wx <= 166
+        && (cpu.cgb_native_mode() || snap.lcdc & 1 != 0);
+    let window_left = snap.wx as i16 - 7;
+    if window {
+        pauses[window_left.max(0) as usize] += if snap.wx == 0 && fine != 0 { 5 } else { 6 };
+    }
+    if snap.lcdc & 2 != 0 {
+        let height = if snap.lcdc & 4 != 0 { 16 } else { 8 };
+        let mut sprites = [(0i16, 0usize, 0u8); 10];
+        let mut count = 0;
+        for index in 0..40 {
+            let base = 0xFE00 + index * 4;
+            let top = cpu.memory[base] as i16 - 16;
+            if (ly as i16) < top || ly as i16 >= top + height { continue; }
+            let raw_x = cpu.memory[base + 1];
+            sprites[count] = (raw_x as i16 - 8, index, raw_x);
+            count += 1;
+            if count == 10 { break; }
+        }
+        sprites[..count].sort_unstable();
+        let mut tiles = [u16::MAX; 10];
+        let mut tile_count = 0;
+        for &(x, _, raw_x) in &sprites[..count] {
+            if x >= 160 { continue; }
+            let position = x.max(0) as usize;
+            if raw_x == 0 { pauses[position] += 11; continue; }
+            let (tile, pixel) = if window && x >= window_left {
+                let wx = (x - window_left).max(0) as u16;
+                (0x100 | (wx / 8), (wx & 7) as u8)
+            } else {
+                let bx = (x + snap.scx as i16).rem_euclid(256) as u16;
+                (bx / 8, (bx & 7) as u8)
+            };
+            if !tiles[..tile_count].contains(&tile) {
+                tiles[tile_count] = tile;
+                tile_count += 1;
+                pauses[position] += (7u8 - pixel).saturating_sub(2) as u16;
+            }
+            pauses[position] += 6;
+        }
+    }
+    let mut dots = [0; 160];
+    let mut delay = fine;
+    for x in 0..160 {
+        delay += pauses[x];
+        dots[x] = first_dot + x as u16 + delay;
+    }
+    dots
+}
+
+fn registers_at(mut registers: PpuLineSnapshot, changes: &[PpuRegChange], dot: u16) -> PpuLineSnapshot {
+    for change in changes {
+        if change.dot > dot { break; }
+        match change.addr {
+            0xFF40 => registers.lcdc = change.value,
+            0xFF42 => registers.scy = change.value,
+            0xFF43 => registers.scx = change.value,
+            _ => {}
+        }
+    }
+    registers
+}
+
+/// The map index and the two bitplanes are separate bus reads. Once fetched,
+/// a tile's pixels stay in the FIFO even if its source registers are changed.
+fn fetch_background_tile(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, changes: &[PpuRegChange], ly: u8, fetcher_x: u16, map_dot: u16) -> (u8, u8, u8) {
+    let map_regs = registers_at(snap, changes, map_dot);
+    let dy = ly.wrapping_add(map_regs.scy);
+    let map = if map_regs.lcdc & 8 != 0 { 0x9C00 } else { 0x9800 };
+    let address = map + (dy as usize / 8) * 32 + (((map_regs.scx as u16 / 8) + fetcher_x) & 31) as usize;
+    let native = cpu.cgb_native_mode();
+    let (index, attr) = if native {
+        (cpu.cgb_vram[0][address - 0x8000], cpu.cgb_vram[1][address - 0x8000])
+    } else { (cpu.memory[address], 0) };
+    let mut planes = [0; 2];
+    for plane in 0..2 {
+        let regs = registers_at(snap, changes, map_dot + 2 + plane as u16 * 2);
+        let base = if regs.lcdc & 0x10 != 0 { 0x8000 } else { 0x8800 };
+        let offset = if base == 0x8000 { index as usize * 16 }
+            else { (index as i8 as i16 + 128) as usize * 16 };
+        let row = ly.wrapping_add(regs.scy) & 7;
+        let row = if native && attr & 0x40 != 0 { 7 - row } else { row };
+        let address = base + offset + row as usize * 2 + plane;
+        planes[plane] = if native { cpu.cgb_vram[((attr >> 3) & 1) as usize][address - 0x8000] }
+            else { cpu.memory[address] };
+    }
+    (planes[0], planes[1], attr)
+}
+
 pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
     let ly = cpu.memory[0xFF44];
     if ly >= 144 { return; }
@@ -241,12 +370,32 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
     if snap.lcdc & 0x80 == 0 { return; }
 
     let log       = &cpu.ppu_reg_log[..cpu.ppu_reg_log_len];
-    let mode3_dot = cpu.ppu_mode3_start_dot;
-    let fine_x    = (snap.scx % 8) as u16;
-    let is_cgb    = cpu.is_cgb;
+    // STAT's Mode-3 transition is sampled at the end of an M-cycle, four
+    // dots after the fetcher starts. Output follows the twelve-dot fetch
+    // startup, and the LCD samples palette data before the bus write edge.
+    let mode3_dot = cpu.ppu_mode3_start_dot + 11;
+    let is_cgb    = cpu.cgb_native_mode();
     let buf_base  = ly as usize * 160;
+    let pixel_dots = if log.is_empty() { [0; 160] }
+        else { pixel_output_dots(cpu, snap, ly, mode3_dot) };
 
-    let palettes = if cpu.color_mode == 0 { &cpu.gbc_palettes } else { &DEFAULT_GBC_PALETTES };
+    // In CGB compatibility mode, BGP/OBP select among the colors installed by
+    // the real boot ROM. Cartridge writes cannot replace native palettes.
+    let mut compatibility_palettes = DEFAULT_GBC_PALETTES;
+    if cpu.is_cgb && !is_cgb {
+        for group in 0..3 {
+            for color in 0..4 {
+                let (r, g, b) = if group == 0 {
+                    get_cgb_color(&cpu.cgb_bg_palettes, 0, color as u8)
+                } else {
+                    get_cgb_color(&cpu.cgb_obj_palettes, (group - 1) as u8, color as u8)
+                };
+                compatibility_palettes[group][color] = [r, g, b, 255];
+            }
+        }
+    }
+    let palettes = if cpu.is_cgb && !is_cgb { &compatibility_palettes }
+        else if cpu.color_mode == 0 { &cpu.gbc_palettes } else { &DEFAULT_GBC_PALETTES };
 
     // ── Pre-build per-pixel OBP/LCDC state for sprite pass ──────────────────
     // One forward pass (O(160)) instead of a full log scan (O(log_len)) per
@@ -258,7 +407,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
         let (mut c0, mut c1, mut cl) = (snap.obp0, snap.obp1, snap.lcdc);
         let mut li = 0usize;
         for xi in 0..160usize {
-            let dot = mode3_dot.saturating_add(fine_x).saturating_add(xi as u16);
+            let dot = pixel_dots[xi];
             while li < log.len() && log[li].dot <= dot {
                 match log[li].addr {
                     0xFF40 => cl = log[li].value,
@@ -283,6 +432,8 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
     let win_line_active = ly >= wy;
     let mut log_idx     = 0usize;
     let mut window_drawn = false;
+    let raster_fetch = log.iter().any(|change| matches!(change.addr, 0xFF40 | 0xFF42 | 0xFF43));
+    let mut cached_bg_tile = None;
 
     // ── BG / Window tile-strided pass ────────────────────────────────────────
     // We cache (b1, b2) tile bytes and render up to 8 pixels from them before
@@ -291,7 +442,9 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
     // gives ~20 tile fetches per scanline instead of 160 per-pixel fetches.
     let mut screen_x = 0u32;
     while screen_x < 160 {
-        let pixel_dot = mode3_dot.saturating_add(fine_x).saturating_add(screen_x as u16);
+        let pixel_dot = pixel_dots[screen_x as usize];
+        let mut pixel_bgp = bgp;
+        let mut palette_edge = false;
 
         // Apply any log entries up to the current pixel.
         while log_idx < log.len() && log[log_idx].dot <= pixel_dot {
@@ -300,7 +453,15 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                 0xFF40 => lcdc = chg.value,
                 0xFF42 => scy  = chg.value,
                 0xFF43 => scx  = chg.value,
-                0xFF47 => bgp  = chg.value,
+                0xFF47 => {
+                    // DMG palette lines overlap at the write edge: the LCD
+                    // samples the OR of the old and new register for one dot.
+                    pixel_bgp = if !cpu.is_cgb && chg.dot == pixel_dot {
+                        palette_edge = true;
+                        bgp | chg.value
+                    } else { chg.value };
+                    bgp = chg.value;
+                }
                 0xFF4B => wx   = chg.value,
                 _ => {}
             }
@@ -317,10 +478,12 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
 
         // How many screen-x columns until the next log entry fires?
         let next_log_dot = log.get(log_idx).map(|e| e.dot).unwrap_or(0xFFFF);
-        let next_log_x: u32 = if next_log_dot == 0xFFFF {
+        let next_log_x: u32 = if palette_edge {
+            screen_x + 1
+        } else if next_log_dot == 0xFFFF {
             160
         } else {
-            next_log_dot.saturating_sub(mode3_dot).saturating_sub(fine_x) as u32
+            pixel_dots.partition_point(|&dot| dot < next_log_dot) as u32
         };
 
         let master_bg = is_cgb || lcdc & 0x01 != 0;
@@ -375,7 +538,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                     let (r, g, b) = get_cgb_color(&cpu.cgb_bg_palettes, cgb_pal, raw);
                     pack_cgb_pixel(r, g, b, raw, bg_prio)
                 } else {
-                    let ci    = apply_dmg_palette(raw, bgp);
+                    let ci    = apply_dmg_palette(raw, pixel_bgp);
                     let color = &palettes[PAL_BG as usize][ci as usize];
                     pack_cgb_pixel(color[0], color[1], color[2], raw, bg_prio)
                 };
@@ -387,20 +550,17 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
             let dy    = ly.wrapping_add(scy);
             let t_row = dy % 8;
             let tile_map_base: usize = if lcdc & 0x08 != 0 { 0x9C00 } else { 0x9800 };
-            let dx = ((screen_x as u16 + scx as u16) & 0xFF) as u8;
+            let dx = ((screen_x as u16 + if raster_fetch { (snap.scx & 7) as u16 } else { scx as u16 }) & 0xFF) as u8;
             let tile_map_addr = tile_map_base + (dy as usize / 8) * 32 + (dx as usize / 8);
 
-            let (tile_index, attr) = if is_cgb {
+            let (tile_index, mut attr) = if is_cgb {
                 (cpu.cgb_vram[0][tile_map_addr - 0x8000],
                  cpu.cgb_vram[1][tile_map_addr - 0x8000])
             } else {
                 (cpu.memory[tile_map_addr], 0u8)
             };
             let vram_bank = if is_cgb { ((attr >> 3) & 1) as usize } else { 0 };
-            let flip_x    = is_cgb && (attr & 0x20) != 0;
             let flip_y    = is_cgb && (attr & 0x40) != 0;
-            let cgb_pal   = attr & 0x07;
-            let bg_prio   = is_cgb && (attr & 0x80) != 0;
             let offset: u16 = if tile_data_base == 0x8000 {
                 tile_index as u16 * 16
             } else {
@@ -408,12 +568,31 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
             };
             let ty   = if flip_y { 7 - t_row } else { t_row };
             let addr = tile_data_base + (offset + ty as u16 * 2) as usize;
-            let (b1, b2) = if is_cgb {
+            let (mut b1, mut b2) = if is_cgb {
                 (cpu.cgb_vram[vram_bank][addr - 0x8000],
                  cpu.cgb_vram[vram_bank][addr - 0x8000 + 1])
             } else {
                 (cpu.memory[addr], cpu.memory[addr + 1])
             };
+
+            if raster_fetch {
+                let fetcher_x = (screen_x as u16 + (snap.scx & 7) as u16) / 8;
+                if cached_bg_tile.map(|(x, _, _, _)| x) != Some(fetcher_x) {
+                    let tile_start = screen_x as i16 - (dx & 7) as i16;
+                    // Fetch the next tile while the preceding tile drains.
+                    // A sprite pause between that fetch and this tile's
+                    // output must not move an already-completed map read.
+                    let map_dot = if tile_start >= 7 { pixel_dots[(tile_start - 7) as usize] }
+                        else { mode3_dot.saturating_add((snap.scx & 7) as u16).saturating_sub(7).saturating_add(tile_start.max(0) as u16) };
+                    let (low, high, attributes) = fetch_background_tile(cpu, snap, log, ly, fetcher_x, map_dot);
+                    cached_bg_tile = Some((fetcher_x, low, high, attributes));
+                }
+                let (_, low, high, attributes) = cached_bg_tile.unwrap();
+                b1 = low; b2 = high; attr = attributes;
+            }
+            let flip_x = is_cgb && attr & 0x20 != 0;
+            let cgb_pal = attr & 7;
+            let bg_prio = is_cgb && attr & 0x80 != 0;
 
             // Run to tile boundary, next log entry, window left edge, or screen end.
             let tile_run: u32 = 8 - (dx % 8) as u32;
@@ -423,7 +602,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
             let run_end = (screen_x + tile_run).min(next_log_x).min(win_boundary).min(160);
 
             for xi in screen_x..run_end {
-                let dxi = ((xi as u16 + scx as u16) & 0xFF) as u8;
+                let dxi = ((xi as u16 + if raster_fetch { (snap.scx & 7) as u16 } else { scx as u16 }) & 0xFF) as u8;
                 let px  = if flip_x { 7 - (dxi % 8) } else { dxi % 8 };
                 let raw = get_color_index(b1, b2, px);
                 let pixel = if is_cgb {
@@ -431,7 +610,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                     pack_cgb_pixel(r, g, b, raw, bg_prio)
                 } else {
                     let raw_eff = if master_bg { raw } else { 0 };
-                    let ci      = apply_dmg_palette(raw_eff, bgp);
+                    let ci      = apply_dmg_palette(raw_eff, pixel_bgp);
                     let color   = &palettes[PAL_BG as usize][ci as usize];
                     pack_cgb_pixel(color[0], color[1], color[2], raw, bg_prio)
                 };

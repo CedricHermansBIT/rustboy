@@ -1,4 +1,6 @@
 pub mod cpu;
+pub mod cartridge;
+pub mod pacing;
 pub mod mbc;
 pub mod ppu;
 pub mod apu;

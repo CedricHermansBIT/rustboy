@@ -756,6 +756,7 @@ impl APU {
 
         // On DMG, length counters can be written even when powered off
         if !self.powered {
+            if self.cgb_mode { return; }
             match addr {
                 0xFF11 => { self.ch1.length_counter = 64 - (val & 0x3F); }
                 0xFF16 => { self.ch2.length_counter = 64 - (val & 0x3F); }
@@ -1057,11 +1058,13 @@ impl APU {
         self.ch3 = Channel3::new();
         self.ch4 = Channel4::new();
 
-        // Restore length counters (DMG preserves them on power off)
-        self.ch1.length_counter = ch1_len;
-        self.ch2.length_counter = ch2_len;
-        self.ch3.length_counter = ch3_len;
-        self.ch4.length_counter = ch4_len;
+        // Only DMG preserves length counters across NR52 power-off.
+        if !self.cgb_mode {
+            self.ch1.length_counter = ch1_len;
+            self.ch2.length_counter = ch2_len;
+            self.ch3.length_counter = ch3_len;
+            self.ch4.length_counter = ch4_len;
+        }
         self.ch3.wave_ram = wave_ram;
 
         self.left_volume = 0;
@@ -1075,6 +1078,20 @@ impl APU {
 #[cfg(test)]
 mod timing_tests {
     use super::*;
+
+    #[test]
+    fn cgb_power_off_clears_lengths_and_ignores_length_writes() {
+        let mut apu = APU::new();
+        apu.set_cgb_mode(true);
+        apu.write_register(0xFF26, 0x80);
+        apu.write_register(0xFF11, 0x33);
+        apu.write_register(0xFF26, 0);
+        apu.write_register(0xFF11, 0x22);
+        assert_eq!(apu.ch1.length_counter, 0);
+        apu.set_cgb_mode(false);
+        apu.write_register(0xFF11, 0x22);
+        assert_eq!(apu.ch1.length_counter, 64 - 0x22);
+    }
 
     #[test]
     fn wave_fetch_age_is_independent_of_tick_batch_size() {
