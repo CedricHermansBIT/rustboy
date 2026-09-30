@@ -16,7 +16,7 @@ visible instead of excluded. Only the three Super Game Boy cases are outside
 the target hardware; the 21 remaining older testbenches have no curated
 automated oracle yet. They are not counted as validated.
 
-Separate checks pass: 36 core unit tests, 2 PPU regressions, 5 boot/timer
+Separate checks pass: 37 core unit tests, 2 PPU regressions, 5 boot/timer
 diagnostics, and both DMG/CGB Acid2 reference images. Both optional Pinball
 diagnostics pass with the locally supplied games. Browser smoke checks pass
 for DMG and CGB loading, nonblank rendering, pause/resume, and malformed-upload
@@ -46,6 +46,9 @@ the extra activation dot at WX=0 with nonzero fine scroll.
 Window disabling drains previously fetched tiles; changing WX does not
 relocate active window pixels, and reactivation advances the window row.
 Clipped-window startup and several WX-change glitches remain unresolved.
+Window tiles retain their fetched map index and bitplanes across register
+writes, with SCY affecting only background fetches. Window map/tile-select
+captures still expose remaining fetch-stage timing differences.
 CGB KEY0 compatibility mode is locked after boot; monochrome cartridges no
 longer accidentally use native palette/VRAM banking.
 

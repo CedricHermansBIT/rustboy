@@ -348,6 +348,20 @@ mod raster_tests {
         }
         assert_eq!(cpu.window_line_counter, 2);
     }
+
+    #[test]
+    fn window_fetch_latches_map_and_ignores_background_scroll() {
+        let mut cpu = crate::cpu::CPU::new();
+        let snap = PpuLineSnapshot { lcdc: 0xF1, ..Default::default() };
+        cpu.memory[0x9C00] = 1;
+        cpu.memory[0x9800] = 2;
+        cpu.memory[0x8014] = 0xA5;
+        cpu.memory[0x9015] = 0x3C;
+        let changes = [PpuRegChange { dot: 101, addr: 0xFF40, value: 0xB1 },
+            PpuRegChange { dot: 104, addr: 0xFF40, value: 0xA1 },
+            PpuRegChange { dot: 104, addr: 0xFF42, value: 7 }];
+        assert_eq!(fetch_window_tile(&cpu, snap, &changes, 2, 0, 100), (0xA5, 0x3C, 0));
+    }
 }
 
 /// Visible pixel clocks include fetcher pauses; raster register writes must
@@ -463,13 +477,28 @@ fn fetch_background_tile(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, changes: 
     let (index, attr) = if native {
         (cpu.cgb_vram[0][address - 0x8000], cpu.cgb_vram[1][address - 0x8000])
     } else { (cpu.memory[address], 0) };
+    fetch_tile_planes(cpu, snap, changes, index, attr, ly, None, map_dot)
+}
+
+fn fetch_window_tile(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, changes: &[PpuRegChange], row: u8, fetcher_x: u16, map_dot: u16) -> (u8, u8, u8) {
+    let map_regs = registers_at(snap, changes, map_dot);
+    let map = if map_regs.lcdc & 0x40 != 0 { 0x9C00 } else { 0x9800 };
+    let address = map + (row as usize / 8) * 32 + (fetcher_x as usize & 31);
+    let (index, attr) = if cpu.cgb_native_mode() {
+        (cpu.cgb_vram[0][address - 0x8000], cpu.cgb_vram[1][address - 0x8000])
+    } else { (cpu.memory[address], 0) };
+    fetch_tile_planes(cpu, snap, changes, index, attr, 0, Some(row & 7), map_dot)
+}
+
+fn fetch_tile_planes(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, changes: &[PpuRegChange], index: u8, attr: u8, ly: u8, window_row: Option<u8>, map_dot: u16) -> (u8, u8, u8) {
+    let native = cpu.cgb_native_mode();
     let mut planes = [0; 2];
     for plane in 0..2 {
         let regs = registers_at(snap, changes, map_dot + 2 + plane as u16 * 2);
         let base = if regs.lcdc & 0x10 != 0 { 0x8000 } else { 0x8800 };
         let offset = if base == 0x8000 { index as usize * 16 }
             else { (index as i8 as i16 + 128) as usize * 16 };
-        let row = ly.wrapping_add(regs.scy) & 7;
+        let row = window_row.unwrap_or_else(|| ly.wrapping_add(regs.scy) & 7);
         let row = if native && attr & 0x40 != 0 { 7 - row } else { row };
         let address = base + offset + row as usize * 2 + plane;
         planes[plane] = if native { cpu.cgb_vram[((attr >> 3) & 1) as usize][address - 0x8000] }
@@ -557,6 +586,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
     let mut bg_resume_shift = 0u16;
     let raster_fetch = log.iter().any(|change| matches!(change.addr, 0xFF40 | 0xFF42 | 0xFF43));
     let mut cached_bg_tile = None;
+    let mut cached_window_tile = None;
 
     // ── BG / Window tile-strided pass ────────────────────────────────────────
     // We cache (b1, b2) tile bytes and render up to 8 pixels from them before
@@ -640,17 +670,14 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
             let wx_pos_start = (screen_x as i32 - origin).max(0) as u32;
             let tile_map_addr = tile_map_base + (wy_row as usize / 8) * 32 + (wx_pos_start as usize / 8);
 
-            let (tile_index, attr) = if is_cgb {
+            let (tile_index, mut attr) = if is_cgb {
                 (cpu.cgb_vram[0][tile_map_addr - 0x8000],
                  cpu.cgb_vram[1][tile_map_addr - 0x8000])
             } else {
                 (cpu.memory[tile_map_addr], 0u8)
             };
             let vram_bank = if is_cgb { ((attr >> 3) & 1) as usize } else { 0 };
-            let flip_x    = is_cgb && (attr & 0x20) != 0;
             let flip_y    = is_cgb && (attr & 0x40) != 0;
-            let cgb_pal   = attr & 0x07;
-            let bg_prio   = is_cgb && (attr & 0x80) != 0;
             let offset: u16 = if tile_data_base == 0x8000 {
                 tile_index as u16 * 16
             } else {
@@ -658,12 +685,33 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
             };
             let t_row = if flip_y { 7 - (wy_row % 8) } else { wy_row % 8 };
             let addr  = tile_data_base + (offset + t_row as u16 * 2) as usize;
-            let (b1, b2) = if is_cgb {
+            let (mut b1, mut b2) = if is_cgb {
                 (cpu.cgb_vram[vram_bank][addr - 0x8000],
                  cpu.cgb_vram[vram_bank][addr - 0x8000 + 1])
             } else {
                 (cpu.memory[addr], cpu.memory[addr + 1])
             };
+
+            if raster_fetch {
+                let tile = wx_pos_start as u16 / 8;
+                let key = (window_activations, tile);
+                if cached_window_tile.map(|(k, _, _, _)| k) != Some(key) {
+                    let tile_start = screen_x as i32 - (wx_pos_start & 7) as i32;
+                    let map_dot = if tile_start >= origin + 8 && tile_start >= 7 {
+                        pixel_dots[tile_start as usize - 7]
+                    } else {
+                        let first = pixel_dots[origin.max(0) as usize];
+                        first.saturating_sub(if wx == 0 && snap.scx & 7 != 0 { 7 } else { 6 })
+                    };
+                    let (low, high, attributes) = fetch_window_tile(cpu, snap, log, wy_row, tile, map_dot);
+                    cached_window_tile = Some((key, low, high, attributes));
+                }
+                let (_, low, high, attributes) = cached_window_tile.unwrap();
+                b1 = low; b2 = high; attr = attributes;
+            }
+            let flip_x = is_cgb && attr & 0x20 != 0;
+            let cgb_pal = attr & 7;
+            let bg_prio = is_cgb && attr & 0x80 != 0;
 
             // Run to end of this window tile or next log entry.
             let tile_run = 8 - (wx_pos_start % 8);
