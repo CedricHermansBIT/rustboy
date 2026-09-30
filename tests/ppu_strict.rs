@@ -7,7 +7,8 @@ fn strict_ppu_transitions_at_dmg_dot_boundaries() {
     cpu.write_byte(0xFF40, 0x91);
     cpu.tick_timer_4t();
     assert_eq!(cpu.ppu_scanline_dot, 4);
-    assert_eq!(cpu.memory[0xFF41] & 0x03, 2);
+    // The startup line does its OAM search while STAT still reports Mode 0.
+    assert_eq!(cpu.memory[0xFF41] & 0x03, 0);
 
     for _ in 0..19 {
         cpu.tick_timer_4t();
@@ -27,6 +28,9 @@ fn strict_ppu_transitions_at_dmg_dot_boundaries() {
     }
     assert_eq!(cpu.ppu_scanline_dot, 0);
     assert_eq!(cpu.memory[0xFF44], 1);
+    assert_eq!(cpu.memory[0xFF41] & 0x03, 0);
+    cpu.tick_timer_4t();
+    assert_eq!(cpu.ppu_scanline_dot, 4);
     assert_eq!(cpu.memory[0xFF41] & 0x03, 2);
 }
 

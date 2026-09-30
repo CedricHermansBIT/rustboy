@@ -332,11 +332,12 @@ impl Channel3 {
         }
         self.timer -= cycles as i32;
         while self.timer <= 0 {
+            // Preserve the exact age of the fetch within a multi-T-cycle tick.
+            self.last_wave_read_cycles = -self.timer;
             self.timer += ((2048 - self.frequency as i32) * 2) as i32;
             self.wave_pos = (self.wave_pos + 1) & 31;
             // APU just read from wave RAM
             self.last_wave_read_index = self.wave_pos / 2;
-            self.last_wave_read_cycles = 0;
         }
     }
 
@@ -374,8 +375,8 @@ impl Channel3 {
         // If current byte index is 0..=3, that byte is copied to wave_ram[0].
         // Otherwise, the 4-byte aligned block containing current byte is copied
         // into wave_ram[0..4].
-        if self.enabled && !cgb_mode {
-            let pos_byte = self.last_wave_read_index as usize;
+        if self.enabled && !cgb_mode && self.timer == 2 {
+            let pos_byte = (((self.wave_pos + 1) & 31) / 2) as usize;
             if pos_byte < 4 {
                 self.wave_ram[0] = self.wave_ram[pos_byte];
             } else {
@@ -744,7 +745,7 @@ impl APU {
             if self.ch3.enabled {
                 if self.cgb_mode {
                     self.ch3.wave_ram[self.ch3.last_wave_read_index as usize] = val;
-                } else if self.ch3.last_wave_read_cycles >= 0 && self.ch3.last_wave_read_cycles <= 4 {
+                } else if self.ch3.last_wave_read_cycles >= 0 && self.ch3.last_wave_read_cycles < 2 {
                     self.ch3.wave_ram[self.ch3.last_wave_read_index as usize] = val;
                 }
             } else {
@@ -965,8 +966,8 @@ impl APU {
                 if self.cgb_mode {
                     return self.ch3.wave_ram[self.ch3.last_wave_read_index as usize];
                 }
-                // DMG timing window (expanded to 4T due CPU memory-access stepping granularity)
-                if self.ch3.last_wave_read_cycles >= 0 && self.ch3.last_wave_read_cycles <= 4 {
+                // DMG exposes wave RAM only for the two T-cycles after a fetch.
+                if self.ch3.last_wave_read_cycles >= 0 && self.ch3.last_wave_read_cycles < 2 {
                     return self.ch3.wave_ram[self.ch3.last_wave_read_index as usize];
                 }
                 return 0xFF;
@@ -1068,6 +1069,48 @@ impl APU {
         self.vin_left = false;
         self.vin_right = false;
         self.panning = 0;
+    }
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+
+    #[test]
+    fn wave_fetch_age_is_independent_of_tick_batch_size() {
+        for frequency in [0, 1024, 2045, 2046, 2047] {
+            let mut batched = Channel3::new();
+            let mut individual = Channel3::new();
+            for channel in [&mut batched, &mut individual] {
+                channel.enabled = true;
+                channel.frequency = frequency;
+                channel.timer = 6;
+            }
+            for _ in 0..1024 {
+                batched.tick(4);
+                for _ in 0..4 { individual.tick(1); }
+                assert_eq!(batched.timer, individual.timer);
+                assert_eq!(batched.wave_pos, individual.wave_pos);
+                assert_eq!(batched.last_wave_read_index, individual.last_wave_read_index);
+                assert_eq!(batched.last_wave_read_cycles, individual.last_wave_read_cycles);
+            }
+        }
+    }
+
+    #[test]
+    fn dmg_wave_retrigger_corrupts_only_at_fetch_phase() {
+        for timer in 1..=8 {
+            let mut channel = Channel3::new();
+            channel.enabled = true;
+            channel.dac_enabled = true;
+            channel.timer = timer;
+            channel.wave_pos = 9; // the next fetch reads byte 5, block 4..8
+            for (index, byte) in channel.wave_ram.iter_mut().enumerate() {
+                *byte = index as u8;
+            }
+            channel.trigger(0, false);
+            assert_eq!(&channel.wave_ram[..4], if timer == 2 { &[4, 5, 6, 7] } else { &[0, 1, 2, 3] });
+        }
     }
 }
 

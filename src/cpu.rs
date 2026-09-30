@@ -375,18 +375,22 @@ impl CPU {
             boot_mem:[0; 0x10000],
             boot_rom_len: 0,
             booting: true,
-            memory: [0; 0x10000],
+            memory: {
+                let mut memory = [0; 0x10000];
+                memory[0xFF46] = 0xFF;
+                memory[0xFF48] = 0xFF;
+                memory[0xFF49] = 0xFF;
+                memory
+            },
             frame_buffer: [0; 160*144],
             mbc: Mbc::empty(),
             halt: false,
             cycles: 0,
             total_cycles: 0,
             is_paused: AtomicBool::new(false),
-            // DMG power-on divider phase. The boot ROM consumes a fixed
-            // number of clocks and hands control to the cartridge at AB34;
-            // starting the hidden counter at zero leaves it 0x90 T-cycles
-            // late and breaks every acceptance test that keys off DIV.
-            sys_counter: 0xFF70,
+            // The divider is already running when the CPU's first fetch
+            // starts; memory accesses advance it before sampling the bus.
+            sys_counter: 0x0004,
             prev_timer_bit: false,
             consolelog: false,
             show_vram: false,
@@ -1111,8 +1115,9 @@ impl CPU {
         // ── Fast paths: ~90% of all memory writes hit these ─────────────────
         // WRAM — game variables, stack.
         if address >= 0xC000 && address < 0xE000 {
-            // OAM DMA blocks all bus access (except HRAM) on DMG.
-            if !self.is_cgb && self.oam_dma_active && self.oam_dma_delay == 0 {
+            // VRAM-sourced DMA leaves the main memory bus available.
+            if !self.is_cgb && self.oam_dma_active
+                && !(0x8000..0xA000).contains(&self.oam_dma_source) {
                 return;
             }
             if self.is_cgb {
@@ -1132,10 +1137,11 @@ impl CPU {
             return;
         }
 
-        // DMG OAM DMA blocks CPU bus access except HRAM (FF80-FFFE) and FF46.
+        // DMA owns its source bus and OAM. HRAM and FF46 remain accessible.
         if !self.is_cgb
             && self.oam_dma_active
-            && self.oam_dma_delay == 0
+            && (address >= 0xFE00 ||
+                ((0x8000..0xA000).contains(&address) == (0x8000..0xA000).contains(&(self.oam_dma_source as usize))))
             && address != 0xFF46
             && !(0xFF80..=0xFFFE).contains(&address)
         {
@@ -1143,12 +1149,12 @@ impl CPU {
         }
 
         if address >= 0xFE00 && address < 0xFEA0 {
-            if self.oam_dma_active && self.oam_dma_delay == 0 {
+            if self.oam_dma_active {
                 return;
             }
             if (self.memory[0xFF40] & 0x80) != 0 {
                 let mode = self.memory[0xFF41] & 0x03;
-                if mode == 2 || mode == 3 {
+                if (mode == 2 && self.ppu_scanline_dot != 80) || mode == 3 {
                     return;
                 }
             }
@@ -1270,9 +1276,6 @@ impl CPU {
             0xFF46 => {
                 self.memory[0xFF46] = data;
                 self.dma_transfer(data);
-                self.oam_dma_active = true;
-                self.oam_dma_remaining = 161;
-                self.oam_dma_delay = 2;
             }
             0xFF04 => {
                 let old_bit = self.timer_output_bit();
@@ -1339,7 +1342,13 @@ impl CPU {
             0xFF41 => {
                 let old_stat = self.memory[0xFF41];
                 let read_only = old_stat & 0x07;
-
+                // DMG temporarily drives all STAT enables high on a write.
+                // The combined interrupt line still triggers only on an edge.
+                if !self.is_cgb && self.memory[0xFF40] & 0x80 != 0
+                    && ((read_only & 3 < 2 && (!self.ppu_first_line_after_enable || self.ppu_scanline_dot >= self.ppu_mode3_end_dot)) || read_only & 4 != 0)
+                    && !self.prev_stat_line {
+                    self.request_interrupt(1);
+                }
                 self.memory[0xFF41] = (data & 0xF8) | read_only;
                 self.update_stat_irq_line();
             }
@@ -1385,9 +1394,8 @@ impl CPU {
     }
 
     fn dma_transfer(&mut self, data: u8) {
-        let start = (data as u16) << 8;
-        self.oam_dma_source = start;
-        self.oam_dma_index = 0;
+        self.memory[0xFF46] = data;
+        self.oam_dma_delay = 2;
     }
 
     fn start_hdma(&mut self, data: u8) {
@@ -1480,19 +1488,19 @@ impl CPU {
         // ── Slow path: VRAM, external RAM, OAM, echo RAM, I/O registers ─────
 
         if address >= 0xFE00 && address < 0xFEA0 {
-            if self.oam_dma_active && self.oam_dma_delay == 0 {
+            if self.oam_dma_active {
                 return 0xFF;
             }
             if (self.memory[0xFF40] & 0x80) != 0 {
                 let mode = self.memory[0xFF41] & 0x03;
-                if mode == 2 || mode == 3 {
+                if mode == 3 || (!self.ppu_first_line_after_enable && self.scanline < 144 && self.ppu_scanline_dot <= 80) {
                     return 0xFF;
                 }
             }
         } else if address >= 0x8000 && address <= 0x9FFF {
             if (self.memory[0xFF40] & 0x80) != 0 {
                 let mode = self.memory[0xFF41] & 0x03;
-                if mode == 3 {
+                if mode == 3 || (self.scanline < 144 && self.ppu_scanline_dot >= 80 && self.ppu_scanline_dot < self.ppu_mode3_end_dot) {
                     return 0xFF;
                 }
             }
@@ -1502,6 +1510,10 @@ impl CPU {
         if address == 0xFF07 { return self.memory[0xFF07] | 0xF8; }
         if address == 0xFF0F { return self.memory[0xFF0F] | 0xE0; }
         if address == 0xFF41 { return self.memory[0xFF41] | 0x80; }
+        if matches!(address, 0xFF03 | 0xFF08..=0xFF0E | 0xFF4C | 0xFF4E | 0xFF57..=0xFF67 | 0xFF6C..=0xFF6F | 0xFF71..=0xFF7F)
+            || (!self.is_cgb && (0xFF4D..=0xFF7F).contains(&address)) {
+            return 0xFF;
+        }
 
         if self.is_cgb {
             if address >= 0xFF4C && address <= 0xFF7F && address != 0xFF50 {
@@ -1583,11 +1595,16 @@ impl CPU {
 
     pub fn read_byte(&mut self, address: usize) -> u8 {
         self.tick_timer_4t();
+        self.read_bus_byte(address)
+    }
 
-        // DMG OAM DMA blocks CPU bus access except HRAM (FF80-FFFE) and FF46.
+    fn read_bus_byte(&self, address: usize) -> u8 {
+
+        // DMA owns its source bus and OAM. HRAM and FF46 remain accessible.
         if !self.is_cgb
             && self.oam_dma_active
-            && self.oam_dma_delay == 0
+            && (address >= 0xFE00 ||
+                ((0x8000..0xA000).contains(&address) == (0x8000..0xA000).contains(&(self.oam_dma_source as usize))))
             && address != 0xFF46
             && !(0xFF80..=0xFFFE).contains(&address)
         {
@@ -1804,11 +1821,17 @@ impl CPU {
             self.apu.tick(4);
         }
 
-        if self.oam_dma_active {
+        if self.oam_dma_active || self.oam_dma_delay > 0 {
             if self.oam_dma_delay > 0 {
                 self.oam_dma_delay -= 1;
+                if self.oam_dma_delay == 0 {
+                    self.oam_dma_source = (self.memory[0xFF46] as u16) << 8;
+                    self.oam_dma_index = 0;
+                    self.oam_dma_remaining = 161;
+                    self.oam_dma_active = true;
+                }
             }
-            if self.oam_dma_delay == 0 && self.oam_dma_remaining > 0 {
+            if self.oam_dma_active && self.oam_dma_remaining > 0 {
                 if self.oam_dma_remaining > 1 {
                     let source_addr = self.oam_dma_source.wrapping_add(self.oam_dma_index as u16);
                     let byte = self.peek_byte(source_addr as usize);
@@ -1830,15 +1853,10 @@ impl CPU {
             return;
         }
 
-        // LCD startup exposes Mode 2 after the first PPU tick. Keeping this as
-        // a one-time branch preserves the boot-ROM timing without burdening
-        // every dot with a startup state machine.
+        // The first line performs its initial search without exposing Mode 2.
         if self.is_lcd_turning_on {
             self.is_lcd_turning_on = false;
-            // LCD startup exposes Mode 2 four dots into its first visible
-            // machine cycle on DMG.
             self.ppu_scanline_dot = 4;
-            self.set_ppu_mode(2);
             return;
         }
 
@@ -1851,11 +1869,27 @@ impl CPU {
             self.memory[0xFF44] = 0;
             self.check_lyc();
         }
+        if self.scanline == 153 && old_dot < 8 && new_dot >= 8 {
+            self.memory[0xFF41] &= !4;
+            self.update_stat_irq_line();
+        }
+        if self.scanline == 153 && old_dot < 12 && new_dot >= 12 {
+            self.check_lyc();
+        }
 
         let mode = self.memory[0xFF41] & 0x03;
-        if mode == 2 && old_dot < 80 && new_dot >= 80 {
-            self.ppu_mode3_start_dot = 80;
-            self.ppu_mode3_end_dot = 80 + self.ppu_mode3_length_dots();
+        if self.scanline == 144 && old_dot < 4 && new_dot >= 4 {
+            self.set_ppu_mode(1);
+            self.request_interrupt(0);
+        }
+        if self.scanline < 144 && !self.ppu_first_line_after_enable && old_dot < 4 && new_dot >= 4 {
+            self.check_lyc();
+            self.set_ppu_mode(2);
+        }
+        let mode3_start = if self.ppu_first_line_after_enable { 80 } else { 84 };
+        if self.scanline < 144 && old_dot < mode3_start && new_dot >= mode3_start {
+            self.ppu_mode3_start_dot = mode3_start;
+            self.ppu_mode3_end_dot = mode3_start + self.ppu_mode3_length_dots();
             self.ppu_reg_log_len = 0;
             self.ppu_line_snapshot = crate::ppu::PpuLineSnapshot {
                 lcdc: self.memory[0xFF40],
@@ -1872,6 +1906,10 @@ impl CPU {
             crate::ppu::draw_scanline(self);
             self.set_ppu_mode(0);
         }
+        let irq_dot = if self.ppu_first_line_after_enable { self.ppu_mode3_end_dot + 2 } else { self.ppu_mode3_end_dot };
+        if self.scanline < 144 && old_dot < irq_dot && new_dot >= irq_dot {
+            self.update_stat_irq_line();
+        }
 
         let line_end = if self.ppu_first_line_after_enable { 452 } else { 456 };
         if new_dot < line_end {
@@ -1886,21 +1924,20 @@ impl CPU {
             self.memory[0xFF44] = 144;
             self.pulse_oam_stat_edge();
             self.check_lyc();
-            self.set_ppu_mode(1);
-            self.request_interrupt(0);
+            self.memory[0xFF41] &= !3;
         } else if self.scanline > 153 {
             self.scanline = 0;
             self.memory[0xFF44] = 0;
             self.window_line_counter = 0;
+            self.memory[0xFF41] &= !3;
             self.check_lyc();
-            self.set_ppu_mode(2);
         } else if self.scanline < 144 {
             self.memory[0xFF44] = self.scanline;
             // On DMG the Mode-2 STAT source is evaluated roughly one dot
             // before STAT exposes Mode 2 and before the new LY comparison.
             self.pulse_oam_stat_edge();
-            self.memory[0xFF41] = (self.memory[0xFF41] & 0xFC) | 2;
-            self.check_lyc();
+            self.memory[0xFF41] &= !7;
+            self.update_stat_irq_line();
         } else {
             self.memory[0xFF44] = self.scanline;
             self.check_lyc();
@@ -1931,15 +1968,14 @@ impl CPU {
         let ly = self.scanline;
         let sprite_height = if lcdc & 0x04 != 0 { 16i16 } else { 8i16 };
 
-        let mut length = 170u16 + (scx & 7) as u16;
+        let mut length = (if lcdc & 2 != 0 { 169u16 } else { 170u16 }) + (scx & 7) as u16;
         let window_active = lcdc & 0x20 != 0
             && (self.is_cgb || lcdc & 0x01 != 0)
             && ly >= self.memory[0xFF4A]
             && self.memory[0xFF4B] <= 166;
         if window_active {
-            // Window startup includes the six-dot fetch restart plus the
-            // two-dot pipeline phase represented by the 170-dot baseline.
-            length += 8;
+            // Window startup adds a six-dot fetch restart.
+            length += 6;
             if self.memory[0xFF4B] == 0 && scx & 7 != 0 {
                 length -= 1;
             }
@@ -1960,11 +1996,6 @@ impl CPU {
                 sprites[sprite_count] = (raw_x as i16 - 8, index as u8, raw_x);
                 sprite_count += 1;
                 if sprite_count == 10 { break; }
-            }
-            if sprites[..sprite_count].iter().any(|&(_, _, raw_x)| raw_x != 0) {
-                // The first OBJ stalls the fetcher while it switches from the
-                // background pipeline; per-OBJ penalties below start after it.
-                length += 3;
             }
             sprites[..sprite_count].sort_unstable_by_key(|&(x, index, _)| (x, index));
 
@@ -2027,9 +2058,14 @@ impl CPU {
     }
 
     fn check_lyc(&mut self) {
-        let ly = self.memory[0xFF44];
+        let ly = if self.scanline == 153 && self.ppu_scanline_dot < 8 {
+            153
+        } else {
+            self.memory[0xFF44]
+        };
         let lyc = self.memory[0xFF45];
-        if ly == lyc {
+        let compare_valid = self.scanline != 153 || (4..8).contains(&self.ppu_scanline_dot) || self.ppu_scanline_dot >= 12;
+        if compare_valid && ly == lyc {
             self.memory[0xFF41] |= 0x04;
         } else {
             self.memory[0xFF41] &= !0x04;
@@ -2081,16 +2117,16 @@ impl CPU {
     fn update_stat_irq_line(&mut self) {
         let stat = self.memory[0xFF41];
         let mode = stat & 0x03;
-        let ly = self.memory[0xFF44];
-        let lyc = self.memory[0xFF45];
 
-        let hblank_trigger = mode == 0 && (stat & 0x08 != 0);
+        let irq_dot = if self.ppu_first_line_after_enable { self.ppu_mode3_end_dot + 2 } else { self.ppu_mode3_end_dot };
+        let hblank_trigger = (stat & 0x08 != 0)
+            && self.scanline < 144 && self.ppu_scanline_dot >= irq_dot;
         let vblank_trigger = mode == 1 && (stat & 0x10 != 0);
 
-        let line = hblank_trigger
+        let line = self.memory[0xFF40] & 0x80 != 0 && (hblank_trigger
             || vblank_trigger
-            || (mode == 2 && stat & 0x20 != 0)
-            || (ly == lyc && stat & 0x40 != 0);
+            || (self.scanline < 144 && !self.ppu_first_line_after_enable && self.ppu_scanline_dot < 4 && stat & 0x20 != 0)
+            || (stat & 0x44 == 0x44));
 
         if line && !self.prev_stat_line {
             self.request_interrupt(1);
@@ -2135,25 +2171,34 @@ impl CPU {
         self.timer_ticks_this_instr = 0;
         let cycles_before = self.cycles;
 
-        if self.halt_wakeup_delay_stat {
-            self.halt_wakeup_delay_stat = false;
-            self.tick_timer_4t();
-            self.cycles += 1;
+        self.halt_wakeup_delay_stat = false;
 
-            if was_ei_pending && self.ei_pending {
-                self.interrupt_master_enable = true;
-                self.ei_pending = false;
-            }
-            return;
-        }
-
+        // Interrupts are sampled during the opcode-fetch cycle, after the
+        // peripherals have advanced. An accepted interrupt discards the fetch.
+        let interrupt_before_fetch = self.memory[0xFF0F] & self.memory[0xFFFF] & 0x1F;
+        self.tick_timer_4t();
         let pending_interrupts = self.memory[0xFF0F] & self.memory[0xFFFF] & 0x1F;
-        if self.interrupt_master_enable && pending_interrupts != 0 && !self.halt {
+        // HALT's wakeup latch misses an IRQ asserted in the last two T-cycles
+        // of this M-cycle. Timer reload and OAM edges share this late phase;
+        // HBlank's phase depends on fine SCX and fetcher stalls.
+        if self.halt && self.interrupt_master_enable && interrupt_before_fetch == 0 && pending_interrupts != 0 {
+            let stat = self.memory[0xFF41];
+            let irq_dot = if self.ppu_first_line_after_enable { self.ppu_mode3_end_dot + 2 } else { self.ppu_mode3_end_dot };
+            let late_stat = pending_interrupts & 2 != 0 &&
+                ((stat & 0x20 != 0 && self.ppu_scanline_dot == 0) ||
+                 (stat & 8 != 0 && self.ppu_scanline_dot.saturating_sub(irq_dot) <= 1));
+            if pending_interrupts & 4 != 0 || late_stat {
+                self.halt = false;
+                self.cycles += 1;
+                return;
+            }
+        }
+        if self.interrupt_master_enable && pending_interrupts != 0 {
+            self.halt = false;
             self.interrupt_master_enable = false;
             self.halt_bug = false;
             self.ei_pending = false;
 
-            self.tick_timer_4t();
             self.tick_timer_4t();
             self.tick_timer_4t();
             self.push(self.program_counter);
@@ -2181,21 +2226,17 @@ impl CPU {
             return;
         }
 
+        // With IME clear, waking HALT resumes the prefetched instruction
+        // without the interrupt-entry delay.
+        if self.halt && !self.interrupt_master_enable && pending_interrupts != 0 {
+            self.halt = false;
+        }
         if self.halt {
-            self.tick_timer_4t();
             self.cycles += 1;
 
             let valid_interrupts = self.memory[0xFF0F] & self.memory[0xFFFF] & 0x1F;
             if valid_interrupts != 0 {
                 self.halt = false;
-                // HBlank STAT wakeup is still one M-cycle early in HALT paths.
-                let stat_mode = self.memory[0xFF41] & 0x03;
-                if self.interrupt_master_enable
-                    && (valid_interrupts & 0x02) != 0
-                    && stat_mode == 0
-                {
-                    self.halt_wakeup_delay_stat = true;
-                }
             }
 
             if was_ei_pending && self.ei_pending {
@@ -2205,7 +2246,7 @@ impl CPU {
             return;
         }
 
-        let opcode = self.read_byte(self.program_counter as usize);
+        let opcode = self.read_bus_byte(self.program_counter as usize);
 
         if self.tracing {
             let line = self.format_trace_line();
