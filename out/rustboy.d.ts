@@ -30,6 +30,8 @@ export function get_is_cgb(): boolean;
 
 export function get_rom_title(): string;
 
+export function get_save_key(): string;
+
 export function get_speed(): number;
 
 export function get_state_id(): string;
@@ -46,7 +48,7 @@ export function is_tracing(): boolean;
 
 export function list_breakpoints(): string;
 
-export function load_rom_data(rom_data: Uint8Array): void;
+export function load_rom_data(rom_data: Uint8Array, boot_rom_data: Uint8Array): void;
 
 export function main_js(): void;
 
@@ -86,6 +88,7 @@ export interface InitOutput {
     readonly get_debug_state: () => [number, number];
     readonly get_is_cgb: () => number;
     readonly get_rom_title: () => [number, number];
+    readonly get_save_key: () => [number, number];
     readonly get_state_id: () => [number, number];
     readonly get_trace: () => [number, number];
     readonly import_save_data: (a: number, b: number) => [number, number];
@@ -93,7 +96,7 @@ export interface InitOutput {
     readonly is_paused: () => number;
     readonly is_tracing: () => number;
     readonly list_breakpoints: () => [number, number];
-    readonly load_rom_data: (a: number, b: number) => void;
+    readonly load_rom_data: (a: number, b: number, c: number, d: number) => [number, number];
     readonly main_js: () => void;
     readonly peek: (a: number) => number;
     readonly peek_regs: () => [number, number];
@@ -110,7 +113,7 @@ export interface InitOutput {
     readonly reset_emulator: () => void;
     readonly toggle_trace: () => void;
     readonly save_game: () => void;
-    readonly wasm_bindgen_5aa949e133d73c3e___convert__closures_____invoke_______true_: (a: number, b: number) => void;
+    readonly wasm_bindgen_5aa949e133d73c3e___convert__closures_____invoke___f64______true_: (a: number, b: number, c: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
