@@ -1,0 +1,10 @@
+[
+  {
+    "name": "micro_halt_op_dupe_delay",
+    "reason": "DIV expectation 55 conflicts with about 64 machine cycles after a DIV reset; original remains unchanged"
+  },
+  {
+    "name": "micro_stat_write_glitch_l154_d",
+    "reason": "IF expectation E0 omits the VBlank request after waiting a full frame; original remains unchanged"
+  }
+]

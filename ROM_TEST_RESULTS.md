@@ -1,23 +1,58 @@
 # Automated ROM test results
 
-Verified on 2026-09-30 in this checkout, with the bundled ROMs unchanged.
+Verified on 2026-10-01 in the original checkout. ROM fixtures remain unchanged.
 
 | Suite | Passed | Failed | Ignored |
 | --- | ---: | ---: | ---: |
-| Mooneye | 46 | 0 | 34 |
-| Blargg | 32 | 0 | 12 |
-| GBMicrotest | 474 | 2 | 31 |
-| Total ROMs | 552 | 2 | 77 |
+| Mooneye | 46 | 0 | 3 |
+| Blargg | 43 | 1 | 0 |
+| GBMicrotest (including raw-byte publishers) | 484 | 2 | 21 |
+| Mealybug screenshot comparisons | 4 | 27 | 0 |
+| Total registered ROMs | 577 | 30 | 24 |
 
-The initial combined headless run had 133 failures: 12 Mooneye, 5 Blargg,
-and 116 GBMicrotest. The fixes resolve 131 of them. Five existing boot/timer
-diagnostics now live in `tests/boot_diagnostics.rs`, separate from ROM cases.
+The ignored count has fallen from 77 to 24. This does **not** mean all newly
+enabled cases pass: 27 graphics failures and one unresolved Blargg ROM are now
+visible instead of excluded. Only the three Super Game Boy cases are outside
+the target hardware; the 21 remaining older testbenches have no curated
+automated oracle yet. They are not counted as validated.
 
-The 46 pre-existing exclusions remain unchanged in scope (other hardware
-models, visual-only tests, and unimplemented OAM corruption). Another 31
-GBMicrotest visual/testbench ROMs have no FF82 result publisher: they previously
-returned early and were incorrectly reported as passing. They are now explicitly
-ignored with reasons. Missing ROM files fail instead of silently passing.
+Separate checks pass: 31 core unit tests, 2 PPU regressions, 5 boot/timer
+diagnostics, and both DMG/CGB Acid2 reference images. Both optional Pinball
+diagnostics pass with the locally supplied games. Browser smoke checks pass
+for DMG and CGB loading, nonblank rendering, pause/resume, and malformed-upload
+handling. Audio queue and boot-ROM loader JavaScript regressions pass.
+This is not a broad manual gameplay or listening test.
+
+## Newly enabled graphics checks
+
+All 31 Mealybug ROMs now capture at their `LD B,B` software breakpoint and
+compare displayed RGB against the bundled upstream references, using the
+matching hardware model. References and ROMs have recorded SHA-256 hashes.
+The historic `mooneye_m2_*` / `mooneye_m3_*` function names are retained, but
+these cases use the graphics runner, not Mooneye's register signature.
+
+Passing: `m2_win_en_toggle`, `m3_bgp_change`, `m3_bgp_change_sprites`,
+and `m3_obp0_change`. Remaining failures involve mid-line tile/map/scroll
+fetches, OBJ enable/size changes, and window activation/restart behavior.
+They are emulator compatibility gaps, not accepted fixture exceptions.
+
+The renderer now accounts for visible-output startup, OBJ/window stalls,
+one-dot DMG palette overlap, and separately latched map/bitplane reads.
+CGB KEY0 compatibility mode is locked after boot; monochrome cartridges no
+longer accidentally use native palette/VRAM banking.
+
+## Unresolved Blargg timing ROM
+
+`blargg_n7_timing_effect` is enabled and still fails to finish. Its original
+single-ROM build prints every corruption dump to an 8 KiB cartridge-RAM
+stream. Diagnostic execution observed the stream reaching WRAM: the
+`LD (HL),A` at PC `C3FE` wrote a space to `C000`, after exceeding its
+RAM buffer. The shell itself executes from WRAM, and the eventual status
+remains `80` rather than a terminal result.
+
+The other seven OAM singles and the aggregate OAM suite pass. The overflow
+explains why this standalone result is unreliable, but it is not counted as
+a pass, and no original ROM or emulator memory map was altered to hide it.
 
 ## Remaining failures, intentionally retained
 
@@ -44,47 +79,60 @@ ab1656911841d9fdcbe34aad21dc44f554e84a6eef5a82558dc27c8e9a89250c  halt_op_dupe_d
 4aa12886dac7c7d7dfe17476c4f473a47c8cc36ce43ff8c9b87ea7cb99d5be61  stat_write_glitch_l154_d.gb
 ```
 
-## Fixes
 
-- MBC1 multicart: decode raw zero before masking the disconnected bank bit.
-- Restore power-on DIV phase, DMA/palette register defaults, and unused-I/O masks.
-- Preserve in-flight DMA during restart, including source-bus contention.
-- Sample interrupts during opcode fetch; correct HALT wakeup and IRQ phases.
-- Correct LCD startup, line boundaries, LY/LYC coincidence, STAT IRQ edges,
-  read/write access gates, and fine-scroll/window/sprite fetch penalties.
-- Correct DMG wave-RAM access windows and retrigger corruption phase. Batched
-  APU ticks retain precise wave-fetch ages without ticking the entire APU 4x.
-- ROM harness: choose DMG/CGB boot ROM correctly and read the complete Blargg
-  result buffer. Long wave-test output previously truncated before `Passed`.
-- Extract a maintained shared harness and curated case registry so regeneration
-  preserves runner protocols and exclusion reasons.
+## Other fixes and release infrastructure
 
-## Verification
+- DMG OAM bus corruption for reads, writes, and increment/decrement accesses;
+  CGB audio power-off/length behavior. Previously excluded OAM and CGB sound
+  cases are enabled.
+- ROM+RAM cartridges, absent-RAM access, 2 KiB mirroring, MBC2/small-RAM
+  save sizes, writable RTC carry clearing, and compact/legacy RTC trailers.
+- Ten legacy micro-ROMs now check their raw VRAM/RAM result and repeating
+  publisher, with expected values taken from their original source.
+- Blargg cartridges with no declared RAM use their ASCII LCD console as the
+  result channel; the harness does not invent cartridge RAM.
+- Browser pacing follows elapsed time rather than display refresh rate.
+  Unit checks cover 30/60/120/144/240 Hz.
+- Boot ROMs load at runtime rather than being embedded in WASM; invalid ROMs
+  and unsupported controllers report errors before replacing a running game.
+- Battery saves use ROM identity, with recoverable migration of old title-only
+  saves. New ROM loads and focus loss clear held input.
+- Reproducible WASM build script, self-contained CI, native/JavaScript checks,
+  real Chromium smoke tests, and explicit local-fixture hash validation.
+- The optional CGB Pinball regression hashes displayed RGB and excludes only
+  eight animated sparkle pixels; its static reference was derived from the
+  original known-good menu, not the newly generated output.
+
+## Reproduction
 
 ```sh
-# Full ROM run: 552 passed, 2 failed, 77 ignored.
+# All original cases: currently exits nonzero (577 pass / 30 fail / 24 ignore).
 cargo test --locked --offline --release --no-default-features --test headless
 
-# Everything else: 552 ROMs, 14 unit tests, 5 boot/timer diagnostics,
-# and 2 PPU regressions pass. Two optional Pinball diagnostics remain ignored.
-cargo test --locked --offline --release --no-default-features -- \
-  --skip micro_halt_op_dupe_delay --skip micro_stat_write_glitch_l154_d
+# Self-contained regressions; no ROMs/BIOS needed.
+python3 scripts/check.py --offline
 
-# Audio regression: prebuffer, stereo playback, underrun recovery, reset,
-# and ring overflow.
-node tests/audio_queue.cjs
+# Local ROMs, reference images and your own boot ROMs required.
+# Excludes only the two explicitly retained micro-fixture errors.
+# Graphics and Blargg timing failures still make this command fail.
+python3 scripts/check.py --offline --roms
 
-# Browser build (out/ is regenerated with matching wasm-bindgen 0.2.118).
-cargo build --locked --offline --release --target wasm32-unknown-unknown
-wasm-bindgen --target web --out-dir out \
-  target/wasm32-unknown-unknown/release/rustboy.wasm
+# Save mismatching screenshots for inspection.
+GRAPHICS_ARTIFACT_DIR=/tmp/rustboy-graphics cargo test --locked --offline \
+  --release --no-default-features --test headless mooneye_m
 
-# Recreate the curated ROM cases; keep helper edits in tests/support/.
+# Regenerate maintained ROM cases, without losing runner protocols.
 python3 generate_tests.py
+
+# Rebuild browser bundle with the CLI version matching Cargo.lock.
+python3 scripts/build_web.py --offline
+
+# Real browser, optionally with a locally supplied game.
+RUSTBOY_ROM=testroms/artifacts/cgb-acid2/cgb-acid2.gbc node tests/browser_smoke.mjs
 ```
 
-For browser audio, the stereo queue is 32,768 samples per channel (was 8,192),
-callbacks are 4,096 samples (was 2,048), and startup/underrun recovery prebuffers
-8,192 samples, approximately 186 ms at 44.1 kHz. This trades latency for more
-scheduling headroom. Actual audible crackling still needs a browser listening
-check under the workload that previously caused it.
+The stereo queue is 32,768 samples per channel (was 8,192); callbacks use
+4,096 samples (was 2,048). Startup/underrun recovery prebuffers 8,192 samples,
+approximately 186 ms at 44.1 kHz. This trades latency for scheduling headroom.
+Audible crackling under the user's original workload still requires a listening
+check; automated queue tests cannot establish subjective audio quality.

@@ -3,6 +3,8 @@
 //! TRACE_TEST=<ROM substring> enables tracing; TRACE_CSV=1 exports it.
 
 include!("support/rom_harness.rs");
+#[path = "support/graphics_harness.rs"]
+mod graphics_harness;
 
 #[test]
 fn mooneye_add_sp_e_timing() {
@@ -75,7 +77,7 @@ fn mooneye_daa() {
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
+#[ignore = "Super Game Boy hardware; outside the DMG/CGB target"]
 fn mooneye_di_timing_gs() {
     run_mooneye_test("testroms/di_timing-GS.gb");
 }
@@ -111,7 +113,7 @@ fn mooneye_halt_ime1_timing() {
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
+#[ignore = "Super Game Boy hardware; outside the DMG/CGB target"]
 fn mooneye_halt_ime1_timing2_gs() {
     run_mooneye_test("testroms/halt_ime1_timing2-GS.gb");
 }
@@ -142,189 +144,158 @@ fn mooneye_ld_hl_sp_e_timing() {
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m2_win_en_toggle() {
-    run_mooneye_test("testroms/m2_win_en_toggle.gb");
+    graphics_harness::check_graphics("testroms/m2_win_en_toggle.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m2_win_en_toggle_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_bgp_change() {
-    run_mooneye_test("testroms/m3_bgp_change.gb");
+    graphics_harness::check_graphics("testroms/m3_bgp_change.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_bgp_change_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_bgp_change_sprites() {
-    run_mooneye_test("testroms/m3_bgp_change_sprites.gb");
+    graphics_harness::check_graphics("testroms/m3_bgp_change_sprites.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_bgp_change_sprites_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_lcdc_bg_en_change() {
-    run_mooneye_test("testroms/m3_lcdc_bg_en_change.gb");
+    graphics_harness::check_graphics("testroms/m3_lcdc_bg_en_change.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_lcdc_bg_en_change_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_lcdc_bg_en_change2() {
-    run_mooneye_test("testroms/m3_lcdc_bg_en_change2.gb");
+    graphics_harness::check_graphics("testroms/m3_lcdc_bg_en_change2.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_lcdc_bg_en_change2_cgb_c.png", true, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_lcdc_bg_map_change() {
-    run_mooneye_test("testroms/m3_lcdc_bg_map_change.gb");
+    graphics_harness::check_graphics("testroms/m3_lcdc_bg_map_change.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_lcdc_bg_map_change_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_lcdc_bg_map_change2() {
-    run_mooneye_test("testroms/m3_lcdc_bg_map_change2.gb");
+    graphics_harness::check_graphics("testroms/m3_lcdc_bg_map_change2.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_lcdc_bg_map_change2_cgb_c.png", true, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_lcdc_obj_en_change() {
-    run_mooneye_test("testroms/m3_lcdc_obj_en_change.gb");
+    graphics_harness::check_graphics("testroms/m3_lcdc_obj_en_change.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_lcdc_obj_en_change_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_lcdc_obj_en_change_variant() {
-    run_mooneye_test("testroms/m3_lcdc_obj_en_change_variant.gb");
+    graphics_harness::check_graphics("testroms/m3_lcdc_obj_en_change_variant.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_lcdc_obj_en_change_variant_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_lcdc_obj_size_change() {
-    run_mooneye_test("testroms/m3_lcdc_obj_size_change.gb");
+    graphics_harness::check_graphics("testroms/m3_lcdc_obj_size_change.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_lcdc_obj_size_change_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_lcdc_obj_size_change_scx() {
-    run_mooneye_test("testroms/m3_lcdc_obj_size_change_scx.gb");
+    graphics_harness::check_graphics("testroms/m3_lcdc_obj_size_change_scx.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_lcdc_obj_size_change_scx_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_lcdc_tile_sel_change() {
-    run_mooneye_test("testroms/m3_lcdc_tile_sel_change.gb");
+    graphics_harness::check_graphics("testroms/m3_lcdc_tile_sel_change.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_lcdc_tile_sel_change_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_lcdc_tile_sel_change2() {
-    run_mooneye_test("testroms/m3_lcdc_tile_sel_change2.gb");
+    graphics_harness::check_graphics("testroms/m3_lcdc_tile_sel_change2.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_lcdc_tile_sel_change2_cgb_c.png", true, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_lcdc_tile_sel_win_change() {
-    run_mooneye_test("testroms/m3_lcdc_tile_sel_win_change.gb");
+    graphics_harness::check_graphics("testroms/m3_lcdc_tile_sel_win_change.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_lcdc_tile_sel_win_change_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_lcdc_tile_sel_win_change2() {
-    run_mooneye_test("testroms/m3_lcdc_tile_sel_win_change2.gb");
+    graphics_harness::check_graphics("testroms/m3_lcdc_tile_sel_win_change2.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_lcdc_tile_sel_win_change2_cgb_c.png", true, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_lcdc_win_en_change_multiple() {
-    run_mooneye_test("testroms/m3_lcdc_win_en_change_multiple.gb");
+    graphics_harness::check_graphics("testroms/m3_lcdc_win_en_change_multiple.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_lcdc_win_en_change_multiple_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_lcdc_win_en_change_multiple_wx() {
-    run_mooneye_test("testroms/m3_lcdc_win_en_change_multiple_wx.gb");
+    graphics_harness::check_graphics("testroms/m3_lcdc_win_en_change_multiple_wx.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_lcdc_win_en_change_multiple_wx_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_lcdc_win_map_change() {
-    run_mooneye_test("testroms/m3_lcdc_win_map_change.gb");
+    graphics_harness::check_graphics("testroms/m3_lcdc_win_map_change.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_lcdc_win_map_change_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_lcdc_win_map_change2() {
-    run_mooneye_test("testroms/m3_lcdc_win_map_change2.gb");
+    graphics_harness::check_graphics("testroms/m3_lcdc_win_map_change2.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_lcdc_win_map_change2_cgb_c.png", true, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_obp0_change() {
-    run_mooneye_test("testroms/m3_obp0_change.gb");
+    graphics_harness::check_graphics("testroms/m3_obp0_change.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_obp0_change_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_scx_high_5_bits() {
-    run_mooneye_test("testroms/m3_scx_high_5_bits.gb");
+    graphics_harness::check_graphics("testroms/m3_scx_high_5_bits.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_scx_high_5_bits_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_scx_high_5_bits_change2() {
-    run_mooneye_test("testroms/m3_scx_high_5_bits_change2.gb");
+    graphics_harness::check_graphics("testroms/m3_scx_high_5_bits_change2.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_scx_high_5_bits_change2_cgb_c.png", true, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_scx_low_3_bits() {
-    run_mooneye_test("testroms/m3_scx_low_3_bits.gb");
+    graphics_harness::check_graphics("testroms/m3_scx_low_3_bits.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_scx_low_3_bits_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_scy_change() {
-    run_mooneye_test("testroms/m3_scy_change.gb");
+    graphics_harness::check_graphics("testroms/m3_scy_change.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_scy_change_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_scy_change2() {
-    run_mooneye_test("testroms/m3_scy_change2.gb");
+    graphics_harness::check_graphics("testroms/m3_scy_change2.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_scy_change2_cgb_c.png", true, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_window_timing() {
-    run_mooneye_test("testroms/m3_window_timing.gb");
+    graphics_harness::check_graphics("testroms/m3_window_timing.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_window_timing_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_window_timing_wx_0() {
-    run_mooneye_test("testroms/m3_window_timing_wx_0.gb");
+    graphics_harness::check_graphics("testroms/m3_window_timing_wx_0.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_window_timing_wx_0_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_wx_4_change() {
-    run_mooneye_test("testroms/m3_wx_4_change.gb");
+    graphics_harness::check_graphics("testroms/m3_wx_4_change.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_wx_4_change_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_wx_4_change_sprites() {
-    run_mooneye_test("testroms/m3_wx_4_change_sprites.gb");
+    graphics_harness::check_graphics("testroms/m3_wx_4_change_sprites.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_wx_4_change_sprites_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_wx_5_change() {
-    run_mooneye_test("testroms/m3_wx_5_change.gb");
+    graphics_harness::check_graphics("testroms/m3_wx_5_change.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_wx_5_change_dmg_blob.png", false, true);
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
 fn mooneye_m3_wx_6_change() {
-    run_mooneye_test("testroms/m3_wx_6_change.gb");
+    graphics_harness::check_graphics("testroms/m3_wx_6_change.gb", "testroms/artifacts/mealybug-tearoom-tests/ppu/m3_wx_6_change_dmg_blob.png", false, true);
 }
 
 #[test]
@@ -433,7 +404,7 @@ fn mooneye_rst_timing() {
 }
 
 #[test]
-#[ignore = "Different hardware model or visual-only ROM (pre-existing exclusion)"]
+#[ignore = "Super Game Boy hardware; outside the DMG/CGB target"]
 fn mooneye_sources_gs() {
     run_mooneye_test("testroms/sources-GS.gb");
 }
@@ -474,25 +445,21 @@ fn blargg_n07_len_sweep_period_sync() {
 }
 
 #[test]
-#[ignore = "CGB-specific: length counter behavior differs from DMG"]
 fn blargg_n08_len_ctr_during_power() {
     run_blargg_test("testroms/artifacts/blargg/cgb_sound/rom_singles/08-len ctr during power.gb");
 }
 
 #[test]
-#[ignore = "CGB-specific: wave read timing differs from DMG"]
 fn blargg_n09_wave_read_while_on() {
     run_blargg_test("testroms/artifacts/blargg/cgb_sound/rom_singles/09-wave read while on.gb");
 }
 
 #[test]
-#[ignore = "CGB-specific: wave trigger behavior differs from DMG"]
 fn blargg_n10_wave_trigger_while_on() {
     run_blargg_test("testroms/artifacts/blargg/cgb_sound/rom_singles/10-wave trigger while on.gb");
 }
 
 #[test]
-#[ignore = "CGB-specific: register clearing on power off differs from DMG"]
 fn blargg_n11_regs_after_power() {
     run_blargg_test("testroms/artifacts/blargg/cgb_sound/rom_singles/11-regs after power.gb");
 }
@@ -618,19 +585,16 @@ fn blargg_n03_modify_timing() {
 }
 
 #[test]
-#[ignore = "OAM corruption bug not implemented"]
 fn blargg_oam_bug() {
     run_blargg_test("testroms/artifacts/blargg/oam_bug/oam_bug.gb");
 }
 
 #[test]
-#[ignore = "OAM corruption bug not implemented"]
 fn blargg_n1_lcd_sync() {
     run_blargg_test("testroms/artifacts/blargg/oam_bug/rom_singles/1-lcd_sync.gb");
 }
 
 #[test]
-#[ignore = "OAM corruption bug not implemented"]
 fn blargg_n2_causes() {
     run_blargg_test("testroms/artifacts/blargg/oam_bug/rom_singles/2-causes.gb");
 }
@@ -641,45 +605,38 @@ fn blargg_n3_non_causes() {
 }
 
 #[test]
-#[ignore = "OAM corruption bug not implemented"]
 fn blargg_n4_scanline_timing() {
     run_blargg_test("testroms/artifacts/blargg/oam_bug/rom_singles/4-scanline_timing.gb");
 }
 
 #[test]
-#[ignore = "OAM corruption bug not implemented"]
 fn blargg_n5_timing_bug() {
     run_blargg_test("testroms/artifacts/blargg/oam_bug/rom_singles/5-timing_bug.gb");
 }
 
 #[test]
-#[ignore = "OAM corruption bug not implemented"]
 fn blargg_n6_timing_no_bug() {
     run_blargg_test("testroms/artifacts/blargg/oam_bug/rom_singles/6-timing_no_bug.gb");
 }
 
 #[test]
-#[ignore = "OAM corruption bug not implemented"]
 fn blargg_n7_timing_effect() {
     run_blargg_test("testroms/artifacts/blargg/oam_bug/rom_singles/7-timing_effect.gb");
 }
 
 #[test]
-#[ignore = "OAM corruption bug not implemented"]
 fn blargg_n8_instr_effect() {
     run_blargg_test("testroms/artifacts/blargg/oam_bug/rom_singles/8-instr_effect.gb");
 }
 
 #[test]
-#[ignore = "Visual/testbench ROM: no FF82 automated result publisher"]
 fn micro_n000_oam_lock() {
-    run_micro_test("testroms/artifacts/gbmicrotest/000-oam_lock.gb");
+    run_legacy_test("testroms/artifacts/gbmicrotest/000-oam_lock.gb", 32768, 255, 408);
 }
 
 #[test]
-#[ignore = "Visual/testbench ROM: no FF82 automated result publisher"]
 fn micro_n000_write_to_x8000() {
-    run_micro_test("testroms/artifacts/gbmicrotest/000-write_to_x8000.gb");
+    run_legacy_test("testroms/artifacts/gbmicrotest/000-write_to_x8000.gb", 32768, 85, 336);
 }
 
 #[test]
@@ -689,21 +646,18 @@ fn micro_n001_vram_unlocked() {
 }
 
 #[test]
-#[ignore = "Visual/testbench ROM: no FF82 automated result publisher"]
 fn micro_n002_vram_locked() {
-    run_micro_test("testroms/artifacts/gbmicrotest/002-vram_locked.gb");
+    run_legacy_test("testroms/artifacts/gbmicrotest/002-vram_locked.gb", 32768, 132, 409);
 }
 
 #[test]
-#[ignore = "Visual/testbench ROM: no FF82 automated result publisher"]
 fn micro_n004_tima_boot_phase() {
-    run_micro_test("testroms/artifacts/gbmicrotest/004-tima_boot_phase.gb");
+    run_legacy_test("testroms/artifacts/gbmicrotest/004-tima_boot_phase.gb", 32768, 85, 355);
 }
 
 #[test]
-#[ignore = "Visual/testbench ROM: no FF82 automated result publisher"]
 fn micro_n004_tima_cycle_timer() {
-    run_micro_test("testroms/artifacts/gbmicrotest/004-tima_cycle_timer.gb");
+    run_legacy_test("testroms/artifacts/gbmicrotest/004-tima_cycle_timer.gb", 32768, 85, 444);
 }
 
 #[test]
@@ -755,9 +709,8 @@ fn micro_audio_testbench() {
 }
 
 #[test]
-#[ignore = "Visual/testbench ROM: no FF82 automated result publisher"]
 fn micro_cpu_bus_1() {
-    run_micro_test("testroms/artifacts/gbmicrotest/cpu_bus_1.gb");
+    run_legacy_test("testroms/artifacts/gbmicrotest/cpu_bus_1.gb", 65408, 85, 341);
 }
 
 #[test]
@@ -1784,9 +1737,8 @@ fn micro_line_65_ly() {
 }
 
 #[test]
-#[ignore = "Visual/testbench ROM: no FF82 automated result publisher"]
 fn micro_ly_while_lcd_off() {
-    run_micro_test("testroms/artifacts/gbmicrotest/ly_while_lcd_off.gb");
+    run_legacy_test("testroms/artifacts/gbmicrotest/ly_while_lcd_off.gb", 32768, 0, 350);
 }
 
 #[test]
@@ -2058,9 +2010,8 @@ fn micro_oam_write_l1_f() {
 }
 
 #[test]
-#[ignore = "Visual/testbench ROM: no FF82 automated result publisher"]
 fn micro_poweron() {
-    run_micro_test("testroms/artifacts/gbmicrotest/poweron.gb");
+    run_legacy_test("testroms/artifacts/gbmicrotest/poweron.gb", 32768, 128, 347);
 }
 
 #[test]
@@ -2476,9 +2427,8 @@ fn micro_ppu_sprite_testbench() {
 }
 
 #[test]
-#[ignore = "Visual/testbench ROM: no FF82 automated result publisher"]
 fn micro_ppu_spritex_vs_scx() {
-    run_micro_test("testroms/artifacts/gbmicrotest/ppu_spritex_vs_scx.gb");
+    run_legacy_test("testroms/artifacts/gbmicrotest/ppu_spritex_vs_scx.gb", 32768, 85, 14187);
 }
 
 #[test]
@@ -3051,9 +3001,8 @@ fn micro_vram_write_l1_d() {
 }
 
 #[test]
-#[ignore = "Visual/testbench ROM: no FF82 automated result publisher"]
 fn micro_wave_write_to_0xc003() {
-    run_micro_test("testroms/artifacts/gbmicrotest/wave_write_to_0xC003.gb");
+    run_legacy_test("testroms/artifacts/gbmicrotest/wave_write_to_0xC003.gb", 49155, 85, 341);
 }
 
 #[test]

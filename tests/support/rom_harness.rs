@@ -14,10 +14,18 @@ fn should_trace(path: &str) -> bool {
 /// Run a ROM for up to `max_cycles` M-cycles, stopping early if the
 /// Mooneye finish signature is detected or a Blargg magic string appears.
 fn run_rom(path: &str, max_cycles: u64) -> CPU {
+    run_rom_with_protocol(path, max_cycles, true)
+}
+
+fn run_rom_with_protocol(path: &str, max_cycles: u64, detect_protocol: bool) -> CPU {
     let rom = std::fs::read(path).unwrap_or_else(|e| panic!("Failed to read ROM {}: {}", path, e));
 
     // Run the matching hardware boot ROM, including its DIV/APU setup.
-    let boot_path = if rom.get(0x143).copied().unwrap_or(0) & 0x80 != 0 {
+    // A dual-mode cartridge flag is not a hardware requirement: DMG-only
+    // suites must run on DMG even if their generic test shell supports CGB.
+    let use_cgb = rom.get(0x143).copied().unwrap_or(0) & 0x80 != 0
+        && !path.contains("/oam_bug/") && !path.contains("/dmg_sound/");
+    let boot_path = if use_cgb {
         "roms/cgb_boot.bin"
     } else {
         "roms/dmg_boot.bin"
@@ -35,8 +43,11 @@ fn run_rom(path: &str, max_cycles: u64) -> CPU {
 
     cpu.bootload(boot_rom);
     cpu.load_rom(rom);
+    cpu.is_cgb = use_cgb;
+    cpu.apu.set_cgb_mode(use_cgb);
 
     let mut total: u64 = 0;
+    let mut next_audio_drain = 17_556;
     while total < max_cycles {
         cpu.handle_interrupts();
         cpu.execute();
@@ -47,6 +58,10 @@ fn run_rom(path: &str, max_cycles: u64) -> CPU {
         total += cycles;
         cpu.total_cycles += cycles;
         cpu.cycles = 0;
+        if total >= next_audio_drain {
+            cpu.get_audio_buffer();
+            next_audio_drain = total + 17_556;
+        }
 
         // Start tracing once we reach the cartridge entry point (0x0100 or higher)
         // This skips the 180,000+ cycle boot ROM execution and focuses on the cart ROM
@@ -57,14 +72,14 @@ fn run_rom(path: &str, max_cycles: u64) -> CPU {
         }
 
         // GBMicrotest publishes a terminal result byte.
-        if path.contains("/gbmicrotest/") && cpu.peek_byte(0xFF82) != 0 {
+        if detect_protocol && path.contains("/gbmicrotest/") && cpu.peek_byte(0xFF82) != 0 {
             break;
         }
 
         // Detect JR -2 infinite loop (0x18 0xFE). Use the bus-facing ROM
         // view: `memory` only mirrors the first ROM window at load time.
         let addr = cpu.program_counter as usize;
-        if addr + 1 < 0x1_0000
+        if detect_protocol && addr + 1 < 0x1_0000
             && cpu.peek_byte(addr) == 0x18
             && cpu.peek_byte(addr + 1) == 0xFE
         {
@@ -72,7 +87,7 @@ fn run_rom(path: &str, max_cycles: u64) -> CPU {
         }
 
         // Detect LD B,B (0x40) followed by JR -2 (Mooneye finish)
-        if addr + 2 < 0x1_0000
+        if detect_protocol && addr + 2 < 0x1_0000
             && cpu.peek_byte(addr) == 0x40
             && cpu.peek_byte(addr + 1) == 0x18
             && cpu.peek_byte(addr + 2) == 0xFE
@@ -159,6 +174,20 @@ fn run_micro_test(rom_path: &str) {
                "FAIL: {} - Got {:02X}, Expected {:02X}",
                rom_path, test_result, expected);
 }
+
+/// Older micro-ROMs display a raw byte instead of publishing FF82. Their
+/// expected byte and store instruction are recorded from the original source.
+/// Run past boot/setup and check both the result and the repeating publisher;
+/// an untouched zero-initialized byte alone must never count as a pass.
+fn run_legacy_test(rom_path: &str, address: usize, expected: u8, publisher: usize) {
+    let cpu = run_rom_with_protocol(rom_path, 10_000_000, false);
+    assert!(!cpu.booting, "boot did not finish: {rom_path}");
+    let pc = cpu.program_counter as usize;
+    assert!((publisher..publisher + 8).contains(&pc),
+        "publisher loop not reached: {rom_path}, PC={pc:04X}");
+    assert_eq!(cpu.get_reg_a(), expected, "raw result register: {rom_path}");
+    assert_eq!(cpu.peek_byte(address), expected, "raw result at {address:04X}: {rom_path}");
+}
 fn run_mooneye_test(rom_path: &str) {
     let cpu = run_rom(rom_path, 50_000_000);
     let state = mooneye_state(&cpu);
@@ -192,7 +221,22 @@ fn run_blargg_test(rom_path: &str) {
         }
     }
 
-    let output = if !serial.is_empty() { &serial } else { &ram_text };
+    // Some original Blargg cartridges declare no external RAM at all. Their
+    // LCD console is still an ASCII result channel; do not invent RAM solely
+    // to make the harness work. Inverse text uses bit 7 of its tile index.
+    let mut screen_text = String::new();
+    if !has_ram_signature && serial.is_empty() && cpu.mbc.get_ram_size() == 0 {
+        let vram = if cpu.cgb_native_mode() { &cpu.cgb_vram[0][..] }
+            else { &cpu.memory[0x8000..0xA000] };
+        for row in 0..32 {
+            for column in 0..20 {
+                screen_text.push((vram[0x1800 + row * 32 + column] & 0x7F) as char);
+            }
+            screen_text.push('\n');
+        }
+    }
+    let output = if !serial.is_empty() { &serial }
+        else if has_ram_signature { &ram_text } else { &screen_text };
 
     if !serial.is_empty() {
         println!("  Serial: {}", serial.replace('\n', " | "));
@@ -200,11 +244,17 @@ fn run_blargg_test(rom_path: &str) {
     if !ram_text.is_empty() {
         println!("  RAM: {}", ram_text.replace('\n', " | "));
     }
+    if !screen_text.is_empty() { println!("  LCD console: {}", screen_text.replace('\n', " | ")); }
 
+    // The RAM protocol's status byte is authoritative. Long diagnostics can
+    // fill its text buffer before the final "Passed" string is appended.
+    let passed = if has_ram_signature { cpu.peek_byte(0xA000) == 0 }
+        else { output.contains("Passed") };
     assert!(
-        output.contains("Passed"),
-        "FAIL: {} — output: {}",
+        passed,
+        "FAIL: {} — RAM status={:02X}, PC={:04X}, output: {}",
         rom_path,
+        cpu.peek_byte(0xA000), cpu.program_counter,
         output.replace('\n', " | ")
     );
 }

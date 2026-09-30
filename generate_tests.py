@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate ROM tests from the curated registry, without duplicating the harness.
 
-Add new ROMs to tests/rom_cases.json with runner micro, mooneye, or blargg.
+Add new ROMs to tests/rom_cases.json with runner micro, mooneye, blargg, or graphics.
 Record unsupported hardware/result protocols explicitly with an ignore reason.
 Missing files fail at runtime; they must never count as successful tests.
 """
@@ -20,20 +20,27 @@ def main():
         "//! TRACE_TEST=<ROM substring> enables tracing; TRACE_CSV=1 exports it.",
         "",
         'include!("support/rom_harness.rs");',
+        '#[path = "support/graphics_harness.rs"]',
+        'mod graphics_harness;',
         "",
     ]
     names = set()
     for case in cases:
         name, runner, path = case["name"], case["runner"], case["path"]
         assert name.isidentifier() and name not in names, name
-        assert runner in ("micro", "mooneye", "blargg"), runner
+        assert runner in ("micro", "mooneye", "blargg", "graphics", "legacy"), runner
         names.add(name)
         lines.append("#[test]")
         if case.get("ignore"):
             lines.append(f'#[ignore = {json.dumps(case["ignore"])}]')
+        invocation = f"run_{runner}_test({json.dumps(path)});"
+        if runner == "graphics":
+            invocation = f'graphics_harness::check_graphics({json.dumps(path)}, {json.dumps(case["reference"])}, {str(case["cgb"]).lower()}, true);'
+        if runner == "legacy":
+            invocation = f'run_legacy_test({json.dumps(path)}, {case["address"]}, {case["expected"]}, {case["publisher"]});'
         lines.extend([
             f"fn {name}() {{",
-            f"    run_{runner}_test({json.dumps(path)});",
+            f"    {invocation}",
             "}",
             "",
         ])
