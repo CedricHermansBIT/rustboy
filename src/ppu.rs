@@ -293,8 +293,9 @@ mod raster_tests {
         cpu.memory[0x9800] = 1;
         cpu.memory[0x8010] = 0xA5;
         cpu.memory[0x9013] = 0x3C;
-        let changes = [PpuRegChange { dot: 104, addr: 0xFF42, value: 1 },
-            PpuRegChange { dot: 104, addr: 0xFF40, value: 0x81 }];
+        // Write between the low-plane (102) and high-plane (104) reads.
+        let changes = [PpuRegChange { dot: 103, addr: 0xFF42, value: 1 },
+            PpuRegChange { dot: 103, addr: 0xFF40, value: 0x81 }];
         assert_eq!(fetch_background_tile(&cpu, snap, &changes, 0, 0, 100), (0xA5, 0x3C, 0));
     }
 
@@ -358,7 +359,7 @@ mod raster_tests {
         cpu.memory[0x8014] = 0xA5;
         cpu.memory[0x9015] = 0x3C;
         let changes = [PpuRegChange { dot: 101, addr: 0xFF40, value: 0xB1 },
-            PpuRegChange { dot: 104, addr: 0xFF40, value: 0xA1 },
+            PpuRegChange { dot: 103, addr: 0xFF40, value: 0xA1 },
             PpuRegChange { dot: 104, addr: 0xFF42, value: 7 }];
         assert_eq!(fetch_window_tile(&cpu, snap, &changes, 2, 0, 100), (0xA5, 0x3C, 0));
     }
@@ -389,6 +390,19 @@ mod raster_tests {
         let (pauses, prefetch) = object_fetch_pauses(&cpu, snap, 0);
         assert_eq!(pauses[0], 11);
         assert_eq!(prefetch[0], 11);
+    }
+
+    #[test]
+    fn bitplane_read_precedes_same_dot_tile_selection_write() {
+        let mut cpu = crate::cpu::CPU::new();
+        let snap = PpuLineSnapshot { lcdc: 0x91, ..Default::default() };
+        cpu.memory[0x9800] = 1;
+        cpu.memory[0x8010] = 0xA5;
+        cpu.memory[0x8011] = 0x5A;
+        cpu.memory[0x9011] = 0x3C;
+        let changes = [PpuRegChange { dot: 104, addr: 0xFF40, value: 0x81 }];
+        assert_eq!(fetch_background_tile(&cpu, snap, &changes, 0, 0, 100), (0xA5, 0x5A, 0));
+        assert_eq!(fetch_background_tile(&cpu, snap, &changes, 0, 0, 101), (0xA5, 0x3C, 0));
     }
 }
 
@@ -531,7 +545,9 @@ fn fetch_tile_planes(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, changes: &[Pp
     let native = cpu.cgb_native_mode();
     let mut planes = [0; 2];
     for plane in 0..2 {
-        let regs = registers_at(snap, changes, map_dot + 2 + plane as u16 * 2);
+        // Like map reads, bitplane reads finish before the CPU write at
+        // their bus edge (+2 / +4). Sample only writes strictly preceding it.
+        let regs = registers_at(snap, changes, map_dot + 1 + plane as u16 * 2);
         let base = if regs.lcdc & 0x10 != 0 { 0x8000 } else { 0x8800 };
         let offset = if base == 0x8000 { index as usize * 16 }
             else { (index as i8 as i16 + 128) as usize * 16 };
