@@ -163,7 +163,7 @@ impl Mbc {
         let ram_bank_mask = if num_ram_banks > 0 { num_ram_banks.next_power_of_two() - 1 } else { 0 };
 
         let kind = match cart_type {
-            0x00                => MbcKind::None,
+            0x00 | 0x08 | 0x09  => MbcKind::None,
             0x01..=0x03         => MbcKind::Mbc1 {
                 bank2: 0, mode: 0, ram_enable: false,
                 multicart: Self::detect_mbc1_multicart(&rom),
@@ -317,10 +317,7 @@ impl Mbc {
             0x0B => self.rtc_registers[3] = value,
             0x0C => {
                 let prev_halt = self.rtc_registers[4] & 0x40;
-                let mut dh = value & 0xC1;
-                if (self.rtc_registers[4] & 0x80) != 0 {
-                    dh |= 0x80;
-                }
+                let dh = value & 0xC1;
                 self.rtc_registers[4] = dh;
                 let new_halt = self.rtc_registers[4] & 0x40;
                 if prev_halt != new_halt {
@@ -342,6 +339,11 @@ impl Mbc {
     pub fn read(&self, address: usize) -> u8 {
         match self.kind {
             MbcKind::None => {
+                if (0xA000..=0xBFFF).contains(&address) {
+                    return if matches!(self.cart_type, 0x08 | 0x09) && self.get_ram_size() != 0 {
+                        self.ram[0][self.ram_offset(address)]
+                    } else { 0xFF };
+                }
                 self.rom.get(address).copied().unwrap_or(0xFF)
             }
             MbcKind::Mbc1 { bank2, mode, ram_enable, multicart } => {
@@ -368,7 +370,16 @@ impl Mbc {
     #[inline]
     pub fn write(&mut self, address: usize, data: u8) {
         match self.kind {
-            MbcKind::None         => { /* ROM-only carts ignore writes to ROM space */ }
+            MbcKind::None => {
+                if matches!(self.cart_type, 0x08 | 0x09) && self.get_ram_size() != 0 && (0xA000..=0xBFFF).contains(&address) {
+                    let offset = self.ram_offset(address);
+                    let byte = &mut self.ram[0][offset];
+                    if *byte != data {
+                        *byte = data;
+                        if self.has_battery { self.save_dirty = true; }
+                    }
+                }
+            }
             MbcKind::Mbc1 { .. }  => self.mbc1_write(address, data),
             MbcKind::Mbc2 { .. }  => self.mbc2_write(address, data),
             MbcKind::Mbc3 { .. }  => self.mbc3_write(address, data),
@@ -456,10 +467,10 @@ impl Mbc {
         }
 
         if address >= 0xA000 && address < 0xC000 {
-            if ram_enable {
+            if ram_enable && self.get_ram_size() != 0 {
                 // RAM bank is bank2 in RAM-banking mode, 0 otherwise.
                 let r_bank = (if mode == 1 { bank2 as usize } else { 0 }) & self.ram_bank_mask;
-                return self.ram[r_bank][address - 0xA000];
+                return self.ram[r_bank][self.ram_offset(address)];
             }
             return 0xFF;
         }
@@ -494,9 +505,10 @@ impl Mbc {
                 MbcKind::Mbc1 { ram_enable, bank2, mode, .. } => (ram_enable, bank2, mode),
                 _ => return,
             };
-            if ram_enable {
+            if ram_enable && self.get_ram_size() != 0 {
                 let r_bank = (if mode == 1 { bank2 as usize } else { 0 }) & self.ram_bank_mask;
-                let slot = &mut self.ram[r_bank][address - 0xA000];
+                let offset = self.ram_offset(address);
+                let slot = &mut self.ram[r_bank][offset];
                 if *slot != data {
                     *slot = data;
                     self.save_dirty = self.has_battery;
@@ -592,7 +604,7 @@ impl Mbc {
         if address >= 0xA000 && address < 0xC000 {
             if ram_enable {
                 if self.rambank <= 0x03 {
-                    return self.ram[self.rambank as usize][address - 0xA000];
+                    return if self.get_ram_size() != 0 { self.ram[self.rambank as usize][self.ram_offset(address)] } else { 0xFF };
                 } else if self.rambank >= 0x08 && self.rambank <= 0x0C {
                     if !self.has_rtc {
                         return 0xFF;
@@ -645,8 +657,9 @@ impl Mbc {
                 _ => return,
             };
             if ram_enable {
-                if self.rambank <= 0x03 {
-                    let slot = &mut self.ram[self.rambank as usize][address - 0xA000];
+                if self.rambank <= 0x03 && self.get_ram_size() != 0 {
+                    let offset = self.ram_offset(address);
+                    let slot = &mut self.ram[self.rambank as usize][offset];
                     if *slot != data {
                         *slot = data;
                         self.save_dirty = self.has_battery;
@@ -682,8 +695,8 @@ impl Mbc {
                 .unwrap_or(0xFF);
         }
         if address >= 0xA000 && address < 0xC000 {
-            if ram_enable {
-                return self.ram[self.rambank as usize][address - 0xA000];
+            if ram_enable && self.get_ram_size() != 0 {
+                return self.ram[self.rambank as usize][self.ram_offset(address)];
             }
             return 0xFF;
         }
@@ -713,8 +726,9 @@ impl Mbc {
                 MbcKind::Mbc5 { ram_enable } => ram_enable,
                 _ => return,
             };
-            if ram_enable {
-                let slot = &mut self.ram[self.rambank as usize][address - 0xA000];
+            if ram_enable && self.get_ram_size() != 0 {
+                let offset = self.ram_offset(address);
+                let slot = &mut self.ram[self.rambank as usize][offset];
                 if *slot != data {
                     *slot = data;
                     self.save_dirty = self.has_battery;
@@ -742,6 +756,10 @@ impl Mbc {
         }
     }
 
+    fn ram_offset(&self, address: usize) -> usize {
+        (address - 0xA000) & (self.get_ram_size().min(0x2000).saturating_sub(1))
+    }
+
     /// Serialize all RAM banks for save-game persistence.
     pub fn export_save_ram(&self) -> Vec<u8> {
         let ram_size = self.get_ram_size();
@@ -750,6 +768,7 @@ impl Mbc {
         for bank in 0..num_banks {
             data.extend_from_slice(&self.ram[bank]);
         }
+        data.truncate(ram_size);
 
         if self.has_rtc {
             // Append optional RTC trailer. Older saves without this trailer
@@ -780,11 +799,11 @@ impl Mbc {
         self.save_dirty = false;
         let ram_size = self.get_ram_size();
         let num_banks = (ram_size / 0x2000).max(1);
-        let ram_blob_len = num_banks * 0x2000;
+        let ram_blob_len = ram_size;
         for bank in 0..num_banks {
             let start = bank * 0x2000;
-            let end   = (start + 0x2000).min(data.len());
-            if start < data.len() {
+            let end   = (start + 0x2000).min(data.len()).min(ram_size);
+            if start < end {
                 self.ram[bank][..end - start].copy_from_slice(&data[start..end]);
             }
         }
@@ -794,8 +813,13 @@ impl Mbc {
             self.rtc_latch_armed = false;
 
             let trailer_len = Self::RTC_SAVE_MAGIC.len() + 5 + 8;
-            if data.len() >= ram_blob_len + trailer_len {
-                let trailer = &data[ram_blob_len..];
+            // Old exports padded even tiny/no-RAM cartridges to an 8 KiB bank.
+            let legacy_len = num_banks * 0x2000;
+            let trailer_offset = if data.get(ram_blob_len..).is_some_and(|bytes| bytes.starts_with(&Self::RTC_SAVE_MAGIC)) {
+                ram_blob_len
+            } else { legacy_len };
+            if data.len() >= trailer_offset + trailer_len {
+                let trailer = &data[trailer_offset..];
                 if trailer.starts_with(&Self::RTC_SAVE_MAGIC) {
                     let mut regs = [0u8; 5];
                     regs.copy_from_slice(&trailer[Self::RTC_SAVE_MAGIC.len()..Self::RTC_SAVE_MAGIC.len() + 5]);
@@ -833,6 +857,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unbanked_ram_cartridges_persist_battery_writes() {
+        let mut rom = vec![0; 0x8000]; rom[0x147] = 0x09; rom[0x149] = 0x02;
+        let mut mbc = Mbc::new(rom, 0x2000);
+        mbc.write(0xA123, 0xA5);
+        assert_eq!(mbc.read(0xA123), 0xA5);
+        assert!(mbc.save_ram_is_dirty());
+        mbc.mark_save_ram_clean();
+        mbc.write(0xA123, 0xA5);
+        assert!(!mbc.save_ram_is_dirty());
+    }
+
+    #[test]
     fn multicart_zero_bank_remap_precedes_four_bit_mask() {
         let mut rom = vec![0u8; 64 * 0x4000];
         for bank in 0..64 { rom[bank * 0x4000] = bank as u8; }
@@ -852,6 +888,63 @@ mod tests {
         rom[0x147] = 0x10; // MBC3 + Timer + RAM + Battery
         rom[0x149] = 0x02; // 8 KiB RAM
         Mbc::new(rom, 0x2000)
+    }
+
+    #[test]
+    fn small_ram_mirrors_and_exports_exact_size() {
+        for cart in [0x09, 0x03, 0x13, 0x1B] {
+            let mut rom = vec![0; 0x8000];
+            rom[0x147] = cart;
+            rom[0x149] = 0x01;
+            let mut mbc = Mbc::new(rom, 0x800);
+            mbc.write(0, 0x0A);
+            mbc.write(0xA123, 0x5A);
+            assert_eq!(mbc.read(0xA923), 0x5A, "cart {cart:02X}");
+            assert_eq!(mbc.export_save_ram().len(), 0x800);
+        }
+        let mut rom = vec![0; 0x8000];
+        rom[0x147] = 0x06;
+        assert_eq!(Mbc::new(rom, 512).export_save_ram().len(), 512);
+    }
+
+    #[test]
+    fn absent_ram_cannot_be_written_or_exported() {
+        for cart in [0x00, 0x01, 0x11, 0x19] {
+            let mut rom = vec![0; 0x8000];
+            rom[0x147] = cart;
+            let mut mbc = Mbc::new(rom, 0);
+            mbc.write(0, 0x0A);
+            mbc.write(0xA123, 0x5A);
+            assert_eq!(mbc.read(0xA123), 0xFF);
+            assert!(mbc.export_save_ram().is_empty());
+        }
+    }
+
+    #[test]
+    fn rtc_carry_can_be_cleared_by_software() {
+        let mut mbc = make_mbc3_timer();
+        mbc.rtc_registers[4] = 0xC0;
+        mbc.write(0, 0x0A);
+        mbc.write(0x4000, 0x0C);
+        mbc.write(0xA000, 0x40);
+        assert_eq!(mbc.rtc_registers[4], 0x40);
+    }
+
+    #[test]
+    fn timer_only_saves_accept_compact_and_legacy_trailers() {
+        let mut rom = vec![0; 0x8000];
+        rom[0x147] = 0x0F;
+        let mut mbc = Mbc::new(rom.clone(), 0);
+        mbc.rtc_registers = [12, 34, 5, 0xAB, 0x41];
+        let compact = mbc.export_save_ram();
+        assert_eq!(compact.len(), Mbc::RTC_SAVE_MAGIC.len() + 13);
+        let mut legacy = vec![0; 0x2000];
+        legacy.extend_from_slice(&compact);
+        for blob in [compact, legacy] {
+            let mut restored = Mbc::new(rom.clone(), 0);
+            restored.import_save_ram(&blob);
+            assert_eq!(restored.rtc_registers, mbc.rtc_registers);
+        }
     }
 
     #[test]
