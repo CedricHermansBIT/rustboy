@@ -29,6 +29,8 @@ pub fn check_graphics(rom: &str, image: &str, cgb: bool, software_breakpoint: bo
         cpu.color_mode = 0;
     }
     // Include the entire boot animation and allow the test image to settle.
+    let trace_line = std::env::var("GRAPHICS_TRACE_LINE").ok().map(|value|
+        value.parse::<u8>().expect("GRAPHICS_TRACE_LINE must be a scanline number"));
     let mut breakpoint_seen = false;
     'frames: for _ in 0..600 {
         let mut dots = 0;
@@ -37,7 +39,15 @@ pub fn check_graphics(rom: &str, image: &str, cgb: bool, software_breakpoint: bo
                 breakpoint_seen = true;
                 break 'frames;
             }
+            let old_line = cpu.memory[0xFF44];
             cpu.execute();
+            if !cpu.booting && trace_line == Some(old_line) && cpu.memory[0xFF44] != old_line {
+                eprintln!("{rom}: line {old_line}, LCDC={:02X}, SCX={}, WX={}",
+                    cpu.ppu_line_snapshot.lcdc, cpu.ppu_line_snapshot.scx, cpu.ppu_line_snapshot.wx);
+                for change in &cpu.ppu_reg_log[..cpu.ppu_reg_log_len] {
+                    eprintln!("  dot {}: {:04X} <- {:02X}", change.dot, change.addr, change.value);
+                }
+            }
             dots += cpu.cycles * if cpu.double_speed { 2 } else { 4 };
             cpu.total_cycles += cpu.cycles as u64;
             cpu.cycles = 0;

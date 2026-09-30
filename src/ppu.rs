@@ -266,6 +266,37 @@ mod raster_tests {
         assert_eq!(before[0], 98);
         for x in 0..160 { assert_eq!(after[x] - before[x], 11); }
     }
+
+    #[test]
+    fn fine_scroll_latches_transition_edge_but_not_later_writes() {
+        let mut cpu = crate::cpu::CPU::new();
+        cpu.memory[0xFF44] = 1;
+        cpu.ppu_mode3_start_dot = 84;
+        cpu.ppu_line_snapshot = PpuLineSnapshot { lcdc: 0x91, bgp: 0xE4, ..Default::default() };
+        cpu.gbc_palettes = [[[255, 255, 255, 255], [170, 170, 170, 255], [85, 85, 85, 255], [0, 0, 0, 255]]; 3];
+        cpu.color_mode = 0;
+        cpu.memory[0x8002] = 0x80;
+        cpu.ppu_reg_log[0] = PpuRegChange { dot: 84, addr: 0xFF43, value: 2 };
+        cpu.ppu_reg_log[1] = PpuRegChange { dot: 100, addr: 0xFF43, value: 7 };
+        cpu.ppu_reg_log_len = 2;
+        draw_scanline(&mut cpu);
+        for x in 0..160 {
+            assert_eq!(cpu.frame_buffer[160 + x] & 255,
+                if x % 8 == 6 { 170 } else { 255 }, "x={x}");
+        }
+    }
+
+    #[test]
+    fn background_bitplanes_sample_scroll_and_tile_selection_separately() {
+        let mut cpu = crate::cpu::CPU::new();
+        let snap = PpuLineSnapshot { lcdc: 0x91, ..Default::default() };
+        cpu.memory[0x9800] = 1;
+        cpu.memory[0x8010] = 0xA5;
+        cpu.memory[0x9013] = 0x3C;
+        let changes = [PpuRegChange { dot: 104, addr: 0xFF42, value: 1 },
+            PpuRegChange { dot: 104, addr: 0xFF40, value: 0x81 }];
+        assert_eq!(fetch_background_tile(&cpu, snap, &changes, 0, 0, 100), (0xA5, 0x3C, 0));
+    }
 }
 
 /// Visible pixel clocks include fetcher pauses; raster register writes must
@@ -366,10 +397,15 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
     let ly = cpu.memory[0xFF44];
     if ly >= 144 { return; }
 
-    let snap = cpu.ppu_line_snapshot;
+    let mut snap = cpu.ppu_line_snapshot;
     if snap.lcdc & 0x80 == 0 { return; }
 
     let log       = &cpu.ppu_reg_log[..cpu.ppu_reg_log_len];
+    // CPU bus writes at the transition dot are logged after the Mode-3
+    // snapshot. Fine scrolling is latched by the first map fetch, so include
+    // that edge, but never subsequent writes to the low three bits.
+    let first_fetch = registers_at(snap, log, cpu.ppu_mode3_start_dot);
+    snap.scx = (snap.scx & !7) | (first_fetch.scx & 7);
     // STAT's Mode-3 transition is sampled at the end of an M-cycle, four
     // dots after the fetcher starts. Output follows the twelve-dot fetch
     // startup, and the LCD samples palette data before the bus write edge.
