@@ -448,9 +448,9 @@ impl Mbc {
 
         if address < 0x8000 {
             let lower_mask = (bank2_threshold - 1) as usize; // 0x0F for multicart, 0x1F for MBC1
-            let lower = (self.rombank as usize) & lower_mask;
+            let raw_lower = self.rombank as usize & 0x1F;
             // Bank number 0 is promoted to 1 (hardware quirk applies to the lower bits only).
-            let lower = if lower == 0 { 1 } else { lower };
+            let lower = (if raw_lower == 0 { 1 } else { raw_lower }) & lower_mask;
             let bank = ((bank2 as usize) << shift | lower) & (self.rom_bank_mask as usize);
             return self.rom.get(address - 0x4000 + bank * 0x4000).copied().unwrap_or(0xFF);
         }
@@ -468,9 +468,9 @@ impl Mbc {
     }
 
     fn mbc1_write(&mut self, address: usize, data: u8) {
-        // Determine whether this is a multicart (needed to pick the right mask).
-        let multicart = matches!(self.kind, MbcKind::Mbc1 { multicart: true, .. });
-        let lower_mask: u8 = if multicart { 0x0F } else { 0x1F };
+        // Keep bit 4 for the zero-bank decoder even on MBC1M. Wiring drops
+        // that bit only after the raw five-bit zero has been translated.
+        let lower_mask: u8 = 0x1F;
 
         if address < 0x2000 {
             if let MbcKind::Mbc1 { ref mut ram_enable, .. } = self.kind {
@@ -832,6 +832,21 @@ impl Mbc {
 mod tests {
     use super::*;
 
+    #[test]
+    fn multicart_zero_bank_remap_precedes_four_bit_mask() {
+        let mut rom = vec![0u8; 64 * 0x4000];
+        for bank in 0..64 { rom[bank * 0x4000] = bank as u8; }
+        rom[0x147] = 1;
+        let mut mbc = Mbc::new(rom, 0);
+        mbc.kind = MbcKind::Mbc1 { bank2: 0, mode: 0, ram_enable: false, multicart: true };
+        mbc.write(0x2000, 0);
+        assert_eq!(mbc.read(0x4000), 1);
+        mbc.write(0x2000, 0x10);
+        assert_eq!(mbc.read(0x4000), 0);
+        mbc.write(0x4000, 2);
+        assert_eq!(mbc.read(0x4000), 0x20);
+    }
+
     fn make_mbc3_timer() -> Mbc {
         let mut rom = vec![0u8; 0x8000];
         rom[0x147] = 0x10; // MBC3 + Timer + RAM + Battery
@@ -903,5 +918,3 @@ mod tests {
         assert!(mbc.save_ram_is_dirty());
     }
 }
-
-
