@@ -297,6 +297,33 @@ mod raster_tests {
             PpuRegChange { dot: 104, addr: 0xFF40, value: 0x81 }];
         assert_eq!(fetch_background_tile(&cpu, snap, &changes, 0, 0, 100), (0xA5, 0x3C, 0));
     }
+
+    #[test]
+    fn window_restart_uses_live_wx_and_does_not_trigger_behind_the_beam() {
+        let mut cpu = crate::cpu::CPU::new();
+        let snap = PpuLineSnapshot { lcdc: 0xB1, wx: 10, ..Default::default() };
+        cpu.ppu_reg_log[0] = PpuRegChange { dot: 84, addr: 0xFF4B, value: 11 };
+        cpu.ppu_reg_log_len = 1;
+        let dots = pixel_output_dots(&cpu, snap, 1, 95);
+        assert_eq!(dots[3], 98);
+        assert_eq!(dots[4], 105);
+        cpu.ppu_reg_log[0] = PpuRegChange { dot: 110, addr: 0xFF4B, value: 7 };
+        let snap = PpuLineSnapshot { wx: 100, ..snap };
+        let dots = pixel_output_dots(&cpu, snap, 1, 95);
+        assert_eq!(dots[16], 111);
+        assert_eq!(dots[159], 254);
+    }
+
+    #[test]
+    fn wx_zero_with_fine_scroll_delays_window_activation_one_extra_dot() {
+        let cpu = crate::cpu::CPU::new();
+        let snap = PpuLineSnapshot { lcdc: 0xB1, wx: 0, ..Default::default() };
+        assert_eq!(pixel_output_dots(&cpu, snap, 1, 95)[0], 101);
+        for fine in 1..8 {
+            let snap = PpuLineSnapshot { scx: fine, ..snap };
+            assert_eq!(pixel_output_dots(&cpu, snap, 1, 95)[0], 102 + fine as u16);
+        }
+    }
 }
 
 /// Visible pixel clocks include fetcher pauses; raster register writes must
@@ -307,9 +334,6 @@ fn pixel_output_dots(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, ly: u8, first
     let window = snap.lcdc & 0x20 != 0 && ly >= snap.wy && snap.wx <= 166
         && (cpu.cgb_native_mode() || snap.lcdc & 1 != 0);
     let window_left = snap.wx as i16 - 7;
-    if window {
-        pauses[window_left.max(0) as usize] += if snap.wx == 0 && fine != 0 { 5 } else { 6 };
-    }
     if snap.lcdc & 2 != 0 {
         let height = if snap.lcdc & 4 != 0 { 16 } else { 8 };
         let mut sprites = [(0i16, 0usize, 0u8); 10];
@@ -347,8 +371,35 @@ fn pixel_output_dots(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, ly: u8, first
     }
     let mut dots = [0; 160];
     let mut delay = fine;
+    let mut window_regs = snap;
+    let mut change_index = 0;
+    let changes = &cpu.ppu_reg_log[..cpu.ppu_reg_log_len];
+    let mut window_started = false;
     for x in 0..160 {
         delay += pauses[x];
+        let dot = first_dot + x as u16 + delay;
+        while change_index < changes.len() && changes[change_index].dot <= dot {
+            let change = changes[change_index];
+            match change.addr {
+                0xFF40 => window_regs.lcdc = change.value,
+                0xFF4A => window_regs.wy = change.value,
+                0xFF4B => window_regs.wx = change.value,
+                _ => {}
+            }
+            change_index += 1;
+        }
+        // WX is compared against the current horizontal position, not the
+        // value from the previous scanline's Mode-3 snapshot. A write before
+        // the trigger moves the six-dot fetcher restart to the new position.
+        let enabled = window_regs.lcdc & 0x20 != 0 && ly >= window_regs.wy
+            && (cpu.cgb_native_mode() || window_regs.lcdc & 1 != 0);
+        if !window_started && enabled && window_regs.wx <= 166
+            && x == (window_regs.wx as i16 - 7).max(0) as usize {
+            // At WX=0, nonzero fine scrolling delays window activation by
+            // one dot (the Mealybug WX=0 hardware capture exercises this).
+            delay += if window_regs.wx == 0 && fine != 0 { 7 } else { 6 };
+            window_started = true;
+        }
         dots[x] = first_dot + x as u16 + delay;
     }
     dots
