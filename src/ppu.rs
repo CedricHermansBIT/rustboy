@@ -324,6 +324,30 @@ mod raster_tests {
             assert_eq!(pixel_output_dots(&cpu, snap, 1, 95)[0], 102 + fine as u16);
         }
     }
+
+    #[test]
+    fn window_disable_drains_fetched_tile_and_reactivation_advances_row() {
+        let mut cpu = crate::cpu::CPU::new();
+        cpu.memory[0xFF44] = 0;
+        cpu.ppu_mode3_start_dot = 84;
+        cpu.ppu_line_snapshot = PpuLineSnapshot { lcdc: 0xF1, wx: 7, bgp: 0xE4, ..Default::default() };
+        cpu.gbc_palettes = [[[255, 255, 255, 255], [170, 170, 170, 255], [85, 85, 85, 255], [0, 0, 0, 255]]; 3];
+        cpu.color_mode = 0;
+        cpu.memory[0x9C00..0x9C20].fill(1);
+        cpu.memory[0x8010] = 0xFF;
+        cpu.memory[0x8011] = 0xFF;
+        cpu.memory[0x8012] = 0xFF;
+        cpu.ppu_reg_log[0] = PpuRegChange { dot: 110, addr: 0xFF40, value: 0xD1 };
+        cpu.ppu_reg_log[1] = PpuRegChange { dot: 130, addr: 0xFF40, value: 0xF1 };
+        cpu.ppu_reg_log[2] = PpuRegChange { dot: 140, addr: 0xFF4B, value: 87 };
+        cpu.ppu_reg_log_len = 3;
+        draw_scanline(&mut cpu);
+        for x in 0..160 {
+            let expected = if x < 16 { 0 } else if x < 80 { 255 } else { 170 };
+            assert_eq!(cpu.frame_buffer[x] & 255, expected, "x={x}");
+        }
+        assert_eq!(cpu.window_line_counter, 2);
+    }
 }
 
 /// Visible pixel clocks include fetcher pauses; raster register writes must
@@ -374,7 +398,7 @@ fn pixel_output_dots(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, ly: u8, first
     let mut window_regs = snap;
     let mut change_index = 0;
     let changes = &cpu.ppu_reg_log[..cpu.ppu_reg_log_len];
-    let mut window_started = false;
+    let mut window_origin: Option<i16> = None;
     for x in 0..160 {
         delay += pauses[x];
         let dot = first_dot + x as u16 + delay;
@@ -393,12 +417,20 @@ fn pixel_output_dots(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, ly: u8, first
         // the trigger moves the six-dot fetcher restart to the new position.
         let enabled = window_regs.lcdc & 0x20 != 0 && ly >= window_regs.wy
             && (cpu.cgb_native_mode() || window_regs.lcdc & 1 != 0);
-        if !window_started && enabled && window_regs.wx <= 166
+        if let Some(origin) = window_origin {
+            if (x as i16 - origin) & 7 == 0 {
+                let fetch_dot = if x >= 7 { dots[x - 7] } else { first_dot.saturating_sub(7) };
+                if registers_at(snap, changes, fetch_dot).lcdc & 0x20 == 0 {
+                    window_origin = None;
+                }
+            }
+        }
+        if window_origin.is_none() && enabled && window_regs.wx <= 166
             && x == (window_regs.wx as i16 - 7).max(0) as usize {
             // At WX=0, nonzero fine scrolling delays window activation by
             // one dot (the Mealybug WX=0 hardware capture exercises this).
             delay += if window_regs.wx == 0 && fine != 0 { 7 } else { 6 };
-            window_started = true;
+            window_origin = Some(window_regs.wx as i16 - 7);
         }
         dots[x] = first_dot + x as u16 + delay;
     }
@@ -412,6 +444,8 @@ fn registers_at(mut registers: PpuLineSnapshot, changes: &[PpuRegChange], dot: u
             0xFF40 => registers.lcdc = change.value,
             0xFF42 => registers.scy = change.value,
             0xFF43 => registers.scx = change.value,
+            0xFF4A => registers.wy = change.value,
+            0xFF4B => registers.wx = change.value,
             _ => {}
         }
     }
@@ -518,7 +552,9 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
 
     let win_line_active = ly >= wy;
     let mut log_idx     = 0usize;
-    let mut window_drawn = false;
+    let mut window_origin = None;
+    let mut window_activations = 0u8;
+    let mut bg_resume_shift = 0u16;
     let raster_fetch = log.iter().any(|change| matches!(change.addr, 0xFF40 | 0xFF42 | 0xFF43));
     let mut cached_bg_tile = None;
 
@@ -576,16 +612,32 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
         let master_bg = is_cgb || lcdc & 0x01 != 0;
         let win_en    = lcdc & 0x20 != 0 && master_bg && win_line_active;
         let win_left  = wx as i32 - 7;
-        let in_window = win_en && screen_x as i32 >= win_left;
+        // Disabling the window drains its current FIFO tile. Changing WX
+        // does not relocate pixels already fetched, and re-enabling after a
+        // missed horizontal comparison cannot retroactively start it.
+        if let Some(origin) = window_origin {
+            let fetch_dot = if screen_x >= 7 { pixel_dots[screen_x as usize - 7] }
+                else { mode3_dot.saturating_sub(7) };
+            if (screen_x as i32 - origin) & 7 == 0
+                && registers_at(snap, log, fetch_dot).lcdc & 0x20 == 0 {
+                window_origin = None;
+                bg_resume_shift = (screen_x as u16 + (snap.scx & 7) as u16) & 7;
+                cached_bg_tile = None;
+            }
+        }
+        if window_origin.is_none() && win_en && wx <= 166
+            && screen_x == win_left.max(0) as u32 {
+            window_origin = Some(win_left);
+            window_activations += 1;
+        }
 
         let tile_data_base: usize = if lcdc & 0x10 != 0 { 0x8000 } else { 0x8800 };
 
-        if in_window {
+        if let Some(origin) = window_origin {
             // ── Window tile ─────────────────────────────────────────────────
-            window_drawn = true;
-            let wy_row       = cpu.window_line_counter;
+            let wy_row       = cpu.window_line_counter.wrapping_add(window_activations - 1);
             let tile_map_base: usize = if lcdc & 0x40 != 0 { 0x9C00 } else { 0x9800 };
-            let wx_pos_start = (screen_x as i32 - win_left).max(0) as u32;
+            let wx_pos_start = (screen_x as i32 - origin).max(0) as u32;
             let tile_map_addr = tile_map_base + (wy_row as usize / 8) * 32 + (wx_pos_start as usize / 8);
 
             let (tile_index, attr) = if is_cgb {
@@ -618,7 +670,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
             let run_end  = (screen_x + tile_run).min(next_log_x).min(160);
 
             for xi in screen_x..run_end {
-                let wx_pos = (xi as i32 - win_left) as u8;
+                let wx_pos = (xi as i32 - origin) as u8;
                 let px  = if flip_x { 7 - (wx_pos % 8) } else { wx_pos % 8 };
                 let raw = get_color_index(b1, b2, px);
                 let pixel = if is_cgb {
@@ -637,7 +689,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
             let dy    = ly.wrapping_add(scy);
             let t_row = dy % 8;
             let tile_map_base: usize = if lcdc & 0x08 != 0 { 0x9C00 } else { 0x9800 };
-            let dx = ((screen_x as u16 + if raster_fetch { (snap.scx & 7) as u16 } else { scx as u16 }) & 0xFF) as u8;
+            let dx = ((screen_x as u16 + if raster_fetch { (snap.scx & 7) as u16 } else { scx as u16 }).wrapping_sub(bg_resume_shift) & 0xFF) as u8;
             let tile_map_addr = tile_map_base + (dy as usize / 8) * 32 + (dx as usize / 8);
 
             let (tile_index, mut attr) = if is_cgb {
@@ -663,7 +715,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
             };
 
             if raster_fetch {
-                let fetcher_x = (screen_x as u16 + (snap.scx & 7) as u16) / 8;
+                let fetcher_x = (screen_x as u16 + (snap.scx & 7) as u16 - bg_resume_shift) / 8;
                 if cached_bg_tile.map(|(x, _, _, _)| x) != Some(fetcher_x) {
                     let tile_start = screen_x as i16 - (dx & 7) as i16;
                     // Fetch the next tile while the preceding tile drains.
@@ -689,7 +741,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
             let run_end = (screen_x + tile_run).min(next_log_x).min(win_boundary).min(160);
 
             for xi in screen_x..run_end {
-                let dxi = ((xi as u16 + if raster_fetch { (snap.scx & 7) as u16 } else { scx as u16 }) & 0xFF) as u8;
+                let dxi = ((xi as u16 + if raster_fetch { (snap.scx & 7) as u16 } else { scx as u16 }).wrapping_sub(bg_resume_shift) & 0xFF) as u8;
                 let px  = if flip_x { 7 - (dxi % 8) } else { dxi % 8 };
                 let raw = get_color_index(b1, b2, px);
                 let pixel = if is_cgb {
@@ -707,9 +759,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
         }
     }
 
-    if window_drawn {
-        cpu.window_line_counter += 1;
-    }
+    cpu.window_line_counter = cpu.window_line_counter.wrapping_add(window_activations);
 
     // ── Sprite pass ──────────────────────────────────────────────────────────
     if snap.lcdc & 0x02 != 0 {
