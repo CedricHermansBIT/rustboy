@@ -4,6 +4,21 @@
 //! See https://gbdev.io/pandocs/SGB_Command_Packet.html and its command chapters.
 
 const PIXELS: usize = 160 * 144;
+mod border;
+#[cfg(test)]
+mod border_tests;
+const LEGACY_STATE_BYTES: usize = 11 + 16 + 112 + 6 + 32 + 360 + 8 + 256 + PIXELS * 4;
+const MAX_TRANSFERS: usize = 4;
+const TRANSFER_STATE_BYTES: usize = 3 + 4096;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Transfer {
+    // 1: low tiles, 2: high tiles, 3: map + palettes.
+    destination: u8,
+    remaining: u8,
+    frame_started: bool,
+    data: Box<[u8; 4096]>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Command {
@@ -114,6 +129,9 @@ pub struct Sgb {
     /// The last complete, unmasked, colorized LCD frame. Freeze and LCD-off
     /// retain it; it is not dependent on the frontend asking for a frame.
     frame: Vec<u8>,
+    border: border::Border,
+    transfers: Vec<Transfer>,
+    pub transfer_drops: u64,
     pub commands_received: u64,
     /// Unsupported commands are visible rather than reported as emulated.
     pub unsupported: [u64; 32],
@@ -135,6 +153,9 @@ impl Sgb {
             suppress_release: false,
             commands_disabled: false,
             frame: vec![255; PIXELS * 4],
+            border: border::Border::default(),
+            transfers: Vec::new(),
+            transfer_drops: 0,
             commands_received: 0,
             unsupported: [0; 32],
         }
@@ -146,6 +167,40 @@ impl Sgb {
 
     pub fn players(&self) -> u8 {
         self.players
+    }
+
+    pub fn has_border(&self) -> bool {
+        self.border.active
+    }
+    pub fn transfers_pending(&self) -> usize {
+        self.transfers.len()
+    }
+
+    /// Called at LCD line-zero start. A command issued in the middle of a
+    /// frame cannot consume that incomplete frame as its transfer payload.
+    pub(crate) fn start_frame(&mut self) {
+        for transfer in &mut self.transfers {
+            transfer.frame_started = true;
+        }
+    }
+
+    pub(crate) fn lcd_off(&mut self) {
+        for transfer in &mut self.transfers {
+            transfer.frame_started = false;
+        }
+    }
+
+    fn request_transfer(&mut self, destination: u8) {
+        if self.transfers.len() == MAX_TRANSFERS {
+            self.transfer_drops = self.transfer_drops.saturating_add(1);
+            return;
+        }
+        self.transfers.push(Transfer {
+            destination,
+            remaining: 5,
+            frame_started: false,
+            data: Box::new([0; 4096]),
+        });
     }
 
     pub fn write_joyp(&mut self, data: u8) {
@@ -209,6 +264,28 @@ impl Sgb {
     }
 
     pub fn capture_frame(&mut self, pixels: &[u32]) {
+        if pixels.len() < PIXELS {
+            return;
+        }
+        // Transfers consume the unmasked LCD stream even while MASK_EN freezes
+        // the visible game window. Never peek at the cartridge's VRAM layout.
+        for transfer in &mut self.transfers {
+            if !transfer.frame_started || transfer.remaining == 0 {
+                continue;
+            }
+            if transfer.remaining == 5 {
+                decode_transfer(pixels, &mut transfer.data);
+            }
+            transfer.remaining -= 1;
+        }
+        while self
+            .transfers
+            .first()
+            .is_some_and(|transfer| transfer.remaining == 0)
+        {
+            let transfer = self.transfers.remove(0);
+            self.border.transfer(transfer.destination, &transfer.data);
+        }
         if self.mask != 0 {
             return;
         }
@@ -225,6 +302,23 @@ impl Sgb {
     }
 
     pub fn copy_frame(&self, out: &mut [u8]) {
+        if self.border.active {
+            for pixel in out.chunks_exact_mut(4) {
+                pixel.copy_from_slice(&rgb(self.palettes[0][0]));
+            }
+            for y in 0..144 {
+                let offset = ((y + 40) * border::WIDTH + 48) * 4;
+                self.copy_game_row(y, &mut out[offset..offset + 160 * 4]);
+            }
+            self.border.overlay(out);
+            return;
+        }
+        for y in 0..144 {
+            self.copy_game_row(y, &mut out[y * 160 * 4..(y + 1) * 160 * 4]);
+        }
+    }
+
+    fn copy_game_row(&self, y: usize, out: &mut [u8]) {
         match self.mask {
             2 | 3 => {
                 let color = rgb(if self.mask == 2 {
@@ -236,7 +330,7 @@ impl Sgb {
                     pixel.copy_from_slice(&color);
                 }
             }
-            _ => out.copy_from_slice(&self.frame),
+            _ => out.copy_from_slice(&self.frame[y * 160 * 4..(y + 1) * 160 * 4]),
         }
     }
 
@@ -362,6 +456,8 @@ impl Sgb {
                 self.player &= self.players - 1;
             }
             0x17 => self.mask = data[1] & 3,
+            0x13 => self.request_transfer(1 + (data[1] & 1)),
+            0x14 => self.request_transfer(3),
             code => {
                 self.unsupported[code as usize] = self.unsupported[code as usize].saturating_add(1)
             }
@@ -399,12 +495,32 @@ impl Sgb {
             out.extend_from_slice(&count.to_le_bytes());
         }
         out.extend_from_slice(&self.frame);
+        self.border.export_state(&mut out);
+        out.extend_from_slice(&self.transfer_drops.to_le_bytes());
+        out.push(self.transfers.len() as u8);
+        for index in 0..MAX_TRANSFERS {
+            if let Some(transfer) = self.transfers.get(index) {
+                out.extend_from_slice(&[
+                    transfer.destination,
+                    transfer.remaining,
+                    transfer.frame_started as u8,
+                ]);
+                out.extend_from_slice(transfer.data.as_ref());
+            } else {
+                out.resize(out.len() + TRANSFER_STATE_BYTES, 0);
+            }
+        }
         out
     }
 
-    pub(crate) fn import_state(rom: &[u8], data: &[u8]) -> Result<Self, String> {
+    pub(crate) fn import_state(rom: &[u8], data: &[u8], version: u16) -> Result<Self, String> {
         let mut sgb = Self::new(rom);
-        if data.len() != sgb.export_state().len() {
+        let expected = if version == 1 {
+            LEGACY_STATE_BYTES
+        } else {
+            sgb.export_state().len()
+        };
+        if !(1..=2).contains(&version) || data.len() != expected {
             return Err("Invalid SGB snapshot length".into());
         }
         let mut input = data;
@@ -448,7 +564,34 @@ impl Sgb {
         for count in &mut sgb.unsupported {
             *count = u64::from_le_bytes(take(&mut input, 8).try_into().unwrap());
         }
-        sgb.frame.copy_from_slice(input);
+        sgb.frame.copy_from_slice(take(&mut input, PIXELS * 4));
+        if version >= 2 {
+            sgb.border = border::Border::import_state(take(&mut input, border::STATE_BYTES))?;
+            sgb.transfer_drops = u64::from_le_bytes(take(&mut input, 8).try_into().unwrap());
+            let count = byte(&mut input) as usize;
+            if count > MAX_TRANSFERS {
+                return Err("Invalid SGB pending transfer count".into());
+            }
+            for index in 0..MAX_TRANSFERS {
+                let bytes = take(&mut input, TRANSFER_STATE_BYTES);
+                if index < count {
+                    if !(1..=3).contains(&bytes[0]) || !(1..=5).contains(&bytes[1]) || bytes[2] > 1
+                    {
+                        return Err("Invalid SGB pending transfer state".into());
+                    }
+                    let mut data = Box::new([0; 4096]);
+                    data.copy_from_slice(&bytes[3..]);
+                    sgb.transfers.push(Transfer {
+                        destination: bytes[0],
+                        remaining: bytes[1],
+                        frame_started: bytes[2] != 0,
+                        data,
+                    });
+                } else if bytes.iter().any(|&value| value != 0) {
+                    return Err("Unexpected SGB pending transfer data".into());
+                }
+            }
+        }
         if sgb.mask > 3
             || ![1, 2, 4].contains(&sgb.players)
             || sgb.player >= sgb.players
@@ -459,6 +602,10 @@ impl Sgb {
             || (sgb.receiver.packets != 0 && sgb.receiver.packets >= sgb.receiver.expected)
             || sgb.attributes.iter().any(|&value| value > 3)
             || sgb.palettes.iter().flatten().any(|&color| color > 0x7FFF)
+            || sgb
+                .transfers
+                .windows(2)
+                .any(|pair| pair[0].remaining > pair[1].remaining)
         {
             return Err("Invalid SGB snapshot values".into());
         }
@@ -470,6 +617,25 @@ impl Sgb {
 
 fn word(data: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([data[offset], data[offset + 1]])
+}
+
+fn decode_transfer(pixels: &[u32], out: &mut [u8; 4096]) {
+    // The first 256 visible 8x8 LCD tiles become 256 interleaved two-plane
+    // GB tiles. Scrolling, BGP remapping and sprites are already in the signal.
+    for tile in 0..256 {
+        for row in 0..8 {
+            let mut low = 0;
+            let mut high = 0;
+            for x in 0..8 {
+                let offset = (tile / 20 * 8 + row) * 160 + tile % 20 * 8 + x;
+                let shade = ((pixels[offset] >> 27) & 3) as u8;
+                low |= (shade & 1) << (7 - x);
+                high |= ((shade >> 1) & 1) << (7 - x);
+            }
+            out[tile * 16 + row * 2] = low;
+            out[tile * 16 + row * 2 + 1] = high;
+        }
+    }
 }
 
 fn rgb(color: u16) -> [u8; 4] {
@@ -705,10 +871,10 @@ mod tests {
         sgb.write_joyp(0x30);
         sgb.write_joyp(0x10);
         let bytes = sgb.export_state();
-        assert_eq!(Sgb::import_state(&rom, &bytes).unwrap(), sgb);
-        assert!(Sgb::import_state(&rom, &bytes[..bytes.len() - 1]).is_err());
+        assert_eq!(Sgb::import_state(&rom, &bytes, 2).unwrap(), sgb);
+        assert!(Sgb::import_state(&rom, &bytes[..bytes.len() - 1], 2).is_err());
         let mut bad = bytes;
         bad[2] = 3;
-        assert!(Sgb::import_state(&rom, &bad).is_err());
+        assert!(Sgb::import_state(&rom, &bad, 2).is_err());
     }
 }

@@ -2199,6 +2199,7 @@ impl CPU {
     }
 
     fn handle_lcd_off(&mut self) {
+        if let Some(sgb) = &mut self.sgb { sgb.lcd_off(); }
         self.memory[0xFF44] = 0;
         self.memory[0xFF41] &= 0xFC;
         self.scanline = 0;
@@ -2213,6 +2214,9 @@ impl CPU {
 
     fn set_ppu_mode(&mut self, mode: u8) {
         let old_mode = self.memory[0xFF41] & 0x03;
+        if mode == 2 && old_mode != 2 && self.scanline == 0 {
+            if let Some(sgb) = &mut self.sgb { sgb.start_frame(); }
+        }
         if mode == 1 && old_mode != 1 {
             if let Some(sgb) = &mut self.sgb { sgb.capture_frame(&self.frame_buffer); }
         }

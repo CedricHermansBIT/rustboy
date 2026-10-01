@@ -193,6 +193,9 @@ impl Emulator for GameBoy {
         Ok(())
     }
     fn video_frame(&mut self) -> VideoFrame<'_> {
+        let bordered = self.cpu.sgb.as_ref().is_some_and(|sgb| sgb.has_border());
+        let (width, height) = if bordered { (256, 224) } else { (160, 144) };
+        self.rgba.resize(width * height * 4, 0);
         if let Some(sgb) = &self.cpu.sgb {
             sgb.copy_frame(&mut self.rgba);
         } else {
@@ -206,10 +209,10 @@ impl Emulator for GameBoy {
         }
         VideoFrame {
             geometry: VideoGeometry {
-                width: 160,
-                height: 144,
-                aspect_width: 10,
-                aspect_height: 9,
+                width: width as u32,
+                height: height as u32,
+                aspect_width: if bordered { 8 } else { 10 },
+                aspect_height: if bordered { 7 } else { 9 },
             },
             format: PixelFormat::Rgba8888,
             pixels: &self.rgba,
@@ -256,9 +259,14 @@ impl Emulator for GameBoy {
         };
         let mut out = Vec::new();
         out.extend_from_slice(b"RBSG");
-        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
         out.extend_from_slice(&(cpu.len() as u32).to_le_bytes());
         out.extend_from_slice(&cpu);
+        // Pending LCD transfers may be saved in the middle of a scanline.
+        // Retain its already-rendered shade/priority cache for exact replay.
+        for pixel in &self.cpu.frame_buffer {
+            out.extend_from_slice(&pixel.to_le_bytes());
+        }
         out.extend_from_slice(&sgb.export_state());
         let checksum = state_checksum(&out);
         out.extend_from_slice(&checksum.to_le_bytes());
@@ -274,7 +282,8 @@ impl Emulator for GameBoy {
         if data.len() < 14 || &data[..4] != b"RBSG" {
             return Err("SGB mode requires an SGB save state, not a handheld state".into());
         }
-        if u16::from_le_bytes(data[4..6].try_into().unwrap()) != 1 {
+        let version = u16::from_le_bytes(data[4..6].try_into().unwrap());
+        if !(1..=2).contains(&version) {
             return Err("Unsupported SGB save-state version".into());
         }
         let end = data.len() - 4;
@@ -285,7 +294,13 @@ impl Emulator for GameBoy {
         if cpu_len > end - 10 {
             return Err("Invalid SGB save-state length".into());
         }
-        let sgb = crate::sgb::Sgb::import_state(&self.cpu.mbc.rom, &data[10 + cpu_len..end])?;
+        let cache_len = if version >= 2 { 160 * 144 * 4 } else { 0 };
+        if cache_len > end - 10 - cpu_len {
+            return Err("Truncated SGB LCD cache".into());
+        }
+        let adapter_start = 10 + cpu_len + cache_len;
+        let sgb =
+            crate::sgb::Sgb::import_state(&self.cpu.mbc.rom, &data[adapter_start..end], version)?;
         // Restore into a fresh machine so malformed snapshots cannot partially
         // replace either side of the running adapter/GB session.
         let mut candidate =
@@ -305,6 +320,16 @@ impl Emulator for GameBoy {
             .import_state(&data[10..10 + cpu_len])
             .map_err(str::to_owned)?;
         self.cpu.sgb = candidate.cpu.sgb.take();
+        if version >= 2 {
+            for (pixel, bytes) in self
+                .cpu
+                .frame_buffer
+                .iter_mut()
+                .zip(data[10 + cpu_len..adapter_start].chunks_exact(4))
+            {
+                *pixel = u32::from_le_bytes(bytes.try_into().unwrap());
+            }
+        }
         Ok(())
     }
     fn debug_extension(&self) -> Option<&dyn std::any::Any> {

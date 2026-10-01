@@ -1,6 +1,97 @@
 //! End-to-end, original synthetic ROMs; no external firmware or copyrighted
 //! game fixtures. Commands are sent by executed LR35902 instructions.
 use crate::{emulator::*, GameBoy, HardwareModel};
+#[path = "../tests/fixtures/border_rom.rs"]
+mod border_rom;
+
+#[test]
+fn cartridge_border_uploads_use_rendered_lcd_and_resize_the_backend_frame() {
+    let mut gb = machine(&border_rom::make_rom());
+    gb.run(70_224 * 32);
+    assert_eq!(gb.cpu().peek(0xC000), 0x66, "border fixture must finish");
+    let sgb = gb.cpu().sgb.as_ref().unwrap();
+    assert!(sgb.has_border());
+    assert_eq!(sgb.transfers_pending(), 0);
+    assert_eq!(sgb.commands_received, 5);
+    assert_eq!(sgb.unsupported, [0; 32]);
+    let frame = gb.video_frame();
+    assert_eq!((frame.geometry.width, frame.geometry.height), (256, 224));
+    assert_eq!(
+        (frame.geometry.aspect_width, frame.geometry.aspect_height),
+        (8, 7)
+    );
+    assert_eq!(frame.pixels.len(), 256 * 224 * 4);
+    let pixel = |x: usize, y: usize| &frame.pixels[(y * 256 + x) * 4..(y * 256 + x + 1) * 4];
+    assert_eq!(pixel(0, 0), [0, 255, 0, 255]); // high CHR half + second border palette
+    assert_eq!(pixel(8, 0), [255, 0, 0, 255]);
+    assert_eq!(pixel(48, 40), [173, 173, 173, 255]); // transparent game window
+    assert_eq!(pixel(49, 40), [255; 4]);
+    assert_eq!(pixel(56, 48), [255, 0, 0, 255]); // deliberate opaque border overlay
+    let expected = frame.pixels.to_vec();
+    let saved = gb.export_state();
+    assert_eq!(&saved[..6], b"RBSG\x02\0");
+    gb.reset();
+    assert_eq!(gb.video_frame().geometry.width, 160);
+    gb.import_state(&saved).unwrap();
+    assert_eq!(gb.video_frame().pixels, expected);
+    assert_eq!(gb.export_state(), saved);
+}
+
+#[test]
+fn restoring_a_mid_frame_transfer_replays_the_lcd_payload_exactly() {
+    let mut gb = machine(&border_rom::make_rom());
+    // Find the first transfer after command reception and some LCD scanlines,
+    // before its first complete frame has been decoded.
+    let mut saw_vblank = false;
+    for _ in 0..200_000 {
+        if gb.cpu().sgb.as_ref().unwrap().transfers_pending() != 0 {
+            let ly = gb.cpu().peek(0xFF44);
+            if ly >= 144 {
+                saw_vblank = true;
+            }
+            if saw_vblank && (61..144).contains(&ly) {
+                break;
+            }
+        }
+        gb.step();
+    }
+    assert_ne!(gb.cpu().sgb.as_ref().unwrap().transfers_pending(), 0);
+    let saved = gb.export_state();
+    let packed = gb.cpu().frame_buffer;
+    gb.run(70_224 * 30);
+    let expected = gb.video_frame().pixels.to_vec();
+    gb.reset();
+    gb.import_state(&saved).unwrap();
+    assert_eq!(gb.cpu().frame_buffer, packed);
+    gb.run(70_224 * 30);
+    assert_eq!(gb.video_frame().pixels, expected);
+    assert!(gb.cpu().sgb.as_ref().unwrap().has_border());
+}
+
+#[test]
+fn version_one_sgb_envelope_loads_and_migrates_without_a_border() {
+    let rom = border_rom::make_rom();
+    let mut gb = machine(&rom);
+    gb.run(70_224 * 32);
+    assert!(gb.cpu().sgb.as_ref().unwrap().has_border());
+    let cpu = gb.cpu().export_state();
+    // Original v1 format: CPU snapshot followed by exactly 92961 adapter bytes.
+    // The unchanged prefix predates any border/transfer/LCD-cache fields.
+    let adapter = gb.cpu().sgb.as_ref().unwrap().export_state();
+    let mut old = Vec::from(b"RBSG\x01\0");
+    old.extend_from_slice(&(cpu.len() as u32).to_le_bytes());
+    old.extend_from_slice(&cpu);
+    old.extend_from_slice(&adapter[..92961]);
+    let checksum = old.iter().fold(0x811c9dc5u32, |h, b| {
+        (h ^ *b as u32).wrapping_mul(0x01000193)
+    });
+    old.extend_from_slice(&checksum.to_le_bytes());
+    gb.import_state(&old).unwrap();
+    assert!(!gb.cpu().sgb.as_ref().unwrap().has_border());
+    assert_eq!(gb.video_frame().geometry.width, 160);
+    assert_eq!(&gb.export_state()[..6], b"RBSG\x02\0");
+    assert!(gb.state_id().ends_with("-sgb-hle-v1")); // storage identity remains stable
+}
 
 fn rom() -> Vec<u8> {
     let mut rom = vec![0; 32768];
