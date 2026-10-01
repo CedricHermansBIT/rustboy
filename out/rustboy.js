@@ -145,6 +145,22 @@ export function get_save_key() {
 }
 
 /**
+ * @returns {string}
+ */
+export function get_sgb_status() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const ret = wasm.get_sgb_status();
+        deferred1_0 = ret[0];
+        deferred1_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
  * @returns {number}
  */
 export function get_speed() {
@@ -250,6 +266,24 @@ export function load_rom_data(rom, boot_rom) {
     const ptr1 = passArray8ToWasm0(boot_rom, wasm.__wbindgen_malloc);
     const len1 = WASM_VECTOR_LEN;
     const ret = wasm.load_rom_data(ptr0, len0, ptr1, len1);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @param {Uint8Array} rom
+ * @param {Uint8Array} boot_rom
+ * @param {string} model
+ */
+export function load_rom_data_with_model(rom, boot_rom, model) {
+    const ptr0 = passArray8ToWasm0(rom, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(boot_rom, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(model, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.load_rom_data_with_model(ptr0, len0, ptr1, len1, ptr2, len2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
@@ -552,7 +586,7 @@ function __wbg_get_imports() {
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [F64], shim_idx: 1, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [F64], shim_idx: 45, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_5aa949e133d73c3e___convert__closures_____invoke___f64______true_);
             return ret;
         },
