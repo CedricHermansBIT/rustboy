@@ -211,6 +211,10 @@ const PAL_BG: u8 = 0;
 const PAL_OBJ0: u8 = 1;
 const PAL_OBJ1: u8 = 2;
 
+// Packed metadata: bits 24–25 raw BG color, bit 26 BG priority, bits
+// 27–28 the post-BGP/OBP LCD shade (DMG only). The SGB adapter consumes
+// the shade without inferring it from a green/colorized host RGB palette.
+
 #[inline]
 fn pack_cgb_pixel(r: u8, g: u8, b: u8, raw: u8, bg_priority: bool) -> u32 {
     let meta = (raw & 0x03) | if bg_priority { 0x04 } else { 0 };
@@ -870,7 +874,8 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                 let color = palettes[PAL_BG as usize][apply_dmg_palette(0, pixel_bgp) as usize];
                 (color[0], color[1], color[2])
             };
-            cpu.frame_buffer[buf_base + screen_x as usize] = pack_cgb_pixel(r, g, b, 0, false);
+            let shade = if is_cgb { 0 } else { apply_dmg_palette(0, pixel_bgp) };
+            cpu.frame_buffer[buf_base + screen_x as usize] = pack_cgb_pixel(r, g, b, 0, false) | ((shade as u32) << 27);
             screen_x += 1;
             continue;
         }
@@ -948,7 +953,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                 } else {
                     let ci    = apply_dmg_palette(raw, pixel_bgp);
                     let color = &palettes[PAL_BG as usize][ci as usize];
-                    pack_cgb_pixel(color[0], color[1], color[2], raw, bg_prio)
+                    pack_cgb_pixel(color[0], color[1], color[2], raw, bg_prio) | ((ci as u32) << 27)
                 };
                 cpu.frame_buffer[buf_base + xi as usize] = pixel;
             }
@@ -1039,7 +1044,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                     let raw_eff = if bg_enabled { raw } else { 0 };
                     let ci      = apply_dmg_palette(raw_eff, pixel_bgp);
                     let color   = &palettes[PAL_BG as usize][ci as usize];
-                    pack_cgb_pixel(color[0], color[1], color[2], raw_eff, bg_prio)
+                    pack_cgb_pixel(color[0], color[1], color[2], raw_eff, bg_prio) | ((ci as u32) << 27)
                 };
                 cpu.frame_buffer[buf_base + xi as usize] = pixel;
             }
@@ -1158,7 +1163,8 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                         let color = &palettes[pal_type as usize][ci as usize];
                         (color[0], color[1], color[2])
                     };
-                    cpu.frame_buffer[buf_base + sx] = pack_cgb_pixel(r, g, b, raw, false);
+                    let shade = if is_cgb { 0 } else { apply_dmg_palette(raw, obp) };
+                    cpu.frame_buffer[buf_base + sx] = pack_cgb_pixel(r, g, b, raw, false) | ((shade as u32) << 27);
                 }
             }
         }

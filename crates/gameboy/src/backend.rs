@@ -9,6 +9,9 @@ pub enum HardwareModel {
     Auto,
     Dmg,
     Cgb,
+    /// Experimental command-level SGB adapter at the GB/SGB2 clock rate.
+    /// No SNES CPU, borders or SNES audio are emulated yet.
+    Sgb,
 }
 
 pub struct GameBoy {
@@ -30,9 +33,9 @@ impl GameBoy {
         crate::cartridge::validate_rom(rom)?;
         let cgb = match model {
             HardwareModel::Auto => rom[0x143] & 0x80 != 0,
-            HardwareModel::Dmg => {
+            HardwareModel::Dmg | HardwareModel::Sgb => {
                 if rom[0x143] == 0xC0 {
-                    return Err("CGB-only cartridge cannot run on DMG hardware".into());
+                    return Err("CGB-only cartridge cannot run on DMG/SGB hardware".into());
                 }
                 false
             }
@@ -55,6 +58,9 @@ impl GameBoy {
         cpu.load_rom(rom.to_vec());
         cpu.is_cgb = cgb;
         cpu.apu.set_cgb_mode(cgb);
+        if model == HardwareModel::Sgb {
+            cpu.sgb = Some(Box::new(crate::sgb::Sgb::new(rom)));
+        }
         Ok(Self {
             cpu,
             rgba: vec![0; 160 * 144 * 4],
@@ -90,7 +96,9 @@ impl GameBoy {
 
 impl Emulator for GameBoy {
     fn system_name(&self) -> &'static str {
-        if self.cpu.is_cgb {
+        if self.cpu.sgb.is_some() {
+            "Super Game Boy (experimental HLE)"
+        } else if self.cpu.is_cgb {
             "Game Boy Color"
         } else {
             "Game Boy"
@@ -147,7 +155,7 @@ impl Emulator for GameBoy {
         self.cpu.apu.set_cgb_mode(cgb);
     }
     fn set_button(&mut self, port: usize, button: Button, pressed: bool) -> Result<(), String> {
-        if port != 0 {
+        if port != 0 && self.cpu.sgb.is_none() {
             return Err("Game Boy supports only controller port 0".into());
         }
         let key = match button {
@@ -161,7 +169,23 @@ impl Emulator for GameBoy {
             Button::Select => 16,
             _ => return Err("Button is not present on Game Boy".into()),
         };
-        self.cpu.set_keys(key, pressed);
+        if let Some(sgb) = &mut self.cpu.sgb {
+            let bit = match button {
+                Button::Right => 0,
+                Button::Left => 1,
+                Button::Up => 2,
+                Button::Down => 3,
+                Button::A => 4,
+                Button::B => 5,
+                Button::Select => 6,
+                Button::Start => 7,
+                _ => unreachable!(),
+            };
+            sgb.set_button(port, bit, pressed)?;
+        }
+        if port == 0 {
+            self.cpu.set_keys(key, pressed);
+        }
         // Retain existing frontend IRQ behavior during this structural change.
         if pressed {
             self.cpu.request_interrupt(4);
@@ -169,12 +193,16 @@ impl Emulator for GameBoy {
         Ok(())
     }
     fn video_frame(&mut self) -> VideoFrame<'_> {
-        for (out, &pixel) in self
-            .rgba
-            .chunks_exact_mut(4)
-            .zip(self.cpu.frame_buffer.iter())
-        {
-            out.copy_from_slice(&[pixel as u8, (pixel >> 8) as u8, (pixel >> 16) as u8, 255]);
+        if let Some(sgb) = &self.cpu.sgb {
+            sgb.copy_frame(&mut self.rgba);
+        } else {
+            for (out, &pixel) in self
+                .rgba
+                .chunks_exact_mut(4)
+                .zip(self.cpu.frame_buffer.iter())
+            {
+                out.copy_from_slice(&[pixel as u8, (pixel >> 8) as u8, (pixel >> 16) as u8, 255]);
+            }
         }
         VideoFrame {
             geometry: VideoGeometry {
@@ -185,7 +213,7 @@ impl Emulator for GameBoy {
             },
             format: PixelFormat::Rgba8888,
             pixels: &self.rgba,
-            enabled: self.cpu.memory[0xFF40] & 0x80 != 0,
+            enabled: self.cpu.sgb.is_some() || self.cpu.memory[0xFF40] & 0x80 != 0,
         }
     }
     fn drain_audio(&mut self) -> AudioChunk {
@@ -215,13 +243,69 @@ impl Emulator for GameBoy {
         self.cpu.clear_save_ram();
     }
     fn state_id(&self) -> String {
-        self.cpu.state_id()
+        if self.cpu.sgb.is_some() {
+            format!("{}-sgb-hle-v1", self.cpu.state_id())
+        } else {
+            self.cpu.state_id()
+        }
     }
     fn export_state(&self) -> Vec<u8> {
-        self.cpu.export_state()
+        let cpu = self.cpu.export_state();
+        let Some(sgb) = &self.cpu.sgb else {
+            return cpu;
+        };
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RBSG");
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&(cpu.len() as u32).to_le_bytes());
+        out.extend_from_slice(&cpu);
+        out.extend_from_slice(&sgb.export_state());
+        let checksum = state_checksum(&out);
+        out.extend_from_slice(&checksum.to_le_bytes());
+        out
     }
     fn import_state(&mut self, data: &[u8]) -> Result<(), String> {
-        self.cpu.import_state(data).map_err(str::to_owned)
+        if self.cpu.sgb.is_none() {
+            if data.starts_with(b"RBSG") {
+                return Err("SGB state requires SGB mode".into());
+            }
+            return self.cpu.import_state(data).map_err(str::to_owned);
+        }
+        if data.len() < 14 || &data[..4] != b"RBSG" {
+            return Err("SGB mode requires an SGB save state, not a handheld state".into());
+        }
+        if u16::from_le_bytes(data[4..6].try_into().unwrap()) != 1 {
+            return Err("Unsupported SGB save-state version".into());
+        }
+        let end = data.len() - 4;
+        if state_checksum(&data[..end]) != u32::from_le_bytes(data[end..].try_into().unwrap()) {
+            return Err("Corrupt SGB save state".into());
+        }
+        let cpu_len = u32::from_le_bytes(data[6..10].try_into().unwrap()) as usize;
+        if cpu_len > end - 10 {
+            return Err("Invalid SGB save-state length".into());
+        }
+        let sgb = crate::sgb::Sgb::import_state(&self.cpu.mbc.rom, &data[10 + cpu_len..end])?;
+        // Restore into a fresh machine so malformed snapshots cannot partially
+        // replace either side of the running adapter/GB session.
+        let mut candidate =
+            Self::load_with_host(&self.cpu.mbc.rom, &[], HardwareModel::Sgb, self.cpu.host)?;
+        candidate
+            .cpu
+            .import_state(&data[10..10 + cpu_len])
+            .map_err(str::to_owned)?;
+        if candidate.cpu.is_cgb {
+            return Err("SGB state contains incompatible CGB hardware".into());
+        }
+        candidate.cpu.sgb = Some(Box::new(sgb));
+        // Keep the current firmware override, breakpoints and debug settings.
+        // CPU::import_state does not serialize firmware; validated bytes are now
+        // safe to apply to the original instance, preserving those host choices.
+        self.cpu
+            .import_state(&data[10..10 + cpu_len])
+            .map_err(str::to_owned)?;
+        self.cpu.sgb = candidate.cpu.sgb.take();
+        Ok(())
     }
     fn debug_extension(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -229,6 +313,12 @@ impl Emulator for GameBoy {
     fn debug_extension_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
+}
+
+fn state_checksum(data: &[u8]) -> u32 {
+    data.iter().fold(0x811c9dc5u32, |hash, byte| {
+        (hash ^ *byte as u32).wrapping_mul(0x01000193)
+    })
 }
 
 #[cfg(test)]

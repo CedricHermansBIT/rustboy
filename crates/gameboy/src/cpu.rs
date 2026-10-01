@@ -208,6 +208,8 @@ pub struct CPU {
     pub booting: bool,
     pub memory: [u8; 0x10000],
     pub frame_buffer:[u32; 160 * 144],
+    /// Optional high-level SGB adapter. Ordinary DMG/CGB CPUs have none.
+    pub sgb: Option<Box<crate::sgb::Sgb>>,
     /// All cartridge ROM/RAM state and banking logic.
     pub mbc: Mbc,
     pub halt: bool,
@@ -457,6 +459,7 @@ impl CPU {
                 memory
             },
             frame_buffer: [0; 160*144],
+            sgb: None,
             mbc: Mbc::empty(),
             halt: false,
             cycles: 0,
@@ -530,6 +533,16 @@ impl CPU {
             if self.is_cgb {
                 self.reg_a = 0x11;
             }
+            self.finish_sgb_boot();
+        }
+    }
+
+    fn finish_sgb_boot(&mut self) {
+        if self.sgb.is_some() {
+            // Replacement DMG firmware supplies the animation; identify the
+            // adapter only after handoff, never while executing boot firmware.
+            self.reg_a = 0x01;
+            self.reg_c = 0x14;
         }
     }
 
@@ -1353,7 +1366,9 @@ impl CPU {
             }
             0xFF50 => {
                 if data != 0 {
+                    let was_booting = self.booting;
                     self.booting = false;
+                    if was_booting { self.finish_sgb_boot(); }
                     if self.is_cgb && !self.cgb_native_mode() {
                         // The compatibility renderer/bus sees bank 0 VRAM and
                         // fixed WRAM banks initialized by the CGB boot ROM.
@@ -1484,6 +1499,7 @@ impl CPU {
     }
 
     fn handle_joypad(&mut self, data: u8) {
+        if let Some(sgb) = &mut self.sgb { sgb.write_joyp(data); }
         self.memory[0xFF00] = (data & 0x30) | 0xC0;
     }
 
@@ -1652,6 +1668,7 @@ impl CPU {
         }
         if address == 0xFF00 {
             let select = self.memory[0xFF00];
+            if let Some(sgb) = &self.sgb { return sgb.read_joyp(select); }
             let p14 = select & 0x10 == 0;
             let p15 = select & 0x20 == 0;
 
@@ -1739,6 +1756,11 @@ impl CPU {
         fresh.host = self.host;
         if !boot_rom.is_empty() { fresh.bootload(boot_rom); }
         fresh.load_rom(rom);
+        if self.sgb.is_some() {
+            fresh.sgb = Some(Box::new(crate::sgb::Sgb::new(&fresh.mbc.rom)));
+            fresh.is_cgb = false;
+            fresh.apu.set_cgb_mode(false);
+        }
         if fresh.has_battery() { fresh.import_save_ram(&save_ram); }
         fresh.speed_multiplier = speed_multiplier;
         fresh.color_mode = color_mode;
@@ -1821,6 +1843,13 @@ impl CPU {
     pub fn set_keys(&mut self, key: u32, value: bool) {
         if (key as usize) < self.keys.len() {
             self.keys[key as usize] = value;
+        }
+        if let Some(sgb) = &mut self.sgb {
+            let bit = match key {
+                39 => Some(0), 37 => Some(1), 38 => Some(2), 40 => Some(3),
+                65 => Some(4), 66 => Some(5), 16 => Some(6), 13 => Some(7), _ => None,
+            };
+            if let Some(bit) = bit { let _ = sgb.set_button(0, bit, value); }
         }
     }
 
@@ -2184,6 +2213,9 @@ impl CPU {
 
     fn set_ppu_mode(&mut self, mode: u8) {
         let old_mode = self.memory[0xFF41] & 0x03;
+        if mode == 1 && old_mode != 1 {
+            if let Some(sgb) = &mut self.sgb { sgb.capture_frame(&self.frame_buffer); }
+        }
         self.memory[0xFF41] = (self.memory[0xFF41] & 0b11111100) | (mode & 0x03);
 
         if (self.memory[0xFF40] & 0x80) != 0 {
