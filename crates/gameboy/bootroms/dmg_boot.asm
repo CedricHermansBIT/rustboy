@@ -92,6 +92,24 @@ Start:
     ld b, 60
     call WaitBFrames
 
+; Preserve the standard cartridge-logo tiles for games that reuse them.
+; The LCD must be off: the bit-expansion routine spans several scanlines.
+    xor a
+    ldh [rLCDC], a
+    ld de, NintendoLogo
+    ld hl, _VRAM + $10
+.restoreLogoLoop
+    ld a, [de]
+    ld b, a
+    call DoubleBitsAndWriteRow
+    call DoubleBitsAndWriteRow
+    inc de
+    ld a, e
+    cp LOW(NintendoLogoEnd)
+    jr nz, .restoreLogoLoop
+    ld a, LCDCF_ON | LCDCF_BLK01 | LCDCF_BGON
+    ldh [rLCDC], a
+
 ; Set registers to match the original DMG boot
 IF DEF(MGB)
     lb hl, BOOTUP_A_MGB, %10110000

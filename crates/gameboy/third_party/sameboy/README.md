@@ -20,6 +20,8 @@ Changes from upstream:
 - Original RustBoy pixel glyphs generated from [logo.py](../../bootroms/logo.py),
   replacing SameBoy artwork and the DMG cartridge-header logo during startup.
 - DMG uses a compact slide-in animation so code plus artwork fit in 256 bytes.
+  After the intro it restores the cartridge's header-logo tiles in VRAM for
+  games that inspect/reuse them; this requires no embedded Nintendo artwork.
 - CGB uses a sequential three-row tilemap without the upstream E/B tile reuse
   or cartridge-logo subtitle. Cartridge-header tiles and per-game palettes
   remain available for compatibility after handoff.
@@ -45,7 +47,7 @@ the actual rendered RustBoy silhouette, not just nonblank output.
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| dmg_boot.hex | 256 | 4a94edecfe82dac122417b1a970dcc2513385081a413c0a059d64d1ebc956e97 |
+| dmg_boot.hex | 256 | e79e658710af41422b89d1e513bd71a6bd2f9d8fe590a3dae070c25e7f71cf11 |
 | cgb_boot.hex | 2304 | e356af876376ec1ba838b7689957360f1d4422c11bae2eed2ed33eb0ee7a1b2a |
 
 Hashes are checked by `scripts/check.py`. Optional external firmware still takes

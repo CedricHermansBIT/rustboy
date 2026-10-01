@@ -433,6 +433,14 @@ mod tests {
             assert_eq!(gb.cpu.program_counter, 0x100);
             assert_eq!(gb.cpu.get_reg_a(), if cgb { 0x11 } else { 1 });
             assert_eq!(gb.cpu.cgb_native_mode(), cgb && flag & 0x80 != 0);
+            if !cgb {
+                // Header byte 0xAA expands to four rows of plane 0 = 0xCC,
+                // plane 1 = zero. The intro must not replace the tiles games
+                // expect to find at handoff with our branding.
+                for row in gb.cpu.memory[0x8010..0x8190].chunks_exact(2) {
+                    assert_eq!(row, &[0xCC, 0]);
+                }
+            }
             assert!(
                 seen_pixels,
                 "replacement animation did not render (cgb={cgb})"

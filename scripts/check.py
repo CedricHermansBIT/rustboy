@@ -22,7 +22,7 @@ def main():
     if not node:
         parser.error("Node.js 24 is required for the browser/audio checks")
     for name, size, digest in [
-        ("dmg_boot.hex", 256, "4a94edecfe82dac122417b1a970dcc2513385081a413c0a059d64d1ebc956e97"),
+        ("dmg_boot.hex", 256, "e79e658710af41422b89d1e513bd71a6bd2f9d8fe590a3dae070c25e7f71cf11"),
         ("cgb_boot.hex", 2304, "e356af876376ec1ba838b7689957360f1d4422c11bae2eed2ed33eb0ee7a1b2a"),
     ]:
         data = bytes.fromhex((ROOT / "crates/gameboy/bootroms" / name).read_text())
