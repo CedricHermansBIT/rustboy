@@ -1,0 +1,56 @@
+name: Publish RustBoy with licensed homebrew
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rustboy-pages
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      RUSTUP_TOOLCHAIN: 1.98.1
+      RUSTBOY_BROWSER: google-chrome
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install matching Rust and WASM tools
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --target wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --locked --version 0.2.118
+      - name: Native and downloader regressions
+        run: python3 scripts/check.py
+      - name: Build WASM
+        run: python3 scripts/build_web.py
+      - name: Download pinned public games and corresponding source into artifact
+        run: python3 scripts/prepare_pages.py --output dist
+      - name: Smoke-test all three games without external firmware
+        run: |
+          cargo run --locked --release --no-default-features --example homebrew_smoke -- dist/homebrew/2048.gb dist/homebrew/tobudx.gb dist/homebrew/ucity.gbc
+          RUSTBOY_SITE_DIR=dist RUSTBOY_BASE_PATH=/rustboy RUSTBOY_HOMEBREW=1 RUSTBOY_NO_BOOT=1 node tests/browser_smoke.mjs
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy verified site
+        id: deployment
+        uses: actions/deploy-pages@v5

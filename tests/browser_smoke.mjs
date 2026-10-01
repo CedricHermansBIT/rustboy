@@ -10,17 +10,21 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const site = process.env.RUSTBOY_SITE_DIR ? path.resolve(process.env.RUSTBOY_SITE_DIR) : root;
+const basePath = process.env.RUSTBOY_BASE_PATH || '';
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'rustboy-browser-test-'));
 const contentTypes = {'.wasm': 'application/wasm', '.js': 'text/javascript', '.mjs': 'text/javascript', '.json': 'application/json', '.html': 'text/html'};
 const server = http.createServer(async (request, response) => {
   try {
-    const name = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
+    const pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
+    if (!pathname.startsWith(basePath + '/')) { response.writeHead(404).end(); return; }
+    const name = pathname.slice(basePath.length);
     // Model the deployed site: no user-supplied firmware is present.
     if (process.env.RUSTBOY_NO_BOOT && /^\/roms\/(dmg|cgb)_boot\.bin$/.test(name)) {
       response.writeHead(404).end(); return;
     }
-    const file = path.resolve(root, '.' + (name === '/' ? '/index.html' : name));
-    if (!file.startsWith(root + path.sep)) { response.writeHead(403).end(); return; }
+    const file = path.resolve(site, '.' + (name === '/' ? '/index.html' : name));
+    if (!file.startsWith(site + path.sep)) { response.writeHead(403).end(); return; }
     response.setHeader('Content-Type', contentTypes[path.extname(file)] || 'application/octet-stream');
     response.end(await fs.readFile(file));
   } catch { response.writeHead(404).end(); }
@@ -86,7 +90,7 @@ try {
     }
     throw new Error(`Browser assertion timed out: ${expression}`);
   }
-  await call('Page.navigate', {url: `http://127.0.0.1:${server.address().port}/`});
+  await call('Page.navigate', {url: `http://127.0.0.1:${server.address().port}${basePath}/`});
   await until("typeof window.mem === 'function'");
   assert.equal(await evaluate("!!document.querySelector('#rustboy-canvas')"), true);
   assert.equal(await evaluate("document.querySelector('#rustboy-canvas').width"), 160);
@@ -98,7 +102,7 @@ try {
   await until("document.body.textContent.includes('ROM is truncated')");
   assert.deepEqual(exceptions, [], 'unhandled browser errors');
   let gamePath = process.env.RUSTBOY_ROM && path.resolve(process.env.RUSTBOY_ROM);
-  if (!gamePath && process.env.RUSTBOY_NO_BOOT) {
+  if (!gamePath && process.env.RUSTBOY_NO_BOOT && !process.env.RUSTBOY_HOMEBREW) {
     // Public-domain synthetic program: draw a repeating tile and publish 0x66.
     const rom = new Uint8Array(32768);
     rom.set([0xC3, 0x50, 0x01], 0x100);
@@ -112,6 +116,50 @@ try {
     rom.set(code, 0x150);
     gamePath = path.join(temporary, rom[0x143] ? 'synthetic.gbc' : 'synthetic.gb');
     await fs.writeFile(gamePath, rom);
+  }
+  if (process.env.RUSTBOY_HOMEBREW) {
+    const entries = JSON.parse(await fs.readFile(path.join(site, 'homebrew/romlist.json'), 'utf8'));
+    assert.equal(entries.length, 3);
+    for (const entry of entries) {
+      await evaluate("openPicker(); searchQuery = ''; document.querySelector('#rom-search').value = ''; document.querySelector('[data-tab=homebrew]').click(); filterRoms()");
+      await until("document.querySelectorAll('#rom-list li .rom-name').length === 3");
+      assert.ok(await evaluate("!document.querySelector('#homebrew-info').classList.contains('hidden')"));
+      const title = JSON.stringify(entry.title);
+      await evaluate(`Array.from(document.querySelectorAll('#rom-list li')).find(li => li.querySelector('.rom-name')?.textContent === ${title}).click()`);
+      await until(`currentRomInfo?.name === ${JSON.stringify(entry.name)} && document.querySelector('#rom-picker').classList.contains('hidden')`);
+      await until("Module._get_debug_state().includes('Boot:0')");
+      // Tobu has non-skippable publisher/music logos before its intro/menu.
+      await new Promise(resolve => setTimeout(resolve, entry.id === 'tobu-tobu-girl-deluxe' ? 14000 : 3000));
+      const colors = await evaluate("new Set(new Uint32Array(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,160,144).data.buffer)).size");
+      assert.ok(colors > 1, `${entry.title} renders a nonblank game screen`);
+      assert.equal(await evaluate("(async () => (await import('./out/rustboy.js')).get_is_cgb())()"), entry.platform !== 'GB');
+      for (const [key, code] of [['Enter', 'Enter'], ['a', 'KeyA'], ['ArrowRight', 'ArrowRight']]) {
+        await call('Input.dispatchKeyEvent', {type: 'keyDown', key, code});
+        await new Promise(resolve => setTimeout(resolve, 120));
+        await call('Input.dispatchKeyEvent', {type: 'keyUp', key, code});
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      await evaluate("document.querySelector('#quick-pause').click()");
+      await until("document.querySelector('#quick-pause').textContent.includes('Resume')");
+      if (process.env.RUSTBOY_SCREENSHOT_DIR) {
+        await fs.mkdir(process.env.RUSTBOY_SCREENSHOT_DIR, {recursive: true});
+        const data = await evaluate("document.querySelector('#rustboy-canvas').toDataURL('image/png').split(',')[1]");
+        await fs.writeFile(path.join(process.env.RUSTBOY_SCREENSHOT_DIR, `${entry.id}.png`), Buffer.from(data, 'base64'));
+      }
+      await evaluate("document.querySelector('#quick-pause').click()");
+      assert.deepEqual(exceptions, [], `${entry.title}: no unhandled errors`);
+      console.log(`Homebrew picker: ${entry.title}, verified ROM download, game rendering/input, pause/resume passed`);
+    }
+    const credits = await fs.readFile(path.join(site, 'homebrew/credits.html'), 'utf8');
+    assert.ok(credits.includes('potato-tan'));
+    assert.ok(credits.includes('sources/ucity-v1.3.zip'));
+    const current = await evaluate("currentRomInfo.name");
+    // Model a corrupted deployment payload. Failed integrity checks must not
+    // replace the current game or its save namespace.
+    await evaluate("openPicker(); searchQuery = ''; filterRoms(); ROMS.find(r => r.name === '2048.gb').sha256 = '0'.repeat(64); selectedIdx = ROMS.findIndex(r => r.name === '2048.gb'); loadSelectedRom()");
+    await until("document.body.textContent.includes('checksum mismatch')");
+    assert.equal(await evaluate("currentRomInfo.name"), current);
+    assert.ok(await evaluate("!document.querySelector('#rom-picker').classList.contains('hidden')"));
   }
   if (gamePath) {
     // Chromium can silently accept a nonexistent file in its input command.
@@ -149,7 +197,7 @@ try {
     await until("document.querySelector('#quick-pause').textContent.includes('Pause')");
     assert.deepEqual(exceptions, [], 'gameplay browser errors');
   }
-  console.log('Browser smoke: WASM initialization, canvas, upload error handling' + (gamePath ? ', rendering, pause/resume' : '') + (process.env.RUSTBOY_NO_BOOT ? (process.env.RUSTBOY_ROM ? ', bundled boot without external firmware' : ', RustBoy wordmark and bundled boot without external firmware') : '') + ' passed');
+  console.log('Browser smoke: WASM initialization, canvas, upload error handling' + (gamePath ? ', rendering, pause/resume' : '') + (process.env.RUSTBOY_NO_BOOT ? (process.env.RUSTBOY_ROM || process.env.RUSTBOY_HOMEBREW ? ', bundled boot without external firmware' : ', RustBoy wordmark and bundled boot without external firmware') : '') + ' passed');
 } finally {
   socket?.close();
   browser.kill();

@@ -47,8 +47,47 @@ python3 -m http.server 8000
 
 Open `http://localhost:8000`, then upload or drag-and-drop your own `.gb` or
 `.gbc` file. Optional library lists are read from `roms/romlist.json` and
-`testroms/romlist.json`; uploading works without those lists. No ROMs or boot
-ROMs are distributed by this repository.
+`testroms/romlist.json`; uploading works without those lists. No commercial game
+ROMs or Nintendo boot ROMs are committed to this repository. The public deployment downloads
+three licensed homebrew games into its deployment artifact (see below).
+
+## GitHub Pages and free homebrew
+
+The public site includes **2048 — Game Boy Edition**, **Tobu Tobu Girl Deluxe**
+and **µCity 1.3**, in a separate **Free homebrew** picker tab. Games remain
+unmodified and credited to their creators. Full license notices and µCity's
+matching source archive are downloadable from the credits page.
+
+The [catalog](homebrew/catalog.json) pins download URLs, byte counts and SHA-256
+hashes. ROMs/source archives are downloaded during deployment, not committed to
+Git. Each homebrew ROM's size and hash are checked again before browser loading.
+See [the provenance and license notes](homebrew/README.md).
+
+To enable the included [Pages workflow](.github/workflows/pages.yml), set
+**Settings → Pages → Build and deployment → Source → GitHub Actions** in the
+GitHub repository. Push `main` or run the workflow manually. It builds WASM,
+downloads the games, tests them, then publishes only the staged public site.
+Local `roms/`, `testroms/` and external boot firmware are never copied into it.
+
+To build and serve that same site locally:
+
+```sh
+python3 scripts/build_web.py
+python3 scripts/prepare_pages.py --output dist
+python3 -m http.server 8000 --directory dist
+```
+
+The output directory must be empty/new; existing contents are never silently
+overwritten. Use another `--output` directory for a fresh staging run. Preparation
+requires network access; once published, gameplay downloads use the site's own
+origin, not a third-party host. Uploading your own games remains available.
+
+To reproduce the native and browser homebrew smoke checks:
+
+```sh
+cargo run --locked --release --no-default-features --example homebrew_smoke -- dist/homebrew/2048.gb dist/homebrew/tobudx.gb dist/homebrew/ucity.gbc
+RUSTBOY_SITE_DIR=dist RUSTBOY_BASE_PATH=/rustboy RUSTBOY_HOMEBREW=1 RUSTBOY_NO_BOOT=1 node tests/browser_smoke.mjs
+```
 
 ## Saves and controls
 
