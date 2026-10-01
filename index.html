@@ -393,6 +393,8 @@
       #rom-list li .rom-name {
         word-break: break-word; color: #ccc;
       }
+      #rom-list li .rom-credit { font-size: .68rem; color: #8fa58f; }
+      #homebrew-info a { color: #9be89b; }
       #rom-count {
         font-size: 0.7rem; color: #555; margin-bottom: 0.4rem;
       }
@@ -789,6 +791,7 @@
       </div>
       <hr id="recent-divider" class="hidden" />
       <div id="rom-tabs" class="hidden">
+        <button class="rom-tab" data-tab="homebrew">🌱 Free homebrew</button>
         <button class="rom-tab active" data-tab="gb">🎮 Game Boy</button>
         <button class="rom-tab" data-tab="gbc">🌈 Game Boy Color</button>
         <button class="rom-tab" data-tab="testroms">🧪 Test ROMs</button>
@@ -800,6 +803,9 @@
         <button id="clear-recents" type="button">Clear recent</button>
       </div>
       <div id="rom-count"></div>
+      <p id="homebrew-info" class="hint hidden">Freely redistributable games, credited to their creators.
+        <a href="homebrew/credits.html" target="_blank" rel="noopener">Credits, licenses &amp; source</a>
+      </p>
       <ul id="rom-list"></ul>
       <div id="upload-area">
         <button id="upload-btn">📂 Upload ROM (.gb/.gbc)</button>
@@ -1170,6 +1176,13 @@
        * ═══════════════════════════════════════════════════════════════ */
       // Per-tab data: { allRoms, folder, listPath, accepts(name), available }
       const ROM_TABS = {
+        homebrew: {
+          allRoms: [],
+          folder: 'homebrew',
+          listPath: 'homebrew/romlist.json',
+          accepts: (name) => /\.(gb|gbc)$/i.test(name),
+          available: false,
+        },
         gb: {
           allRoms: [],
           folder: 'roms',
@@ -1571,13 +1584,13 @@
         const q = searchQuery.toLowerCase().trim();
         ALL_ROMS = ROM_TABS[activeTab].allRoms;
         const favorites = getFavorites();
-        ROMS = ALL_ROMS.filter(r => (!q || r.name.toLowerCase().includes(q)) &&
+        ROMS = ALL_ROMS.filter(r => (!q || `${r.title || ''} ${r.name} ${r.author || ''}`.toLowerCase().includes(q)) &&
           (!favoritesOnly || favorites.has(romLibraryKey(r.name, ROM_TABS[activeTab].folder))));
         if (document.getElementById('rom-sort')?.value === 'recent') {
           let recent = []; try { recent = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch (_) {}
           const order = new Map(recent.map((r, i) => [romLibraryKey(r.name, r.folder), i]));
           ROMS.sort((a, b) => (order.get(romLibraryKey(a.name, ROM_TABS[activeTab].folder)) ?? 1e9) - (order.get(romLibraryKey(b.name, ROM_TABS[activeTab].folder)) ?? 1e9) || a.name.localeCompare(b.name));
-        } else ROMS.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+        } else ROMS.sort((a, b) => (a.title || a.name).localeCompare(b.title || b.name, undefined, { numeric: true }));
         selectedIdx = 0;
         buildList();
       }
@@ -1621,7 +1634,7 @@
           }
           const nameSpan = document.createElement('span');
           nameSpan.className = 'recent-name';
-          nameSpan.textContent = rom.name.replace(/\.gbc?$/i, '');
+          nameSpan.textContent = rom.title || rom.name.replace(/\.gbc?$/i, '');
           item.appendChild(nameSpan);
           item.addEventListener('click', () => {
             // Switch to the correct tab and load
@@ -1639,6 +1652,7 @@
       }
 
       function buildList() {
+        document.getElementById('homebrew-info').classList.toggle('hidden', activeTab !== 'homebrew');
         buildRecentSection();
         listEl.innerHTML = '';
         const countEl = document.getElementById('rom-count');
@@ -1689,8 +1703,15 @@
             const nameSpan = document.createElement('span');
             nameSpan.className = 'rom-name';
             // Display name without .gb/.gbc extension
-            nameSpan.textContent = rom.name.replace(/\.gbc?$/i, '');
+            nameSpan.textContent = rom.title || rom.name.replace(/\.gbc?$/i, '');
+            if (rom.author) li.title = `${rom.platform} · ${rom.author}\n${rom.description}\n${rom.license}`;
             li.appendChild(nameSpan);
+            if (rom.author) {
+              const credit = document.createElement('span');
+              credit.className = 'rom-credit';
+              credit.textContent = `${rom.platform} · ${rom.author}`;
+              li.appendChild(credit);
+            }
             const status = document.createElement('span'); status.className = 'rom-status';
             const recentEntry = (() => { try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]').find(r => romLibraryKey(r.name, r.folder) === libraryKey); } catch (_) { return null; } })();
             status.textContent = [recentEntry?.saveKey && localStorage.getItem(recentEntry.saveKey) ? 'SAVE' : '', stateLibraryKeys.has(libraryKey) ? 'STATE' : ''].filter(Boolean).join(' · ');
@@ -1732,9 +1753,8 @@
           const rom = ROMS[selectedIdx];
           const tab = ROM_TABS[activeTab];
           const romInfo = { name: rom.name, folder: tab.folder, tab: activeTab };
-          const resp = await fetch(tab.folder + '/' + encodeURIComponent(rom.name));
-          if (!resp.ok) throw new Error(resp.statusText);
-          await Module._load_rom_data(new Uint8Array(await resp.arrayBuffer()));
+          const data = await Module._fetch_library_rom(rom, tab.folder);
+          await Module._load_rom_data(data);
           currentRomInfo = romInfo;
           addToRecent(romInfo);
           romLoaded = true;
@@ -1818,7 +1838,7 @@
           const tabKey = btn.dataset.tab;
           btn.classList.toggle('hidden', !ROM_TABS[tabKey]?.available);
         });
-        if (availableTabs.length >= 2) {
+        if (availableTabs.length >= 2 || availableTabs.includes('homebrew')) {
           tabsEl.classList.remove('hidden');
         } else {
           tabsEl.classList.add('hidden');
@@ -2236,8 +2256,10 @@
       // emulator from starting when a browser has an older generated bundle cached.
       import init, * as Rustboy from './out/rustboy.js';
       import { loadWithBootRom } from './web/rom-loader.mjs';
+      import { fetchLibraryRom } from './web/library-rom.mjs';
       init().then(() => {
         Module = {
+          _fetch_library_rom: fetchLibraryRom,
           _set_key_state: Rustboy.set_key_state,
           _load_rom_data: data => loadWithBootRom(Rustboy.load_rom_data, data),
           _get_debug_state: Rustboy.get_debug_state,
