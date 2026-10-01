@@ -5,6 +5,8 @@ pub mod mbc;
 pub mod ppu;
 pub mod apu;
 pub mod debug_tracer;
+pub mod emulator;
+pub mod gameboy;
 
 #[cfg(target_arch = "wasm32")]
 mod web;
