@@ -72,6 +72,23 @@ export function export_state() {
 }
 
 /**
+ * Keep the replacement firmware's attribution available in binary deployments.
+ * @returns {string}
+ */
+export function get_boot_rom_license() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const ret = wasm.get_boot_rom_license();
+        deferred1_0 = ret[0];
+        deferred1_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
  * @returns {string}
  */
 export function get_debug_state() {
@@ -88,7 +105,6 @@ export function get_debug_state() {
 }
 
 /**
- * Returns true when the loaded ROM requires/supports Game Boy Color mode.
  * @returns {boolean}
  */
 export function get_is_cgb() {
@@ -225,13 +241,13 @@ export function list_breakpoints() {
 }
 
 /**
- * @param {Uint8Array} rom_data
- * @param {Uint8Array} boot_rom_data
+ * @param {Uint8Array} rom
+ * @param {Uint8Array} boot_rom
  */
-export function load_rom_data(rom_data, boot_rom_data) {
-    const ptr0 = passArray8ToWasm0(rom_data, wasm.__wbindgen_malloc);
+export function load_rom_data(rom, boot_rom) {
+    const ptr0 = passArray8ToWasm0(rom, wasm.__wbindgen_malloc);
     const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passArray8ToWasm0(boot_rom_data, wasm.__wbindgen_malloc);
+    const ptr1 = passArray8ToWasm0(boot_rom, wasm.__wbindgen_malloc);
     const len1 = WASM_VECTOR_LEN;
     const ret = wasm.load_rom_data(ptr0, len0, ptr1, len1);
     if (ret[1]) {
@@ -303,10 +319,10 @@ export function save_game() {
 
 /**
  * @param {number} key_code
- * @param {boolean} is_pressed
+ * @param {boolean} pressed
  */
-export function set_key_state(key_code, is_pressed) {
-    wasm.set_key_state(key_code, is_pressed);
+export function set_key_state(key_code, pressed) {
+    wasm.set_key_state(key_code, pressed);
 }
 
 /**
@@ -370,6 +386,10 @@ function __wbg_get_imports() {
             const ret = arg0.call(arg1);
             return ret;
         }, arguments); },
+        __wbg_canvas_225cdcf260dd98f9: function(arg0) {
+            const ret = arg0.canvas;
+            return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
+        },
         __wbg_clearRect_113336b72205d987: function(arg0, arg1, arg2, arg3, arg4) {
             arg0.clearRect(arg1, arg2, arg3, arg4);
         },
@@ -404,6 +424,10 @@ function __wbg_get_imports() {
             const ret = global.global;
             return ret;
         }, arguments); },
+        __wbg_height_61b2af758a7c9a73: function(arg0) {
+            const ret = arg0.height;
+            return ret;
+        },
         __wbg_instanceof_CanvasRenderingContext2d_d22916fed004e2fd: function(arg0) {
             let result;
             try {
@@ -478,8 +502,8 @@ function __wbg_get_imports() {
         __wbg_putImageData_11e4d488ba4c8adc: function() { return handleError(function (arg0, arg1, arg2, arg3) {
             arg0.putImageData(arg1, arg2, arg3);
         }, arguments); },
-        __wbg_queueAudioSamples_c0cdffeee2ee01ba: function(arg0, arg1, arg2, arg3) {
-            queueAudioSamples(getArrayF32FromWasm0(arg0, arg1), getArrayF32FromWasm0(arg2, arg3));
+        __wbg_queueAudioSamples_b60e9de30039f2a9: function(arg0, arg1, arg2, arg3, arg4) {
+            queueAudioSamples(getArrayF32FromWasm0(arg0, arg1), getArrayF32FromWasm0(arg2, arg3), arg4 >>> 0);
         },
         __wbg_requestAnimationFrame_19c4d2780a20f129: function() { return handleError(function (arg0, arg1) {
             const ret = arg0.requestAnimationFrame(arg1);
@@ -488,6 +512,9 @@ function __wbg_get_imports() {
         __wbg_self_84d02e00450d52f3: function() { return handleError(function () {
             const ret = self.self;
             return ret;
+        }, arguments); },
+        __wbg_setProperty_89d64b0d2949fe69: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
+            arg0.setProperty(getStringFromWasm0(arg1, arg2), getStringFromWasm0(arg3, arg4));
         }, arguments); },
         __wbg_set_8ab55bbf9f2507cd: function(arg0, arg1, arg2) {
             arg0.set(arg1, arg2 >>> 0);
@@ -509,15 +536,23 @@ function __wbg_get_imports() {
             const ret = storeSaveData(getStringFromWasm0(arg0, arg1), getArrayU8FromWasm0(arg2, arg3));
             return ret;
         },
+        __wbg_style_ec3e6dd1a87490a3: function(arg0) {
+            const ret = arg0.style;
+            return ret;
+        },
         __wbg_toggleVramCanvas_3800f19a85e9545c: function(arg0) {
             toggleVramCanvas(arg0 !== 0);
+        },
+        __wbg_width_18809a309666ddae: function(arg0) {
+            const ret = arg0.width;
+            return ret;
         },
         __wbg_window_58f68528f5b015de: function() { return handleError(function () {
             const ret = window.window;
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [F64], shim_idx: 25, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [F64], shim_idx: 1, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_5aa949e133d73c3e___convert__closures_____invoke___f64______true_);
             return ret;
         },

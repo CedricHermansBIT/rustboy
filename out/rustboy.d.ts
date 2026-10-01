@@ -21,11 +21,13 @@ export function export_save_data(): Uint8Array;
 
 export function export_state(): Uint8Array;
 
+/**
+ * Keep the replacement firmware's attribution available in binary deployments.
+ */
+export function get_boot_rom_license(): string;
+
 export function get_debug_state(): string;
 
-/**
- * Returns true when the loaded ROM requires/supports Game Boy Color mode.
- */
 export function get_is_cgb(): boolean;
 
 export function get_rom_title(): string;
@@ -48,7 +50,7 @@ export function is_tracing(): boolean;
 
 export function list_breakpoints(): string;
 
-export function load_rom_data(rom_data: Uint8Array, boot_rom_data: Uint8Array): void;
+export function load_rom_data(rom: Uint8Array, boot_rom: Uint8Array): void;
 
 export function main_js(): void;
 
@@ -64,7 +66,7 @@ export function reset_emulator(): void;
 
 export function save_game(): void;
 
-export function set_key_state(key_code: number, is_pressed: boolean): void;
+export function set_key_state(key_code: number, pressed: boolean): void;
 
 export function set_paused(paused: boolean): void;
 
@@ -85,6 +87,7 @@ export interface InitOutput {
     readonly add_breakpoint_reg: (a: number, b: number, c: number) => void;
     readonly export_save_data: () => [number, number];
     readonly export_state: () => [number, number];
+    readonly get_boot_rom_license: () => [number, number];
     readonly get_debug_state: () => [number, number];
     readonly get_is_cgb: () => number;
     readonly get_rom_title: () => [number, number];
@@ -101,18 +104,18 @@ export interface InitOutput {
     readonly peek: (a: number) => number;
     readonly peek_regs: () => [number, number];
     readonly peek_slice: (a: number, b: number) => [number, number];
+    readonly remove_breakpoint: (a: number) => void;
     readonly set_key_state: (a: number, b: number) => void;
     readonly set_paused: (a: number) => void;
     readonly trace_len: () => number;
-    readonly remove_breakpoint: (a: number) => void;
     readonly get_speed: () => number;
     readonly set_speed: (a: number) => void;
+    readonly reset_emulator: () => void;
     readonly clear_save_data: () => void;
     readonly clear_breakpoints: () => void;
     readonly clear_trace: () => void;
-    readonly reset_emulator: () => void;
-    readonly toggle_trace: () => void;
     readonly save_game: () => void;
+    readonly toggle_trace: () => void;
     readonly wasm_bindgen_5aa949e133d73c3e___convert__closures_____invoke___f64______true_: (a: number, b: number, c: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
