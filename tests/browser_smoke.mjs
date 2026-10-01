@@ -108,10 +108,26 @@ try {
     rom.set([0xC3, 0x50, 0x01], 0x100);
     rom.fill(0xAA, 0x104, 0x134);
     rom[0x143] = process.env.RUSTBOY_SYNTHETIC_CGB ? 0x80 : 0;
+    if (process.env.RUSTBOY_SYNTHETIC_SGB) {
+      rom[0x143] = 0x80; // Dual-mode cart explicitly running on the SGB/DMG path.
+      rom[0x146] = 3; rom[0x14B] = 0x33;
+      await evaluate("document.querySelector('#hardware-model').value = 'sgb'; document.querySelector('#hardware-model').dispatchEvent(new Event('change'))");
+      assert.ok(await evaluate("!document.querySelector('#sgb-warning').classList.contains('hidden')"));
+    }
     const code = [0xF3, 0xAF, 0xE0, 0x40, 0x3E, 0xE4, 0xE0, 0x47,
       0x21, 0x00, 0x80, 0x06, 0x10, 0x3E, 0xAA, 0x22, 0x05, 0x20, 0xFC,
       0x3E, 0x80, 0xE0, 0x68];
     for (const color of [0xFF, 0x7F, 0, 0, 0, 0, 0, 0]) code.push(0x3E, color, 0xE0, 0x69);
+    if (process.env.RUSTBOY_SYNTHETIC_SGB) {
+      // PAL01 through real cartridge instructions, with recommended low/high
+      // pulse spacing. White backdrop, shade 3 red instead of handheld black.
+      const pulse = value => code.push(0x3E, value, 0xE0, 0, ...Array(5).fill(0), 0x3E, 0x30, 0xE0, 0, ...Array(15).fill(0));
+      pulse(0);
+      for (const byte of [1, 0xFF, 0x7F, 0xE0, 3, 0, 0x7C, 31, 0, 0, 0, 0, 0, 0, 0, 0]) {
+        for (let bit = 0; bit < 8; bit++) pulse(byte & (1 << bit) ? 0x10 : 0x20);
+      }
+      pulse(0x20);
+    }
     code.push(0x3E, 0x91, 0xE0, 0x40, 0x3E, 0x66, 0xEA, 0x00, 0xC0, 0x18, 0xFE);
     rom.set(code, 0x150);
     gamePath = path.join(temporary, rom[0x143] ? 'synthetic.gbc' : 'synthetic.gb');
@@ -190,6 +206,23 @@ try {
     if (!process.env.RUSTBOY_ROM && process.env.RUSTBOY_NO_BOOT) {
       assert.equal(await evaluate("window.mem(0xC000)"), '0x66', 'replacement boot must reach the cartridge');
       assert.ok(await evaluate("(async () => (await import('./out/rustboy.js')).get_boot_rom_license().includes('Lior Halphon'))()"));
+      if (process.env.RUSTBOY_SYNTHETIC_SGB) {
+        assert.equal(await evaluate("Module._get_is_cgb()"), false, 'SGB uses DMG hardware for a dual-mode cartridge');
+        assert.ok(await evaluate("Module._get_sgb_status().includes('commands 1')"));
+        const pixel = await evaluate("Array.from(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,1,1).data)");
+        assert.deepEqual(pixel, [255, 0, 0, 255], 'cartridge PAL01 reaches the canvas');
+        assert.ok(await evaluate("Module._get_state_id().endsWith('-sgb-hle-v1')"));
+        await evaluate("window.sgbSavedState = Module._export_state(); Module._reset_emulator(); Module._import_state(window.sgbSavedState)");
+        assert.ok(await evaluate("Module._get_sgb_status().includes('commands 1')"));
+        // A rejected CGB-only upload must leave the running SGB session intact.
+        const incompatible = new Uint8Array(32768); incompatible[0x143] = 0xC0;
+        const incompatiblePath = path.join(temporary, 'color-only.gbc');
+        await fs.writeFile(incompatiblePath, incompatible);
+        await call('DOM.setFileInputFiles', {nodeId, files: [incompatiblePath]});
+        await until("document.body.textContent.includes('CGB-only cartridge')");
+        assert.ok(await evaluate("Module._get_sgb_status().includes('commands 1')"));
+        console.log('SGB browser: explicit model, command-driven colors, state restore, incompatible upload preservation passed');
+      }
     }
     await evaluate("document.querySelector('#quick-pause').click()");
     await until("document.querySelector('#quick-pause').textContent.includes('Resume')");

@@ -12,6 +12,12 @@ The project now separates its frontend, shared emulator interface and Game Boy
 backend into a Cargo workspace. See [the architecture guide](ARCHITECTURE.md)
 for the extension boundaries intended for future NES/SNES/SGB support.
 
+An opt-in **experimental Super Game Boy mode** now implements direct palette
+commands, tile-region colors, screen masks and controller detection. Choose it
+under **Hardware for next load** in the ROM picker. This is not full SGB support:
+VRAM transfers, borders, SNES audio/program execution and exact SGB timing are
+not implemented. See [the SGB milestone and roadmap](SGB_SUPPORT.md).
+
 ## Building
 
 Requirements: Rust, the WASM target, Python 3.11+, and the matching

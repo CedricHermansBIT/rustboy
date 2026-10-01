@@ -811,6 +811,15 @@
         <button id="upload-btn">📂 Upload ROM (.gb/.gbc)</button>
         <input type="file" id="rom-file-input" accept=".gb,.gbc,.bin" style="display:none" />
       </div>
+      <label for="hardware-model">Hardware for next load</label>
+      <select id="hardware-model">
+        <option value="auto">Automatic (GB/GBC)</option>
+        <option value="dmg">Game Boy</option>
+        <option value="cgb">Game Boy Color</option>
+        <option value="sgb">Super Game Boy — experimental</option>
+      </select>
+      <p id="sgb-warning" class="hint hidden">SGB palettes, screen regions and controller detection only.
+        VRAM transfers, borders, SNES sound and SNES programs are not supported yet.</p>
       <p class="hint">Type to search · ←→↑↓ navigate · Enter load · Esc back · Drag & drop .gb/.gbc files</p>
     </div>
 
@@ -2258,14 +2267,26 @@
       import { loadWithBootRom } from './web/rom-loader.mjs';
       import { fetchLibraryRom } from './web/library-rom.mjs';
       init().then(() => {
+        const hardware = document.querySelector('#hardware-model');
+        hardware.addEventListener('change', () => {
+          document.querySelector('#sgb-warning').classList.toggle('hidden', hardware.value !== 'sgb');
+        });
         Module = {
           _fetch_library_rom: fetchLibraryRom,
           _set_key_state: Rustboy.set_key_state,
-          _load_rom_data: data => loadWithBootRom(Rustboy.load_rom_data, data),
+          _load_rom_data: data => {
+            const model = hardware.value;
+            if (!Rustboy.load_rom_data_with_model && model !== 'auto') {
+              throw new Error('Hardware selection needs the updated WASM bundle; refresh the page');
+            }
+            return loadWithBootRom((rom, boot) => Rustboy.load_rom_data_with_model
+              ? Rustboy.load_rom_data_with_model(rom, boot, model) : Rustboy.load_rom_data(rom, boot), data, fetch, model);
+          },
           _get_debug_state: Rustboy.get_debug_state,
           _save_game: Rustboy.save_game,
           _get_speed: Rustboy.get_speed,
           _get_is_cgb: Rustboy.get_is_cgb,
+          _get_sgb_status: Rustboy.get_sgb_status,
           _export_state: Rustboy.export_state,
           _import_state: Rustboy.import_state,
           _get_state_id: Rustboy.get_state_id,
@@ -2296,6 +2317,7 @@
         window.mem  = (a) => '0x' + Rustboy.peek(a).toString(16).toUpperCase().padStart(2, '0');
         window.dump = (s,l) => console.log(Rustboy.peek_slice(s, l||16));
         window.regs = () => console.log(Rustboy.peek_regs());
+        window.sgb = () => console.log(Rustboy.get_sgb_status?.() || 'SGB unavailable in this bundle');
 
         saveInterval = setInterval(() => {
           if (Module._save_game) { try { Module._save_game(); } catch(e) {} }

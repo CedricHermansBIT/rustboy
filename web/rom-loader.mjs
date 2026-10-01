@@ -1,9 +1,13 @@
 // Optional external firmware overrides the licensed replacement built into WASM.
-export async function loadWithBootRom(loadRom, data, fetchFile = fetch) {
+export async function loadWithBootRom(loadRom, data, fetchFile = fetch, model = 'auto') {
   if (!(data instanceof Uint8Array) || data.length < 32768) {
     throw new Error('ROM is truncated: at least 32 KiB is required');
   }
-  const cgb = (data[0x143] & 0x80) !== 0;
+  if (!['auto', 'dmg', 'cgb', 'sgb'].includes(model)) throw new Error('Unknown Game Boy hardware model');
+  if (['dmg', 'sgb'].includes(model) && data[0x143] === 0xC0) {
+    throw new Error('CGB-only cartridge cannot run on DMG/SGB hardware');
+  }
+  const cgb = model === 'cgb' || (model === 'auto' && (data[0x143] & 0x80) !== 0);
   const path = cgb ? 'roms/cgb_boot.bin' : 'roms/dmg_boot.bin';
   let response;
   try { response = await fetchFile(path, {signal: AbortSignal.timeout(3000)}); }

@@ -1,7 +1,8 @@
 # Emulator backend architecture
 
-The current implementation remains Game Boy/Game Boy Color only. NES, SNES and
-Super Game Boy are future backends, not advertised as supported platforms.
+The core implements Game Boy/Game Boy Color, plus an opt-in experimental
+[high-level SGB adapter](SGB_SUPPORT.md). NES, SNES and full hardware-level
+Super Game Boy remain future backends, not advertised as supported platforms.
 
 ## Workspace boundaries
 
@@ -49,6 +50,8 @@ Persistence callbacks and browser storage do not enter the backend. Game Boy
 continues to produce the same battery-save/state bytes and identity keys.
 Original state versions 1 and 2 remain supported. New backends must provide
 their own version/ROM/hardware checks and distinct persistence namespaces.
+The experimental SGB adapter wraps CPU state in a separate versioned envelope
+and keeps its save-state identity distinct; battery saves stay cartridge-bound.
 
 `HostServices` supplies a per-machine clock callback for RTCs and an optional
 logger. Native defaults use SystemTime; a headless WASM default is frozen and
@@ -83,6 +86,8 @@ plus SNES hardware/system software and an ICD2 bridge. It requires a shared
 internal timeline and signal exchange, not merely passing one video frame
 between two frontend-level `Emulator` objects. The interface leaves that work
 inside the composed backend, where SNES CPU/audio components can later be reused.
+The current SGB command interpreter deliberately implements only a subset of
+the adapter behavior. It adds no placeholder SNES CPU/audio emulation.
 
 ## Verification
 

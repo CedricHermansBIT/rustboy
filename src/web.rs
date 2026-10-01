@@ -68,11 +68,23 @@ pub fn set_key_state(key_code: u32, pressed: bool) {
 
 #[wasm_bindgen]
 pub fn load_rom_data(rom: &[u8], boot_rom: &[u8]) -> Result<(), JsValue> {
+    load_rom_data_with_model(rom, boot_rom, "auto")
+}
+
+#[wasm_bindgen]
+pub fn load_rom_data_with_model(rom: &[u8], boot_rom: &[u8], model: &str) -> Result<(), JsValue> {
+    let model = match model {
+        "auto" => HardwareModel::Auto,
+        "dmg" => HardwareModel::Dmg,
+        "cgb" => HardwareModel::Cgb,
+        "sgb" => HardwareModel::Sgb,
+        _ => return Err(JsValue::from_str("Unknown Game Boy hardware model")),
+    };
     // Construct and validate before replacing the running session or its saves.
     let mut backend = GameBoy::load_with_host(
         rom,
         boot_rom,
-        HardwareModel::Auto,
+        model,
         HostServices {
             now_unix_seconds: || (js_sys::Date::now() / 1000.0) as u64,
             log: Some(|message| console::log_1(&message.into())),
@@ -182,6 +194,35 @@ pub fn get_debug_state() -> String {
 #[wasm_bindgen]
 pub fn get_is_cgb() -> bool {
     with_gb(|cpu| cpu.is_cgb).unwrap_or(false)
+}
+
+#[wasm_bindgen]
+pub fn get_sgb_status() -> String {
+    with_gb(|cpu| {
+        let Some(sgb) = &cpu.sgb else {
+            return "SGB mode is off".into();
+        };
+        let unsupported = sgb
+            .unsupported
+            .iter()
+            .enumerate()
+            .filter(|(_, count)| **count != 0)
+            .map(|(code, count)| format!("${code:02X}: {count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "Experimental SGB HLE: functions {}, players {}, commands {}; unsupported [{}]",
+            if sgb.enabled() {
+                "enabled"
+            } else {
+                "disabled by cartridge header"
+            },
+            sgb.players(),
+            sgb.commands_received,
+            unsupported
+        )
+    })
+    .unwrap_or_else(|| "No ROM is loaded".into())
 }
 
 /// Keep the replacement firmware's attribution available in binary deployments.

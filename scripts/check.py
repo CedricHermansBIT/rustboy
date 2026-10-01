@@ -59,12 +59,15 @@ def main():
         subprocess.run(cargo + ["--test", "headless", "--test", "graphics", "--test", "boot_diagnostics", "--"] + filters, cwd=ROOT, check=True)
     if args.browser:
         subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT, check=True)
-        for cgb in [False, True]:
+        for model in ["dmg", "cgb", "sgb"]:
             environment = {**os.environ, "RUSTBOY_NO_BOOT": "1"}
             environment.pop("RUSTBOY_ROM", None)
             environment.pop("RUSTBOY_SYNTHETIC_CGB", None)
-            if cgb:
+            environment.pop("RUSTBOY_SYNTHETIC_SGB", None)
+            if model == "cgb":
                 environment["RUSTBOY_SYNTHETIC_CGB"] = "1"
+            if model == "sgb":
+                environment["RUSTBOY_SYNTHETIC_SGB"] = "1"
             subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT, env=environment, check=True)
 
 

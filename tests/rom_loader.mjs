@@ -31,4 +31,17 @@ for (const flag of [0, 0x80, 0xC0]) {
     assert.ok(fallback);
   }
 }
-console.log('ROM loader: DMG/CGB overrides, malformed uploads, and boot-file-free/network-error fallback passed');
+for (const [model, flag, cgb] of [['sgb', 0x80, false], ['dmg', 0x80, false], ['cgb', 0, true], ['auto', 0x80, true]]) {
+  const rom = new Uint8Array(32768); rom[0x143] = flag;
+  await loadWithBootRom((data, boot) => assert.equal(boot.length, cgb ? 2304 : 256), rom,
+    async path => {
+      assert.equal(path, cgb ? 'roms/cgb_boot.bin' : 'roms/dmg_boot.bin');
+      return {ok: true, arrayBuffer: async () => new ArrayBuffer(cgb ? 2304 : 256)};
+    }, model);
+}
+const colorOnly = new Uint8Array(32768); colorOnly[0x143] = 0xC0;
+for (const model of ['sgb', 'dmg', 'unknown']) {
+  await assert.rejects(loadWithBootRom(() => assert.fail('invalid model must not load'), colorOnly,
+    () => assert.fail('invalid model must not fetch firmware'), model), /hardware/);
+}
+console.log('ROM loader: explicit DMG/CGB/SGB models, malformed uploads, and boot-file-free/network-error fallback passed');
