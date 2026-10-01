@@ -41,6 +41,8 @@
       /* Canvas area */
       #screen-area {
         position: relative;
+        flex: 1;
+        min-width: 0;
         height: 100%;
         display: flex;
         align-items: center;
@@ -48,6 +50,8 @@
         overflow: hidden;
       }
       canvas {
+        max-width: 100%;
+        object-fit: contain;
         image-rendering: pixelated;
         image-rendering: crisp-edges;
       }
@@ -534,7 +538,7 @@
       .save-panel button:hover { color: #9be89b; border-color: #6a8; }
       #state-slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin: 12px 0 17px; }
       .state-slot { border: 1px solid #333; border-radius: 6px; padding: 8px; min-width: 0; }
-      .state-slot img { width: 100%; aspect-ratio: 10/9; object-fit: cover; image-rendering: pixelated; background: #090909; border-radius: 3px; }
+      .state-slot img { width: 100%; height: auto; object-fit: contain; image-rendering: pixelated; background: #090909; border-radius: 3px; }
       .state-slot strong, .state-slot small { display: block; margin: 5px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .state-slot small { color: #777; font-size: .66rem; }
       .state-actions { display: flex; gap: 4px; flex-wrap: wrap; }
@@ -818,8 +822,8 @@
         <option value="cgb">Game Boy Color</option>
         <option value="sgb">Super Game Boy — experimental</option>
       </select>
-      <p id="sgb-warning" class="hint hidden">SGB palettes, screen regions and controller detection only.
-        VRAM transfers, borders, SNES sound and SNES programs are not supported yet.</p>
+      <p id="sgb-warning" class="hint hidden">Experimental SGB palettes, game-provided borders and controller detection.
+        Palette/attribute table transfers, SNES sound and SNES programs are not supported yet.</p>
       <p class="hint">Type to search · ←→↑↓ navigate · Enter load · Esc back · Drag & drop .gb/.gbc files</p>
     </div>
 

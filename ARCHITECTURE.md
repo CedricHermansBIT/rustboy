@@ -52,6 +52,8 @@ Original state versions 1 and 2 remain supported. New backends must provide
 their own version/ROM/hardware checks and distinct persistence namespaces.
 The experimental SGB adapter wraps CPU state in a separate versioned envelope
 and keeps its save-state identity distinct; battery saves stay cartridge-bound.
+SGB envelope v2 adds custom border data, bounded pending LCD transfers and the
+partially rendered LCD cache. Its reader accepts v1 without those fields.
 
 `HostServices` supplies a per-machine clock callback for RTCs and an optional
 logger. Native defaults use SystemTime; a headless WASM default is frozen and
@@ -88,6 +90,9 @@ between two frontend-level `Emulator` objects. The interface leaves that work
 inside the composed backend, where SNES CPU/audio components can later be reused.
 The current SGB command interpreter deliberately implements only a subset of
 the adapter behavior. It adds no placeholder SNES CPU/audio emulation.
+Its custom-border renderer consumes game-transferred tile/map/palette data;
+bulk transfers decode the post-palette LCD signal, not assumed VRAM addresses.
+Presentation expands to 256×224 only after a custom border map is received.
 
 ## Verification
 

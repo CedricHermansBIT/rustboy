@@ -2,7 +2,8 @@
 // No npm dependencies. RUSTBOY_BROWSER can override the Chromium executable.
 // RUSTBOY_ROM optionally adds a gameplay smoke test with your local ROM/BIOS.
 import assert from 'node:assert/strict';
-import {spawn} from 'node:child_process';
+import {spawn, execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
@@ -102,6 +103,13 @@ try {
   await until("document.body.textContent.includes('ROM is truncated')");
   assert.deepEqual(exceptions, [], 'unhandled browser errors');
   let gamePath = process.env.RUSTBOY_ROM && path.resolve(process.env.RUSTBOY_ROM);
+  const borderTest = !!process.env.RUSTBOY_SGB_BORDER;
+  if (borderTest) {
+    gamePath = path.join(temporary, 'sgb-border.gb');
+    await promisify(execFile)('cargo', ['run', '--locked', '--offline', '--release', '--no-default-features',
+      '--example', 'sgb_border_fixture', '--', gamePath], {cwd: root, timeout: 120000});
+    await evaluate("document.querySelector('#hardware-model').value = 'sgb'; document.querySelector('#hardware-model').dispatchEvent(new Event('change'))");
+  }
   if (!gamePath && process.env.RUSTBOY_NO_BOOT && !process.env.RUSTBOY_HOMEBREW) {
     // Public-domain synthetic program: draw a repeating tile and publish 0x66.
     const rom = new Uint8Array(32768);
@@ -201,12 +209,48 @@ try {
       }
     }
     await new Promise(resolve => setTimeout(resolve, 6000));
+    if (borderTest) {
+      await until("document.querySelector('#rustboy-canvas').width === 256 && window.mem(0xC000) === '0x66'");
+      const geometry = await evaluate("(() => { const c = document.querySelector('#rustboy-canvas'); return [c.width,c.height,c.style.aspectRatio]; })()");
+      assert.deepEqual(geometry, [256,224,'8 / 7']);
+      const samples = await evaluate("(() => { const ctx = document.querySelector('#rustboy-canvas').getContext('2d'); return [[0,0],[8,0],[48,40],[49,40],[56,48]].map(([x,y]) => Array.from(ctx.getImageData(x,y,1,1).data)); })()");
+      assert.deepEqual(samples, [[0,255,0,255],[255,0,0,255],[173,173,173,255],[255,255,255,255],[255,0,0,255]]);
+      // The wider border must remain fully visible beside the desktop panels,
+      // as well as in a portrait touch layout. Canvas object-fit preserves the
+      // native ratio when the available CSS box is narrower than the frame.
+      for (const [width, height, mobile] of [[1100,720,false],[390,844,true]]) {
+        await call('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile});
+        await new Promise(resolve => setTimeout(resolve, 150));
+        assert.ok(await evaluate("(() => { const c = document.querySelector('#rustboy-canvas'), a = document.querySelector('#screen-area'); const r = c.getBoundingClientRect(), s = a.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.left >= s.left - 1 && r.right <= s.right + 1 && r.top >= s.top - 1 && r.bottom <= s.bottom + 1 && getComputedStyle(c).objectFit === 'contain'; })()"), 'border canvas must fit the available screen area');
+      }
+      await call('Emulation.clearDeviceMetricsOverride');
+      assert.ok(await evaluate("Module._get_sgb_status().includes('border present')"));
+      assert.ok(await evaluate("Module._get_sgb_status().includes('pending transfers 0')"));
+      await evaluate("window.sgbSavedState = Module._export_state(); Module._reset_emulator()");
+      await until("document.querySelector('#rustboy-canvas').width === 160");
+      await evaluate("Module._import_state(window.sgbSavedState)");
+      await until("document.querySelector('#rustboy-canvas').width === 256");
+      assert.deepEqual(await evaluate("Array.from(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,1,1).data)"), [0,255,0,255]);
+      if (process.env.RUSTBOY_BORDER_SCREENSHOT) {
+        const data = await evaluate("document.querySelector('#rustboy-canvas').toDataURL('image/png').split(',')[1]");
+        await fs.writeFile(process.env.RUSTBOY_BORDER_SCREENSHOT, Buffer.from(data, 'base64'));
+      }
+      // Loading a normal GB cartridge afterwards must restore 160x144 output,
+      // rather than leaving the previous SGB border/canvas around the next game.
+      await evaluate("document.querySelector('#hardware-model').value = 'auto'");
+      const ordinary = new Uint8Array(32768); ordinary.set([0xC3,0x50,1], 0x100); ordinary.set([0x18,0xFE], 0x150);
+      const ordinaryPath = path.join(temporary, 'ordinary.gb'); await fs.writeFile(ordinaryPath, ordinary);
+      await call('DOM.setFileInputFiles', {nodeId, files: [ordinaryPath]});
+      await until("Module._get_sgb_status() === 'SGB mode is off' && document.querySelector('#rustboy-canvas').width === 160");
+      assert.equal(await evaluate("document.querySelector('#rustboy-canvas').height"), 144);
+      console.log('SGB border browser: CHR/PCT uploads, 256x224 canvas, transparency/overlay, snapshot/reset and return to handheld passed');
+    }
     const colors = await evaluate("new Set(new Uint32Array(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,160,144).data.buffer)).size");
-    assert.ok(colors > 1, 'game canvas must render nonblank content');
-    if (!process.env.RUSTBOY_ROM && process.env.RUSTBOY_NO_BOOT) {
+    if (!borderTest) assert.ok(colors > 1, 'game canvas must render nonblank content');
+    if (!process.env.RUSTBOY_ROM && process.env.RUSTBOY_NO_BOOT && !borderTest) {
       assert.equal(await evaluate("window.mem(0xC000)"), '0x66', 'replacement boot must reach the cartridge');
       assert.ok(await evaluate("(async () => (await import('./out/rustboy.js')).get_boot_rom_license().includes('Lior Halphon'))()"));
-      if (process.env.RUSTBOY_SYNTHETIC_SGB) {
+      if (process.env.RUSTBOY_SYNTHETIC_SGB && !borderTest) {
         assert.equal(await evaluate("Module._get_is_cgb()"), false, 'SGB uses DMG hardware for a dual-mode cartridge');
         assert.ok(await evaluate("Module._get_sgb_status().includes('commands 1')"));
         const pixel = await evaluate("Array.from(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,1,1).data)");
