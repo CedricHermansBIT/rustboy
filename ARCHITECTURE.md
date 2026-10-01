@@ -53,7 +53,10 @@ their own version/ROM/hardware checks and distinct persistence namespaces.
 The experimental SGB adapter wraps CPU state in a separate versioned envelope
 and keeps its save-state identity distinct; battery saves stay cartridge-bound.
 SGB envelope v2 adds custom border data, bounded pending LCD transfers and the
-partially rendered LCD cache. Its reader accepts v1 without those fields.
+partially rendered LCD cache. SGB envelope v3 adds transferred palette/attribute
+tables and packed frozen LCD shades, so palette updates recolor a frozen image.
+Its reader accepts v1/v2 and preserves their RGBA frame until a fresh LCD frame
+is captured. Handheld CPU snapshot versions and battery-save bytes are unchanged.
 
 `HostServices` supplies a per-machine clock callback for RTCs and an optional
 logger. Native defaults use SystemTime; a headless WASM default is frozen and

@@ -211,7 +211,7 @@ pub fn get_sgb_status() -> String {
             .collect::<Vec<_>>()
             .join(", ");
         format!(
-            "Experimental SGB HLE: functions {}, players {}, commands {}; unsupported [{}]; border {}, pending transfers {}, dropped transfers {}",
+            "Experimental SGB HLE: functions {}, players {}, commands {}; unsupported [{}]; border {}, pending transfers {}, dropped transfers {}; screen mask {}",
             if sgb.enabled() {
                 "enabled"
             } else {
@@ -223,6 +223,7 @@ pub fn get_sgb_status() -> String {
             if sgb.has_border() { "present" } else { "absent" },
             sgb.transfers_pending(),
             sgb.transfer_drops,
+            sgb.screen_mask(),
         )
     })
     .unwrap_or_else(|| "No ROM is loaded".into())

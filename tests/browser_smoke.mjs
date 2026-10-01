@@ -104,10 +104,17 @@ try {
   assert.deepEqual(exceptions, [], 'unhandled browser errors');
   let gamePath = process.env.RUSTBOY_ROM && path.resolve(process.env.RUSTBOY_ROM);
   const borderTest = !!process.env.RUSTBOY_SGB_BORDER;
-  if (borderTest) {
-    gamePath = path.join(temporary, 'sgb-border.gb');
+  const paletteTest = !!process.env.RUSTBOY_SGB_PALETTES;
+  assert.ok(!(borderTest && paletteTest), 'select one generated SGB cartridge');
+  if (process.env.RUSTBOY_HARDWARE) {
+    assert.ok(['auto', 'dmg', 'cgb', 'sgb'].includes(process.env.RUSTBOY_HARDWARE));
+    await evaluate(`document.querySelector('#hardware-model').value = ${JSON.stringify(process.env.RUSTBOY_HARDWARE)}; document.querySelector('#hardware-model').dispatchEvent(new Event('change'))`);
+  }
+  if (borderTest || paletteTest) {
+    const fixture = borderTest ? 'border' : 'palette';
+    gamePath = path.join(temporary, `sgb-${fixture}.gb`);
     await promisify(execFile)('cargo', ['run', '--locked', '--offline', '--release', '--no-default-features',
-      '--example', 'sgb_border_fixture', '--', gamePath], {cwd: root, timeout: 120000});
+      '--example', `sgb_${fixture}_fixture`, '--', gamePath], {cwd: root, timeout: 120000});
     await evaluate("document.querySelector('#hardware-model').value = 'sgb'; document.querySelector('#hardware-model').dispatchEvent(new Event('change'))");
   }
   if (!gamePath && process.env.RUSTBOY_NO_BOOT && !process.env.RUSTBOY_HOMEBREW) {
@@ -208,7 +215,21 @@ try {
         await fs.writeFile(process.env.RUSTBOY_BOOT_SCREENSHOT, Buffer.from(data, 'base64'));
       }
     }
-    await new Promise(resolve => setTimeout(resolve, 6000));
+    const waitMs = Number(process.env.RUSTBOY_GAME_WAIT_MS || 6000);
+    assert.ok(Number.isFinite(waitMs) && waitMs >= 0 && waitMs <= 60000);
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+    if (paletteTest) {
+      await until("window.mem(0xC000) === '0x66'");
+      const paletteSamples = "(() => { const c = document.querySelector('#rustboy-canvas'); return [[0,0],[8,0],[8,8],[16,0],[24,0]].map(([x,y]) => Array.from(c.getContext('2d').getImageData(x,y,1,1).data)); })()";
+      const expected = [[0,255,0,255],[255,0,0,255],[0,0,255,255],[255,0,0,255],[255,0,255,255]];
+      assert.deepEqual(await evaluate(paletteSamples), expected, 'PAL_TRN/PAL_SET/ATTR_TRN reach the canvas');
+      const status = await evaluate("Module._get_sgb_status()");
+      assert.ok(status.includes('commands 5') && status.includes('unsupported []') && status.includes('screen mask 0') && status.includes('pending transfers 0'), status);
+      await evaluate("window.sgbSavedState = Module._export_state(); Module._reset_emulator(); Module._import_state(window.sgbSavedState)");
+      await until("Module._get_sgb_status().includes('commands 5')");
+      assert.deepEqual(await evaluate(paletteSamples), expected, 'snapshot restores transferred palettes and attributes');
+      console.log('SGB palettes browser: all-white palette replacement, LCD table uploads, ATF selection, mask cancellation and snapshot restore passed');
+    }
     if (borderTest) {
       await until("document.querySelector('#rustboy-canvas').width === 256 && window.mem(0xC000) === '0x66'");
       const geometry = await evaluate("(() => { const c = document.querySelector('#rustboy-canvas'); return [c.width,c.height,c.style.aspectRatio]; })()");
@@ -245,8 +266,12 @@ try {
       assert.equal(await evaluate("document.querySelector('#rustboy-canvas').height"), 144);
       console.log('SGB border browser: CHR/PCT uploads, 256x224 canvas, transparency/overlay, snapshot/reset and return to handheld passed');
     }
-    const colors = await evaluate("new Set(new Uint32Array(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,160,144).data.buffer)).size");
+    const colors = await evaluate("(() => { const c = document.querySelector('#rustboy-canvas'); return new Set(new Uint32Array(c.getContext('2d').getImageData(c.width === 256 ? 48 : 0,c.height === 224 ? 40 : 0,160,144).data.buffer)).size; })()");
     if (!borderTest) assert.ok(colors > 1, 'game canvas must render nonblank content');
+    if (process.env.RUSTBOY_GAME_SCREENSHOT) {
+      const data = await evaluate("document.querySelector('#rustboy-canvas').toDataURL('image/png').split(',')[1]");
+      await fs.writeFile(process.env.RUSTBOY_GAME_SCREENSHOT, Buffer.from(data, 'base64'));
+    }
     if (!process.env.RUSTBOY_ROM && process.env.RUSTBOY_NO_BOOT && !borderTest) {
       assert.equal(await evaluate("window.mem(0xC000)"), '0x66', 'replacement boot must reach the cartridge');
       assert.ok(await evaluate("(async () => (await import('./out/rustboy.js')).get_boot_rom_license().includes('Lior Halphon'))()"));

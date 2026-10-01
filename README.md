@@ -15,8 +15,8 @@ for the extension boundaries intended for future NES/SNES/SGB support.
 An opt-in **experimental Super Game Boy mode** now implements direct palette
 commands, tile-region colors, screen masks, game-provided borders and controller
 detection. Choose it under **Hardware for next load** in the ROM picker. This is
-not full SGB support: palette/attribute table transfers, SNES audio/program
-execution and exact SGB timing are not implemented.
+not full SGB support: SNES audio/program execution and exact SGB timing are not
+implemented. Direct and transferred palettes/attribute files are supported.
 See [the SGB milestone and roadmap](SGB_SUPPORT.md).
 
 ## Building

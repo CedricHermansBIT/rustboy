@@ -12,8 +12,9 @@ The choice applies to the next load, not to an already-running cartridge.
 
 SGB colorization is separate from CGB rendering: SGB uses the four-shade Game
 Boy image and applies its own palettes, not a cartridge's native CGB colors.
-Direct palette commands work, but games using the still-unimplemented
-`PAL_TRN`/`PAL_SET` tables can remain grayscale or have incorrect colors.
+Both direct palettes and transferred `PAL_TRN`/`PAL_SET` tables now work.
+Non-SGB games retain the neutral grayscale fallback; built-in firmware palettes
+and user-selected palette overrides are not included.
 
 ## Implemented
 
@@ -23,18 +24,27 @@ Direct palette commands work, but games using the still-unimplemented
 - Cartridge header gating: SGB flag `0x03` and old licensee code `0x33`.
 - `PAL01`, `PAL23`, `PAL03`, `PAL12`: little-endian RGB555 colors and a shared
   color-zero backdrop.
+- `PAL_TRN`: 512 four-color system palettes from a 4 KiB LCD-stream transfer.
+  `PAL_SET`: nine-bit palette selection, shared color zero, optional attribute
+  file application and independent `MASK_EN` cancellation.
+- `ATTR_TRN`: 45 packed 20×18 attribute files; `ATTR_SET` and `PAL_SET` decode
+  the selected file in MSB-first screen-row order. Invalid file IDs leave
+  attributes unchanged without preventing a requested mask cancellation.
+  Loading either table alone does not change the visible palettes/attributes.
 - `ATTR_BLK`, `ATTR_LIN`, `ATTR_DIV`, `ATTR_CHR`: 20×18 screen-tile attributes,
   multi-packet data, horizontal/vertical addressing and wrapping.
 - Colorization of the final LCD shade **after BGP/OBP**, including sprites and
   mid-scanline palette changes. Raw tile color is not mistaken for LCD shade.
 - `MASK_EN`: normal display, frozen image, black and backdrop-color masks.
   LCD-off retains the last complete frame rather than clearing the host canvas.
+  Freeze retains the LCD shades, so palette/attribute changes still recolor
+  that image without exposing the intervening transfer graphics.
 - `CHR_TRN`: both 128-tile halves of the game-provided 4-bitplane border.
   `PCT_TRN`: tilemap and three 16-color RGB555 border palettes (4–6), with
   horizontal/vertical flips and transparent color zero. Opaque border pixels
   can cover the game window, rather than being forcibly clipped outside it.
-- LCD-stream bulk transfers for those two border commands. The first complete
-  frame after a request supplies 4 KiB of post-BGP/OBP display data, decoded in
+- LCD-stream bulk transfers for border, palette and attribute commands. The first
+  complete frame after a request supplies 4 KiB of post-BGP/OBP display data, decoded in
   visible 20-tile row order. The result is published after five complete frames.
   `MASK_EN` hides transfer garbage without blocking receipt. Up to four requests
   can overlap, retaining their own captured payloads; overflow is counted.
@@ -55,32 +65,32 @@ Direct palette commands work, but games using the still-unimplemented
   bulk transfers. Version 2 also stores the partially rendered LCD frame so a
   mid-transfer restore can replay its payload correctly. Controller button
   presses remain host-owned and are released on import. Version 1 snapshots
-  remain readable, with no border/pending bulk transfer to restore.
+  remain readable, with no border/pending bulk transfer to restore. Version 3
+  adds transferred tables and packed frozen LCD shades. Both older versions
+  retain their saved RGBA image until the next unmasked LCD frame, rather than
+  guessing shades from possibly identical palette colors.
 
 Battery saves retain the cartridge's existing identity and can be shared across
 handheld/SGB modes. SGB save states use a separate `-sgb-hle-v1` identity and an
-`RBSG` envelope (now version 2); the storage identity remains stable so older
+`RBSG` envelope (now version 3); the storage identity remains stable so older
 SGB autosaves can migrate. Handheld snapshots keep their original `RBST` format. Loading a
 snapshot into the wrong mode is rejected. For SGB snapshots use the backend's
 `Emulator::export_state`, not the low-level CPU-only snapshot API.
 
 Run `sgb()` in the browser console to see header gating, active player count,
-received-command count, border presence, pending/dropped bulk transfers and
-unsupported command codes/counts. Unsupported
-commands are counted, not reported as implemented.
+received-command count, border presence, screen mask, pending/dropped bulk
+transfers and unsupported command codes/counts. Unsupported commands are
+counted, not reported as implemented.
 
 ## Not implemented yet
 
-- `PAL_TRN`/`PAL_SET`, `ATTR_TRN`/`ATTR_SET` and
-  transferred system palette/attribute tables. Games relying on these may have
-  missing/incorrect colors even when direct palette commands work.
 - Built-in Nintendo borders, SNES objects/`OBJ_TRN` and the firmware's border
   fade/menu animations. A game without a custom border keeps a 160×144 viewport.
 - SNES sounds, music, SPC700/DSP and sound-transfer commands. Normal Game Boy
   APU audio continues to work.
 - SNES CPU/bus/PPU, `DATA_SND`/`DATA_TRN` patch execution and `JUMP` (including
   Space Invaders' SNES arcade mode).
-- SNES system menus and user-selected palette/border overrides.
+- SNES system menus, user-selected palette/border overrides and `PAL_PRI`.
 - Cycle-accurate ICD2 pulse timing, transfer scheduling and SGB1's faster clock.
   This adapter uses the GB/SGB2 base rate of 4,194,304 Hz; it does not claim
   hardware-identical SGB1/SGB2 behavior.
@@ -103,8 +113,8 @@ command interpretation and display/controller state. CPU JOYP writes feed the
 adapter; the PPU retains post-palette LCD shade metadata and supplies completed
 frames at VBlank. Neither path depends on DOM, storage or an audio device.
 
-The next stage is transferred palette/attribute tables, followed by more precise
-transfer scheduling and the remaining SGB features. Full SGB will require a
+The next stages are broader game compatibility checks, more precise transfer
+scheduling and the remaining SGB features. Full SGB will require a
 composed Game Boy + ICD2 + SNES backend with a shared internal timeline. Its
 SNES CPU/audio/graphics components should then be reusable by a standalone SNES
 backend; this high-level interpreter is not a substitute for those components.
@@ -116,12 +126,18 @@ cargo test --locked --release --no-default-features -p rustboy-gameboy --lib sgb
 python3 scripts/build_web.py
 RUSTBOY_NO_BOOT=1 RUSTBOY_SYNTHETIC_SGB=1 node tests/browser_smoke.mjs
 RUSTBOY_NO_BOOT=1 RUSTBOY_SGB_BORDER=1 node tests/browser_smoke.mjs
+RUSTBOY_NO_BOOT=1 RUSTBOY_SGB_PALETTES=1 node tests/browser_smoke.mjs
 python3 scripts/check.py --browser
 ```
 
-Twenty-six unit/integration tests cover the protocol, command semantics,
+Thirty-six unit/integration tests cover the protocol, command semantics,
 controller bus, frame masks, startup, border formats/transfers, state isolation,
 legacy snapshot migration and malformed snapshots.
+Table tests cover the 512-palette table, upper-half palette selection, shared backdrop, first/last
+attribute files, mask cancellation, frozen-image recoloring and mid-transfer
+snapshot replay. An original synthetic cartridge reproduces an all-white
+palette followed by `PAL_SET`, the sequence that previously hid Harvest Moon's
+game despite its running CPU/LCD and visible custom border.
 Original synthetic cartridge programs execute real LR35902 instructions to send
 commands and verify BG/OBJ shade mapping. The browser smoke checks upload/model
 selection, bundled boot without external firmware, command-driven canvas colors,
@@ -137,7 +153,20 @@ cargo run --locked --release --no-default-features --example sgb_border_fixture 
 Upload the resulting file with SGB hardware selected. The generator refuses to
 overwrite an existing file. Its source is shared by native/browser regression
 tests; the generated ROM is not added to the public game catalog.
-These are not commercial-game playthroughs or a complete SGB compatibility suite.
+Local startup/attract-screen checks of Harvest Moon GB (USA), Harvest Moon GB
+(Europe, GB-compatible) and Harvest Moon GBC (USA, GB-compatible) show a
+nonblank, colorized game window with custom border data loaded. No commercial ROM or
+graphics are included in the automated fixtures. These checks are not complete
+playthroughs or a complete SGB compatibility suite. For your own local ROM:
+
+```sh
+cargo run --locked --release --no-default-features --example sgb_inspect -- "path/to/game.gb" 1200
+RUSTBOY_NO_BOOT=1 RUSTBOY_HARDWARE=sgb RUSTBOY_ROM="path/to/game.gb" RUSTBOY_GAME_WAIT_MS=22000 node tests/browser_smoke.mjs
+```
+
+The inspector reports masks, unsupported commands, LCD shades and final
+game-window colors. The browser check examines the central game window rather
+than accidentally treating a visible border around a blank game as success.
 
 The implementation follows primary [Pan Docs packet transport](https://gbdev.io/pandocs/SGB_Command_Packet.html),
 [palette commands](https://gbdev.io/pandocs/SGB_Command_Palettes.html),
