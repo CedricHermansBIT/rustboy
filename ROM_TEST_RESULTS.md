@@ -7,16 +7,16 @@ Verified on 2026-10-01 in the original checkout. ROM fixtures remain unchanged.
 | Mooneye | 46 | 0 | 3 |
 | Blargg | 43 | 1 | 0 |
 | GBMicrotest (including raw-byte publishers) | 484 | 2 | 21 |
-| Mealybug screenshot comparisons | 25 | 6 | 0 |
-| Total registered ROMs | 598 | 9 | 24 |
+| Mealybug screenshot comparisons | 28 | 3 | 0 |
+| Total registered ROMs | 601 | 6 | 24 |
 
 The ignored count has fallen from 77 to 24. This does **not** mean all newly
-enabled cases pass: 6 graphics failures and one unreliable standalone Blargg ROM are now
+enabled cases pass: 3 graphics failures and one unreliable standalone Blargg ROM are now
 visible instead of excluded. Only the three Super Game Boy cases are outside
 the target hardware; the 21 remaining older testbenches have no curated
 automated oracle yet. They are not counted as validated.
 
-Separate checks pass: 59 core unit tests, 2 PPU regressions, 5 boot/timer
+Separate checks pass: 60 core unit tests, 2 PPU regressions, 5 boot/timer
 diagnostics, and both DMG/CGB Acid2 reference images. Both optional Pinball
 diagnostics pass with the locally supplied games. Browser smoke checks pass
 for DMG and CGB loading, nonblank rendering, pause/resume, and malformed-upload
@@ -40,9 +40,10 @@ Also passing: `m3_lcdc_tile_sel_change`, `m3_scy_change`, `m3_scy_change2`,
 `m3_scx_high_5_bits_change2`, `m3_wx_4_change`, `m3_wx_4_change_sprites`,
 `m3_wx_5_change`, `m3_wx_6_change`, `m3_lcdc_bg_en_change2`,
 `m3_lcdc_win_map_change`, `m3_lcdc_tile_sel_win_change`,
+`m3_lcdc_bg_en_change`, both `m3_lcdc_obj_en_change` variants,
 and both `m3_lcdc_obj_size_change` variants.
-Remaining failures involve mid-line tile/map/scroll
-fetches, BG/OBJ enable changes, and window activation/restart behavior.
+Remaining failures involve CGB tile-selection fetches and the combined
+window-enable/WX capture.
 They are emulator compatibility gaps, not accepted fixture exceptions.
 
 The renderer now accounts for visible-output startup, OBJ/window stalls,
@@ -73,6 +74,10 @@ has an inferred two-dot propagation delay. Tile runs split at FIFO restart
 events even when no new register write occurs on that output pixel. Window
 map reads, like background reads, are not retimed by visible objects that
 stall an already-started transaction; clipped objects instead delay startup.
+The first visible DMG pixel uses the current BG/OBJ enable gates while later
+pixels use the output latch. This startup phase is inferred from three
+independent hardware captures; a regression also checks that it does not
+alter CGB's ordinary propagation or later DMG pixel clocks.
 CGB KEY0 compatibility mode is locked after boot; monochrome cartridges no
 longer accidentally use native palette/VRAM banking.
 
@@ -143,7 +148,7 @@ ab1656911841d9fdcbe34aad21dc44f554e84a6eef5a82558dc27c8e9a89250c  halt_op_dupe_d
 ## Reproduction
 
 ```sh
-# All original cases: currently exits nonzero (598 pass / 9 fail / 24 ignore).
+# All original cases: currently exits nonzero (601 pass / 6 fail / 24 ignore).
 cargo test --locked --offline --release --no-default-features --test headless
 
 # Self-contained regressions; no ROMs/BIOS needed.

@@ -456,6 +456,37 @@ mod raster_tests {
             assert_eq!((cpu.frame_buffer[0] >> 24) & 3, expected, "OAM X={raw_x}");
         }
     }
+
+    #[test]
+    fn dmg_first_visible_pixel_uses_current_enable_gates_after_clipping() {
+        let mut cpu = crate::cpu::CPU::new();
+        let snap = PpuLineSnapshot { lcdc: 0x93, bgp: 0xE4, ..Default::default() };
+        cpu.booting = false;
+        cpu.memory[0xFF44] = 0;
+        cpu.memory[0x8000..0x8010].fill(0xFF);
+        cpu.memory[0x9800..0x9C00].fill(0);
+        cpu.memory[0xFE00..0xFEA0].fill(0);
+        cpu.memory[0xFE00] = 16;
+        cpu.memory[0xFE01] = 2;
+        cpu.memory[0xFE02] = 1;
+        cpu.memory[0x8010..0x8020].fill(0xFF);
+        cpu.ppu_line_snapshot = snap;
+        cpu.ppu_mode3_start_dot = 84;
+        cpu.ppu_reg_log[0] = PpuRegChange { dot: 104, addr: 0xFF40, value: 0x90 };
+        cpu.ppu_reg_log_len = 1;
+        let log = &cpu.ppu_reg_log[..1];
+        assert_eq!(pixel_output_dots(&cpu, snap, 0, 95)[0], 104);
+        for bit in [1, 2] {
+            assert!(!super::mixer_gate(&cpu, snap, log, 104, 0, bit));
+            assert!(super::mixer_gate(&cpu, snap, log, 104, 1, bit));
+        }
+        super::draw_scanline(&mut cpu);
+        assert_eq!((cpu.frame_buffer[0] >> 24) & 3, 0);
+        cpu.is_cgb = true;
+        for bit in [1, 2] {
+            assert!(super::mixer_gate(&cpu, snap, &cpu.ppu_reg_log[..1], 104, 0, bit));
+        }
+    }
 }
 
 /// Visible pixel clocks include fetcher pauses; raster register writes must
@@ -538,6 +569,18 @@ fn registers_at(mut registers: PpuLineSnapshot, changes: &[PpuRegChange], dot: u
         }
     }
     registers
+}
+
+/// Sample the LCDC gate at the mixer, independently of map/plane fetches.
+/// On DMG the first visible FIFO pixel has no preceding valid output clock:
+/// its gates use the current edge rather than the one-dot output latch used
+/// thereafter. This startup phase is inferred from three independent BG/OBJ
+/// enable hardware captures. CGB retains its ordinary propagation pipeline.
+fn mixer_gate(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, changes: &[PpuRegChange],
+    dot: u16, x: usize, mask: u8) -> bool {
+    let latency = if !cpu.is_cgb && x == 0 { 0 }
+        else if cpu.is_cgb && mask == 1 { 2 } else { 1 };
+    registers_at(snap, changes, dot.saturating_sub(latency)).lcdc & mask != 0
 }
 
 pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
@@ -883,7 +926,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                     // compatibility-mode captures show one more dot of
                     // propagation than DMG (an inferred pipeline phase).
                     let bg_enabled = if log.is_empty() { master_bg } else {
-                        registers_at(snap, log, pixel_dots[xi as usize].saturating_sub(if cpu.is_cgb { 2 } else { 1 })).lcdc & 1 != 0
+                        mixer_gate(cpu, snap, log, pixel_dots[xi as usize], xi as usize, 1)
                     };
                     let raw_eff = if bg_enabled { raw } else { 0 };
                     let ci      = apply_dmg_palette(raw_eff, pixel_bgp);
@@ -951,7 +994,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                 // O(1) lookup via pre-built per-pixel palette state.
                 let cur_lcdc = if log.is_empty() { px_lcdc_sp[sx] } else {
                     (px_lcdc_sp[sx] & !2)
-                        | (registers_at(snap, log, pixel_dots[sx].saturating_sub(1)).lcdc & 2)
+                        | (u8::from(mixer_gate(cpu, snap, log, pixel_dots[sx], sx, 2)) << 1)
                 };
                 if cur_lcdc & 0x02 == 0 { continue; }
                 let obp = if attributes & 0x10 != 0 { px_obp1[sx] } else { px_obp0[sx] };
