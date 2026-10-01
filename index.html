@@ -1348,6 +1348,8 @@
       function clearAudioQueue() {
         audioWritePos = audioReadPos = audioSamplesAvailable = 0;
         audioPrimed = false;
+        audioResamplePosition = 0;
+        audioPreviousLeft = audioPreviousRight = null;
       }
       async function refreshStateIndex() {
         try {
@@ -1392,20 +1394,50 @@
       let audioRightBuf = new Float32Array(AUDIO_BUF_SIZE);
       let audioWritePos = 0, audioReadPos = 0, audioSamplesAvailable = 0;
       let audioPrimed = false;
+      let audioSourceRate = 44100;
+      let audioResamplePosition = 0;
+      let audioPreviousLeft = null, audioPreviousRight = null;
       let audioMutedBefore = 0; // stores volume before mute
       let audioUnlockBound = false;
       let audioUnlockCleanup = null;
-      function queueAudioSamples(left, right) {
+      function enqueueAudioSample(left, right) {
+        audioLeftBuf[audioWritePos] = left; audioRightBuf[audioWritePos] = right;
+        audioWritePos = (audioWritePos + 1) % AUDIO_BUF_SIZE;
+        if (audioSamplesAvailable === AUDIO_BUF_SIZE) audioReadPos = (audioReadPos + 1) % AUDIO_BUF_SIZE;
+        else audioSamplesAvailable++;
+      }
+      function queueAudioSamples(left, right, sampleRate = 44100) {
         if (!audioCtx) return;
-        for (let i = 0; i < left.length; i++) {
-          audioLeftBuf[audioWritePos] = left[i]; audioRightBuf[audioWritePos] = right[i];
-          audioWritePos = (audioWritePos + 1) % AUDIO_BUF_SIZE;
+        if (!Number.isFinite(sampleRate) || sampleRate <= 0 || left.length !== right.length) {
+          throw new Error('Invalid backend audio format');
         }
-        audioSamplesAvailable += left.length;
-        if (audioSamplesAvailable > AUDIO_BUF_SIZE) {
-          audioReadPos = (audioReadPos + audioSamplesAvailable - AUDIO_BUF_SIZE) % AUDIO_BUF_SIZE;
-          audioSamplesAvailable = AUDIO_BUF_SIZE;
+        if (sampleRate !== audioSourceRate) {
+          clearAudioQueue();
+          audioSourceRate = sampleRate;
         }
+        if (!left.length) return;
+        const outputRate = audioCtx.sampleRate;
+        if (sampleRate === outputRate) {
+          for (let i = 0; i < left.length; i++) enqueueAudioSample(left[i], right[i]);
+          return;
+        }
+        // Carry fractional phase and the previous sample across backend chunks.
+        // Also handles devices that cannot honor the requested 44.1 kHz rate.
+        const step = sampleRate / outputRate;
+        while (audioResamplePosition < left.length) {
+          const index = Math.floor(audioResamplePosition);
+          const fraction = audioResamplePosition - index;
+          if (fraction > 0 && index + 1 >= left.length) break;
+          const l0 = index < 0 ? audioPreviousLeft : left[index];
+          const r0 = index < 0 ? audioPreviousRight : right[index];
+          const l1 = fraction === 0 ? l0 : left[index + 1];
+          const r1 = fraction === 0 ? r0 : right[index + 1];
+          enqueueAudioSample(l0 + (l1 - l0) * fraction, r0 + (r1 - r0) * fraction);
+          audioResamplePosition += step;
+        }
+        audioResamplePosition -= left.length;
+        audioPreviousLeft = left[left.length - 1];
+        audioPreviousRight = right[right.length - 1];
       }
       function setVolume(v) {
         audioVolume = Math.max(0, Math.min(1, v));

@@ -34,7 +34,18 @@ pub struct AudioChunk {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Button {
-    Up, Down, Left, Right, A, B, X, Y, Start, Select, L, R,
+    Up,
+    Down,
+    Left,
+    Right,
+    A,
+    B,
+    X,
+    Y,
+    Start,
+    Select,
+    L,
+    R,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,17 +84,27 @@ pub trait Emulator {
     fn set_button(&mut self, port: usize, button: Button, pressed: bool) -> Result<(), String>;
     fn video_frame(&mut self) -> VideoFrame<'_>;
     fn drain_audio(&mut self) -> AudioChunk;
-    fn save_info(&self) -> Option<SaveInfo>;
-    fn export_save(&self) -> Vec<u8>;
-    fn import_save(&mut self, data: &[u8]) -> Result<(), String>;
-    fn mark_save_clean(&mut self);
-    fn clear_save(&mut self);
+    fn save_info(&self) -> Option<SaveInfo> {
+        None
+    }
+    fn export_save(&self) -> Vec<u8> {
+        Vec::new()
+    }
+    fn import_save(&mut self, _data: &[u8]) -> Result<(), String> {
+        Err("Backend has no battery save storage".into())
+    }
+    fn mark_save_clean(&mut self) {}
+    fn clear_save(&mut self) {}
     /// Versioning, validation and hardware/ROM identity are backend-owned.
     fn state_id(&self) -> String;
     fn export_state(&self) -> Vec<u8>;
     fn import_state(&mut self, data: &[u8]) -> Result<(), String>;
     /// Optional, explicitly console-specific debug extension. The normal
     /// execution/rendering/input paths must not downcast through this hook.
-    fn debug_extension(&self) -> Option<&dyn Any> { None }
-    fn debug_extension_mut(&mut self) -> Option<&mut dyn Any> { None }
+    fn debug_extension(&self) -> Option<&dyn Any> {
+        None
+    }
+    fn debug_extension_mut(&mut self) -> Option<&mut dyn Any> {
+        None
+    }
 }

@@ -1,7 +1,4 @@
-#[cfg(target_arch = "wasm32")]
 use crate::cpu::CPU;
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::Clamped;
 
 mod fetch;
 mod window;
@@ -1167,29 +1164,8 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-pub fn draw_state(context: &web_sys::CanvasRenderingContext2d, cpu: &mut crate::cpu::CPU) {
-    let lcd_control = cpu.memory[0xFF40];
-
-    if lcd_control & 0x80 == 0x80 {
-        let mut data = [0u8; 160 * 144 * 4];
-        for (i, &pixel) in cpu.frame_buffer.iter().enumerate() {
-            let off = i * 4;
-            data[off] = (pixel & 0xFF) as u8;
-            data[off + 1] = ((pixel >> 8) & 0xFF) as u8;
-            data[off + 2] = ((pixel >> 16) & 0xFF) as u8;
-            data[off + 3] = 255;
-        }
-
-        let image_data = web_sys::ImageData::new_with_u8_clamped_array_and_sh(Clamped(&data), 160, 144).unwrap();
-        context.put_image_data(&image_data, 0.0, 0.0).unwrap();
-    } else {
-        context.clear_rect(0.0, 0.0, 160.0, 144.0);
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn draw_vram(context: &web_sys::CanvasRenderingContext2d, cpu: &mut CPU) {
+/// Optional Game Boy diagnostic visualization; presentation belongs to the host.
+pub fn debug_vram_rgba(cpu: &CPU) -> Vec<u8> {
     let mut buffer =[0u8; 384 * 8 * 8];
     let tile_data = if cpu.is_cgb { &cpu.cgb_vram[0][0..0x1800] } else { &cpu.memory[0x8000..0x9800] };
     for tile_index in 0..384usize {
@@ -1223,6 +1199,5 @@ pub fn draw_vram(context: &web_sys::CanvasRenderingContext2d, cpu: &mut CPU) {
         data.push(b);
         data.push(255);
     }
-    let image_data = web_sys::ImageData::new_with_u8_clamped_array_and_sh(Clamped(&data), 128, 192).unwrap();
-    context.put_image_data(&image_data, 0.0, 0.0).unwrap();
+    data
 }

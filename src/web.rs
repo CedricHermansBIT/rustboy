@@ -1,11 +1,11 @@
-use std::{cell::RefCell, rc::Rc};
-use std::sync::{Mutex, atomic::Ordering};
-
-use wasm_bindgen::prelude::*;
+//! Browser adapter. Console execution and output formats belong to the backend.
+use std::{cell::RefCell, rc::Rc, sync::Mutex};
+use wasm_bindgen::{prelude::*, Clamped, JsCast};
 use web_sys::console;
-use wasm_bindgen::JsCast;
 
-use crate::{cpu, ppu};
+use crate::emulator::{Button, Emulator, PixelFormat, VideoFrame, VideoGeometry};
+use crate::gameboy::{GameBoy, HardwareModel};
+use crate::session::Session;
 
 lazy_static::lazy_static! {
     static ref KEYS: Mutex<[bool; 256]> = Mutex::new([false; 256]);
@@ -15,82 +15,83 @@ lazy_static::lazy_static! {
 #[wasm_bindgen]
 extern "C" {
     fn toggleVramCanvas(v: bool);
-    fn queueAudioSamples(left: &[f32], right: &[f32]);
+    fn queueAudioSamples(left: &[f32], right: &[f32], sample_rate: u32);
     fn storeSaveData(key: &str, data: &[u8]) -> bool;
     fn loadSaveData(key: &str) -> JsValue;
 }
 
-    const TOGGLE_KEYS: [u32; 8] =[32, 67, 76, 78, 86, 106, 27, 9];
-
 thread_local! {
-    static CPU: RefCell<Option<Rc<RefCell<cpu::CPU>>>> = RefCell::new(None);
+    static SESSION: RefCell<Option<Rc<RefCell<Session>>>> = RefCell::new(None);
     static EMULATION_RUNNING: RefCell<bool> = RefCell::new(false);
 }
 
+fn with_session<R>(f: impl FnOnce(&Session) -> R) -> Option<R> {
+    SESSION.with(|slot| slot.borrow().as_ref().map(|session| f(&session.borrow())))
+}
+fn with_session_mut<R>(f: impl FnOnce(&mut Session) -> R) -> Option<R> {
+    SESSION.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|session| f(&mut session.borrow_mut()))
+    })
+}
+
+// Legacy console commands are an optional Game Boy debug extension. Other
+// backends need not expose these registers, memory widths or PPU tools.
+fn with_gb<R>(f: impl FnOnce(&crate::cpu::CPU) -> R) -> Option<R> {
+    with_session(|session| {
+        session
+            .backend
+            .debug_extension()
+            .and_then(|debug| debug.downcast_ref::<GameBoy>())
+            .map(|gb| f(gb.cpu()))
+    })
+    .flatten()
+}
+fn with_gb_mut<R>(f: impl FnOnce(&mut crate::cpu::CPU) -> R) -> Option<R> {
+    with_session_mut(|session| {
+        session
+            .backend
+            .debug_extension_mut()
+            .and_then(|debug| debug.downcast_mut::<GameBoy>())
+            .map(|gb| f(gb.cpu_mut()))
+    })
+    .flatten()
+}
+
 #[wasm_bindgen]
-pub fn set_key_state(key_code: u32, is_pressed: bool) {
-    if key_code as usize >= 256 { return; }
-    let mut keys = KEYS.lock().unwrap();
-    if !TOGGLE_KEYS.contains(&key_code) {
-        keys[key_code as usize] = is_pressed;
-    }
-    else if is_pressed {
-        keys[key_code as usize] = true;
-    }
-    else {
-        keys[key_code as usize] = false;
+pub fn set_key_state(key_code: u32, pressed: bool) {
+    if let Some(key) = KEYS.lock().unwrap().get_mut(key_code as usize) {
+        *key = pressed;
     }
 }
 
 #[wasm_bindgen]
-pub fn load_rom_data(rom_data: &[u8], boot_rom_data: &[u8]) -> Result<(), JsValue> {
-    crate::cartridge::validate_rom(rom_data).map_err(|error| JsValue::from_str(&error))?;
-    let use_cgb_boot = rom_data[0x143] & 0x80 != 0;
-    crate::cartridge::validate_boot_rom(boot_rom_data, use_cgb_boot).map_err(|error| JsValue::from_str(&error))?;
+pub fn load_rom_data(rom: &[u8], boot_rom: &[u8]) -> Result<(), JsValue> {
+    // Construct and validate before replacing the running session or its saves.
+    let mut backend = GameBoy::load(rom, boot_rom, HardwareModel::Auto)
+        .map_err(|error| JsValue::from_str(&error))?;
     save_game();
-    let prev_speed = CPU.with(|c| {
-        c.borrow().as_ref().map(|rc| rc.borrow().speed_multiplier).unwrap_or(1)
-    });
-
-    let cgb_flag = rom_data.get(0x143).copied().unwrap_or(0);
-    // Bit 7 set = CGB support; matches both 0x80 (compatible) and 0xC0 (CGB-only).
-
-    let mut cpu = cpu::CPU::new();
-    cpu.speed_multiplier = prev_speed;
-    cpu.bootload(boot_rom_data.to_vec());
-    cpu.load_rom(rom_data.to_vec());
-
-    console::log_1(&format!(
-        "Boot ROM: {} (cart CGB flag {:02X})",
-        if use_cgb_boot { "cgb_boot.bin" } else { "dmg_boot.bin" },
-        cgb_flag,
-    ).into());
-
-    if cpu.has_battery() {
-        let key = cpu.save_key();
-        let mut save_js = loadSaveData(&key);
-        if save_js.is_undefined() || save_js.is_null() {
-            // Migrate old title-only saves without deleting the recoverable copy.
-            save_js = loadSaveData(&format!("rustboy_save_{}", cpu.rom_title()));
+    let previous_speed = get_speed();
+    console::log_1(&format!("Loaded {}: {}", backend.system_name(), backend.title()).into());
+    if let Some(info) = backend.save_info() {
+        let mut saved = loadSaveData(&info.key);
+        if saved.is_undefined() || saved.is_null() {
+            // Keep the recoverable old title-only save during migration.
+            saved = loadSaveData(&format!("rustboy_save_{}", backend.title()));
         }
-        if !save_js.is_undefined() && !save_js.is_null() {
-            if let Ok(arr) = save_js.dyn_into::<js_sys::Uint8Array>() {
-                let data = arr.to_vec();
-                cpu.import_save_ram(&data);
-                storeSaveData(&key, &cpu.export_save_ram());
-                console::log_1(&format!("Restored save for '{}'", key).into());
-            }
+        if let Ok(array) = saved.dyn_into::<js_sys::Uint8Array>() {
+            backend
+                .import_save(&array.to_vec())
+                .map_err(|error| JsValue::from_str(&error))?;
+            storeSaveData(&info.key, &backend.export_save());
         }
     }
-
-    let cpu = Rc::new(RefCell::new(cpu));
+    let mut session = Session::new(Box::new(backend));
+    session.set_speed(previous_speed);
     *KEYS.lock().unwrap() = [false; 256];
     *PREVIOUS_KEYS.lock().unwrap() = [false; 256];
-
-    CPU.with(|c| {
-        *c.borrow_mut() = Some(cpu.clone());
-    });
-
+    SESSION.with(|slot| *slot.borrow_mut() = Some(Rc::new(RefCell::new(session))));
     EMULATION_RUNNING.with(|running| {
         if !*running.borrow() {
             *running.borrow_mut() = true;
@@ -102,448 +103,310 @@ pub fn load_rom_data(rom_data: &[u8], boot_rom_data: &[u8]) -> Result<(), JsValu
 
 #[wasm_bindgen]
 pub fn save_game() {
-    CPU.with(|c| {
-        let cpu_opt = c.borrow();
-        if let Some(cpu_rc) = cpu_opt.as_ref() {
-            let mut cpu = cpu_rc.borrow_mut();
-            if cpu.has_battery() && cpu.save_ram_is_dirty() {
-                let key = cpu.save_key();
-                let data = cpu.export_save_ram();
-                if storeSaveData(&key, &data) {
-                    cpu.mark_save_ram_clean();
-                }
+    with_session_mut(|session| {
+        if let Some(info) = session.backend.save_info() {
+            if info.dirty && storeSaveData(&info.key, &session.backend.export_save()) {
+                session.backend.mark_save_clean();
             }
         }
     });
 }
-
 #[wasm_bindgen]
 pub fn export_state() -> Vec<u8> {
-    CPU.with(|c| c.borrow().as_ref().map(|rc| rc.borrow().export_state()).unwrap_or_default())
+    with_session(|s| s.backend.export_state()).unwrap_or_default()
 }
-
 #[wasm_bindgen]
 pub fn import_state(data: &[u8]) -> Result<(), JsValue> {
-    CPU.with(|c| {
-        let cpu = c.borrow().clone().ok_or_else(|| JsValue::from_str("No ROM is loaded"))?;
-        let result = cpu.borrow_mut().import_state(data).map_err(JsValue::from_str);
-        result
-    })
+    with_session_mut(|s| s.import_state(data))
+        .unwrap_or_else(|| Err("No ROM is loaded".into()))
+        .map_err(|error| JsValue::from_str(&error))
 }
-
 #[wasm_bindgen]
 pub fn get_state_id() -> String {
-    CPU.with(|c| c.borrow().as_ref().map(|rc| rc.borrow().state_id()).unwrap_or_default())
+    with_session(|s| s.backend.state_id()).unwrap_or_default()
 }
-
 #[wasm_bindgen]
 pub fn get_rom_title() -> String {
-    CPU.with(|c| c.borrow().as_ref().map(|rc| rc.borrow().rom_title()).unwrap_or_default())
+    with_session(|s| s.backend.title()).unwrap_or_default()
 }
-
 #[wasm_bindgen]
 pub fn get_save_key() -> String {
-    CPU.with(|c| c.borrow().as_ref().map(|rc| rc.borrow().save_key()).unwrap_or_default())
+    with_session(|s| {
+        s.backend
+            .save_info()
+            .map(|info| info.key)
+            .unwrap_or_default()
+    })
+    .unwrap_or_default()
 }
-
 #[wasm_bindgen]
 pub fn export_save_data() -> Vec<u8> {
-    CPU.with(|c| c.borrow().as_ref().map(|rc| rc.borrow().export_save_ram()).unwrap_or_default())
+    with_session(|s| s.backend.export_save()).unwrap_or_default()
 }
-
 #[wasm_bindgen]
 pub fn import_save_data(data: &[u8]) -> Result<(), JsValue> {
-    CPU.with(|c| {
-        let cpu = c.borrow().clone().ok_or_else(|| JsValue::from_str("No ROM is loaded"))?;
-        cpu.borrow_mut().import_save_ram(data);
-        Ok(())
-    })
+    with_session_mut(|s| s.backend.import_save(data))
+        .unwrap_or_else(|| Err("No ROM is loaded".into()))
+        .map_err(|error| JsValue::from_str(&error))
 }
-
 #[wasm_bindgen]
 pub fn clear_save_data() {
-    CPU.with(|c| if let Some(rc) = c.borrow().as_ref() { rc.borrow_mut().clear_save_ram(); });
+    with_session_mut(|s| s.backend.clear_save());
 }
-
 #[wasm_bindgen]
 pub fn set_paused(paused: bool) {
-    CPU.with(|c| if let Some(rc) = c.borrow().as_ref() {
-        rc.borrow().is_paused.store(paused, Ordering::Relaxed);
-    });
+    with_session_mut(|s| s.backend.set_paused(paused));
 }
-
 #[wasm_bindgen]
 pub fn is_paused() -> bool {
-    CPU.with(|c| c.borrow().as_ref().map(|rc| rc.borrow().is_paused.load(Ordering::Relaxed)).unwrap_or(false))
+    with_session(|s| s.backend.paused()).unwrap_or(false)
 }
-
 #[wasm_bindgen]
 pub fn reset_emulator() {
-    CPU.with(|c| if let Some(rc) = c.borrow().as_ref() { rc.borrow_mut().reset(); });
+    with_session_mut(Session::reset);
 }
-
 #[wasm_bindgen]
 pub fn set_speed(speed: u32) {
-    CPU.with(|c| if let Some(rc) = c.borrow().as_ref() {
-        rc.borrow_mut().speed_multiplier = match speed { 1 | 2 | 4 | 8 => speed, _ => 1 };
-    });
+    with_session_mut(|s| s.set_speed(speed));
 }
-
-#[wasm_bindgen]
-pub fn get_debug_state() -> String {
-    CPU.with(|c| {
-        let cpu_opt = c.borrow();
-        match cpu_opt.as_ref() {
-            Some(cpu_rc) => cpu_rc.borrow().get_debug_state(),
-            None => "No CPU loaded".to_string(),
-        }
-    })
-}
-
 #[wasm_bindgen]
 pub fn get_speed() -> u32 {
-    CPU.with(|c| {
-        let cpu_opt = c.borrow();
-        match cpu_opt.as_ref() {
-            Some(cpu_rc) => cpu_rc.borrow().get_speed(),
-            None => 1,
-        }
-    })
+    with_session(|s| s.speed).unwrap_or(1)
 }
-
-/// Returns true when the loaded ROM requires/supports Game Boy Color mode.
+#[wasm_bindgen]
+pub fn get_debug_state() -> String {
+    with_gb(|cpu| cpu.get_debug_state()).unwrap_or_else(|| "No Game Boy debugger loaded".into())
+}
 #[wasm_bindgen]
 pub fn get_is_cgb() -> bool {
-    CPU.with(|c| {
-        c.borrow()
-            .as_ref()
-            .map(|rc| rc.borrow().is_cgb)
-            .unwrap_or(false)
-    })
+    with_gb(|cpu| cpu.is_cgb).unwrap_or(false)
 }
-
 #[wasm_bindgen]
 pub fn add_breakpoint_pc(addr: u16) {
-    CPU.with(|c| {
-        if let Some(cpu_rc) = c.borrow().as_ref() {
-            cpu_rc.borrow_mut().add_breakpoint_pc(addr);
-        }
-    });
+    with_gb_mut(|cpu| cpu.add_breakpoint_pc(addr));
 }
-
 #[wasm_bindgen]
 pub fn add_breakpoint_reg(reg: &str, value: u16) {
-    CPU.with(|c| {
-        if let Some(cpu_rc) = c.borrow().as_ref() {
-            cpu_rc.borrow_mut().add_breakpoint_reg(reg, value);
-        }
-    });
+    with_gb_mut(|cpu| cpu.add_breakpoint_reg(reg, value));
 }
-
 #[wasm_bindgen]
 pub fn add_breakpoint_mem(addr: u16, value: u8) {
-    CPU.with(|c| {
-        if let Some(cpu_rc) = c.borrow().as_ref() {
-            cpu_rc.borrow_mut().add_breakpoint_mem(addr, value);
-        }
-    });
+    with_gb_mut(|cpu| cpu.add_breakpoint_mem(addr, value));
 }
-
 #[wasm_bindgen]
 pub fn add_breakpoint_opcode(opcode: u8) {
-    CPU.with(|c| {
-        if let Some(cpu_rc) = c.borrow().as_ref() {
-            cpu_rc.borrow_mut().add_breakpoint_opcode(opcode);
-        }
-    });
+    with_gb_mut(|cpu| cpu.add_breakpoint_opcode(opcode));
 }
-
 #[wasm_bindgen]
 pub fn add_breakpoint_cb_opcode(opcode: u8) {
-    CPU.with(|c| {
-        if let Some(cpu_rc) = c.borrow().as_ref() {
-            cpu_rc.borrow_mut().add_breakpoint_cb_opcode(opcode);
-        }
-    });
+    with_gb_mut(|cpu| cpu.add_breakpoint_cb_opcode(opcode));
 }
-
 #[wasm_bindgen]
 pub fn remove_breakpoint(index: usize) {
-    CPU.with(|c| {
-        if let Some(cpu_rc) = c.borrow().as_ref() {
-            cpu_rc.borrow_mut().remove_breakpoint(index);
-        }
-    });
+    with_gb_mut(|cpu| cpu.remove_breakpoint(index));
 }
-
 #[wasm_bindgen]
 pub fn clear_breakpoints() {
-    CPU.with(|c| {
-        if let Some(cpu_rc) = c.borrow().as_ref() {
-            cpu_rc.borrow_mut().clear_breakpoints();
-        }
-    });
+    with_gb_mut(|cpu| cpu.clear_breakpoints());
 }
-
 #[wasm_bindgen]
 pub fn list_breakpoints() -> String {
-    CPU.with(|c| {
-        let cpu_opt = c.borrow();
-        match cpu_opt.as_ref() {
-            Some(cpu_rc) => cpu_rc.borrow().list_breakpoints(),
-            None => "No CPU loaded".to_string(),
-        }
-    })
+    with_gb(|cpu| cpu.list_breakpoints()).unwrap_or_else(|| "No Game Boy debugger loaded".into())
 }
-
 #[wasm_bindgen]
 pub fn peek(addr: u16) -> u8 {
-    CPU.with(|c| {
-        let cpu_opt = c.borrow();
-        match cpu_opt.as_ref() {
-            Some(cpu_rc) => cpu_rc.borrow().peek(addr),
-            None => 0,
-        }
-    })
+    with_gb(|cpu| cpu.peek(addr)).unwrap_or(0)
 }
-
 #[wasm_bindgen]
 pub fn peek_slice(start: u16, len: u16) -> String {
-    CPU.with(|c| {
-        let cpu_opt = c.borrow();
-        match cpu_opt.as_ref() {
-            Some(cpu_rc) => cpu_rc.borrow().peek_slice(start, len),
-            None => "No CPU loaded".to_string(),
-        }
-    })
+    with_gb(|cpu| cpu.peek_slice(start, len)).unwrap_or_default()
 }
-
 #[wasm_bindgen]
 pub fn peek_regs() -> String {
-    CPU.with(|c| {
-        let cpu_opt = c.borrow();
-        match cpu_opt.as_ref() {
-            Some(cpu_rc) => cpu_rc.borrow().peek_regs(),
-            None => "No CPU loaded".to_string(),
-        }
-    })
+    with_gb(|cpu| cpu.peek_regs()).unwrap_or_default()
 }
-
 #[wasm_bindgen]
 pub fn toggle_trace() {
-    CPU.with(|c| {
-        if let Some(cpu_rc) = c.borrow().as_ref() {
-            cpu_rc.borrow_mut().toggle_trace();
-        }
-    });
+    with_gb_mut(|cpu| cpu.toggle_trace());
 }
-
 #[wasm_bindgen]
 pub fn is_tracing() -> bool {
-    CPU.with(|c| {
-        let cpu_opt = c.borrow();
-        match cpu_opt.as_ref() {
-            Some(cpu_rc) => cpu_rc.borrow().is_tracing(),
-            None => false,
-        }
-    })
+    with_gb(|cpu| cpu.is_tracing()).unwrap_or(false)
 }
-
 #[wasm_bindgen]
 pub fn get_trace() -> String {
-    CPU.with(|c| {
-        let cpu_opt = c.borrow();
-        match cpu_opt.as_ref() {
-            Some(cpu_rc) => cpu_rc.borrow().get_trace(),
-            None => String::new(),
-        }
-    })
+    with_gb(|cpu| cpu.get_trace()).unwrap_or_default()
 }
-
 #[wasm_bindgen]
 pub fn clear_trace() {
-    CPU.with(|c| {
-        if let Some(cpu_rc) = c.borrow().as_ref() {
-            cpu_rc.borrow_mut().clear_trace();
-        }
-    });
+    with_gb_mut(|cpu| cpu.clear_trace());
 }
-
 #[wasm_bindgen]
 pub fn trace_len() -> usize {
-    CPU.with(|c| {
-        let cpu_opt = c.borrow();
-        match cpu_opt.as_ref() {
-            Some(cpu_rc) => cpu_rc.borrow().trace_buffer.len(),
-            None => 0,
-        }
-    })
+    with_gb(|cpu| cpu.trace_buffer.len()).unwrap_or(0)
 }
 
 #[wasm_bindgen(start)]
 pub fn main_js() -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
-    setup_canvas_and_get_context("rustboy-canvas");
-    setup_canvas_and_get_context("vram-canvas");
+    setup_canvas("rustboy-canvas", 160, 144);
+    setup_canvas("vram-canvas", 128, 192);
     Ok(())
 }
 
 fn start_emulation_loop() {
-    let context = setup_canvas_and_get_context("rustboy-canvas");
-    let vram_context = setup_canvas_and_get_context("vram-canvas");
-
-    let f = Rc::new(RefCell::new(None));
-    let g = f.clone();
-
-    let mut frame_clock = crate::pacing::FrameClock::default();
-
-    *g.borrow_mut() = Some(Closure::wrap(Box::new(move |timestamp: f64| {
-        let cpu_rc = CPU.with(|c| c.borrow().clone());
-        let Some(cpu_rc) = cpu_rc else {
-            request_animation_frame(f.borrow().as_ref().unwrap());
-            return;
-        };
-        let mut cpu = cpu_rc.borrow_mut();
-        let paused = cpu.is_paused.load(Ordering::Relaxed);
-        let target_cycles = frame_clock.target(timestamp, cpu.speed_multiplier, paused);
-        if paused {
-            if cpu.go_next.load(Ordering::Relaxed) {
-                cpu.go_next.store(false, Ordering::Relaxed);
-                cpu.handle_interrupts();
-                cpu.execute();
-                let cycles = cpu.cycles;
-                let t_cycles = cycles * 4;
-                cpu.handle_timer(t_cycles);
-                cpu.total_cycles += cycles as u64;
-                cpu.cycles = 0;
+    let context = setup_canvas("rustboy-canvas", 160, 144);
+    let vram_context = setup_canvas("vram-canvas", 128, 192);
+    let callback = Rc::new(RefCell::new(None));
+    let next_callback = callback.clone();
+    *next_callback.borrow_mut() = Some(Closure::wrap(Box::new(move |timestamp: f64| {
+        let current = SESSION.with(|slot| slot.borrow().clone());
+        if let Some(current) = current {
+            let mut session = current.borrow_mut();
+            session.tick(timestamp);
+            check_keys(&mut session);
+            draw_frame(&context, session.backend.video_frame());
+            if let Some(debug) = session
+                .backend
+                .debug_extension()
+                .and_then(|debug| debug.downcast_ref::<GameBoy>())
+            {
+                if debug.cpu().show_vram {
+                    let pixels = crate::ppu::debug_vram_rgba(debug.cpu());
+                    draw_frame(
+                        &vram_context,
+                        VideoFrame {
+                            geometry: VideoGeometry {
+                                width: 128,
+                                height: 192,
+                                aspect_width: 2,
+                                aspect_height: 3,
+                            },
+                            format: PixelFormat::Rgba8888,
+                            pixels: &pixels,
+                            enabled: true,
+                        },
+                    );
+                }
             }
-            check_keys(&mut cpu);
-            request_animation_frame(f.borrow().as_ref().unwrap());
-            return;
-        }
-
-        let mut cycles_this_frame = 0;
-        while cycles_this_frame < target_cycles {
-            if cpu.check_breakpoints() {
-                break;
+            let audio = session.backend.drain_audio();
+            if !audio.samples.is_empty() && audio.channels > 0 {
+                let channels = audio.channels as usize;
+                let mut left = Vec::with_capacity(audio.samples.len() / channels);
+                let mut right = Vec::with_capacity(left.capacity());
+                for sample in audio.samples.chunks_exact(channels) {
+                    left.push(sample[0]);
+                    right.push(if channels == 1 { sample[0] } else { sample[1] });
+                }
+                queueAudioSamples(&left, &right, audio.sample_rate);
             }
-
-            cpu.handle_interrupts();
-            cpu.execute();
-
-            let cycles = cpu.cycles;
-            let t_cycles = cycles * 4;
-
-            cpu.handle_timer(t_cycles);
-
-            // Frame pacing: count PPU T-cycles, not CPU T-cycles.
-            // In CGB double-speed mode the CPU runs at 2× but the PPU
-            // stays at 1×, so each CPU M-cycle only advances the PPU by
-            // 2 T-cycles instead of 4.  Using CPU T-cycles would fill the
-            // frame budget twice as fast, halving the effective game speed.
-            let ppu_t_cycles = if cpu.double_speed { cycles * 2 } else { t_cycles };
-            cycles_this_frame += ppu_t_cycles;
-
-            if cpu.booting && cpu.program_counter == 0x100 {
-                cpu.check_boot_finish();
-            }
-
-            cpu.total_cycles += cycles as u64;
-            cpu.cycles = 0;
         }
-
-        check_keys(&mut cpu);
-        ppu::draw_state(&context, &mut cpu);
-        if cpu.show_vram {
-            ppu::draw_vram(&vram_context, &mut cpu);
-        }
-
-        let samples = cpu.get_audio_buffer();
-        if !samples.is_empty() {
-            let (left, right): (Vec<f32>, Vec<f32>) = samples
-                .chunks_exact(2)
-                .map(|chunk| (chunk[0], chunk[1]))
-                .unzip();
-            queueAudioSamples(&left, &right);
-        }
-
-        frame_clock.consume(cycles_this_frame);
-
-        request_animation_frame(f.borrow().as_ref().unwrap());
+        request_animation_frame(callback.borrow().as_ref().unwrap());
     }) as Box<dyn FnMut(f64)>));
-
-    request_animation_frame(g.borrow().as_ref().unwrap());
+    request_animation_frame(next_callback.borrow().as_ref().unwrap());
 }
 
-fn request_animation_frame(f: &Closure<dyn FnMut(f64)>) {
+fn check_keys(session: &mut Session) {
+    let keys = KEYS.lock().unwrap();
+    let mut previous = PREVIOUS_KEYS.lock().unwrap();
+    if keys[32] && !previous[32] {
+        session.backend.set_paused(!session.backend.paused());
+    }
+    if keys[78] && !previous[78] {
+        session.request_step();
+    }
+    if keys[106] && !previous[106] {
+        session.reset();
+    }
+    if keys[9] && !previous[9] {
+        session.cycle_speed();
+    }
+    if let Some(gb) = session
+        .backend
+        .debug_extension_mut()
+        .and_then(|debug| debug.downcast_mut::<GameBoy>())
+    {
+        let cpu = gb.cpu_mut();
+        if keys[67] && !previous[67] {
+            cpu.toggle_color_mode();
+        }
+        if keys[76] && !previous[76] {
+            cpu.toggle_consolelog();
+        }
+        if keys[86] && !previous[86] {
+            cpu.toggle_showvram();
+            toggleVramCanvas(cpu.show_vram);
+        }
+    }
+    for (key, button) in [
+        (37, Button::Left),
+        (38, Button::Up),
+        (39, Button::Right),
+        (40, Button::Down),
+        (65, Button::A),
+        (66, Button::B),
+        (13, Button::Start),
+        (16, Button::Select),
+    ] {
+        let _ = session.backend.set_button(0, button, keys[key]);
+    }
+    *previous = *keys;
+}
+
+fn draw_frame(context: &web_sys::CanvasRenderingContext2d, frame: VideoFrame<'_>) {
+    let canvas = context.canvas().unwrap();
+    let geometry = frame.geometry;
+    if canvas.width() != geometry.width {
+        canvas.set_width(geometry.width);
+    }
+    if canvas.height() != geometry.height {
+        canvas.set_height(geometry.height);
+    }
+    canvas
+        .style()
+        .set_property(
+            "aspect-ratio",
+            &format!("{} / {}", geometry.aspect_width, geometry.aspect_height),
+        )
+        .unwrap();
+    if !frame.enabled {
+        context.clear_rect(0.0, 0.0, geometry.width as f64, geometry.height as f64);
+        return;
+    }
+    match frame.format {
+        PixelFormat::Rgba8888 => {
+            let image = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
+                Clamped(frame.pixels),
+                geometry.width,
+                geometry.height,
+            )
+            .unwrap();
+            context.put_image_data(&image, 0.0, 0.0).unwrap();
+        }
+    }
+}
+
+fn request_animation_frame(callback: &Closure<dyn FnMut(f64)>) {
     web_sys::window()
         .unwrap()
-        .request_animation_frame(f.as_ref().unchecked_ref())
-        .expect("should register `requestAnimationFrame` OK");
+        .request_animation_frame(callback.as_ref().unchecked_ref())
+        .expect("could not schedule animation frame");
 }
-
-fn check_keys(cpu: &mut cpu::CPU) {
-    let keys = KEYS.lock().unwrap();
-    let mut previous_keys = PREVIOUS_KEYS.lock().unwrap();
-
-    if keys[32] && !previous_keys[32] {
-        console::log_1(&"Toggle pause".into());
-        cpu.toggle_pause();
-    }
-    if keys[67] && !previous_keys[67] {
-        cpu.toggle_color_mode();
-    }
-    if keys[76] && !previous_keys[76] {
-        cpu.toggle_consolelog();
-    }
-    if keys[78] && !previous_keys[78] {
-        cpu.set_next();
-    }
-    if keys[86] && !previous_keys[86] {
-        cpu.toggle_showvram();
-        toggleVramCanvas(cpu.show_vram);
-    }
-    if keys[106] && !previous_keys[106] {
-        cpu.reset();
-    }
-    if keys[9] && !previous_keys[9] {
-        cpu.cycle_speed();
-    }
-
-    const JOYPAD_KEYS: [usize; 9] =[37, 38, 39, 40, 65, 66, 13, 16, 17];
-    for &key in &JOYPAD_KEYS {
-        cpu.set_keys(key as u32, keys[key]);
-        if keys[key] {
-            cpu.request_interrupt(4);
-        }
-    }
-
-    *previous_keys = *keys;
-}
-
-fn setup_canvas_and_get_context(id: &str) -> web_sys::CanvasRenderingContext2d {
-    let window = web_sys::window().unwrap();
-    let document = window.document().unwrap();
-    let canvas = document
+fn setup_canvas(id: &str, width: u32, height: u32) -> web_sys::CanvasRenderingContext2d {
+    let canvas = web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
         .get_element_by_id(id)
         .unwrap()
         .dyn_into::<web_sys::HtmlCanvasElement>()
         .unwrap();
-
-    if id == "vram-canvas" {
-        canvas.set_width(128);
-        canvas.set_height(192);
-    } else {
-        canvas.set_width(160);
-        canvas.set_height(144);
-    }
-
-    let context = canvas
+    canvas.set_width(width);
+    canvas.set_height(height);
+    canvas
         .get_context("2d")
         .unwrap()
         .unwrap()
-        .dyn_into::<web_sys::CanvasRenderingContext2d>()
-        .unwrap();
-
-    context
+        .dyn_into()
+        .unwrap()
 }
