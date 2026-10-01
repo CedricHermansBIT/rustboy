@@ -3,6 +3,11 @@ use crate::cpu::CPU;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::Clamped;
 
+mod fetch;
+mod window;
+mod objects;
+use fetch::{fetch_background_tile, fetch_window_tile};
+
 /// Snapshot of PPU-rendering registers captured at the Mode 2→3 boundary.
 #[derive(Copy, Clone, Default)]
 pub struct PpuLineSnapshot {
@@ -338,7 +343,8 @@ mod raster_tests {
         cpu.memory[0x8010] = 0xFF;
         cpu.memory[0x8011] = 0xFF;
         cpu.memory[0x8012] = 0xFF;
-        cpu.ppu_reg_log[0] = PpuRegChange { dot: 110, addr: 0xFF40, value: 0xD1 };
+        // Disable before (not on) the next map bus edge at dot 110.
+        cpu.ppu_reg_log[0] = PpuRegChange { dot: 109, addr: 0xFF40, value: 0xD1 };
         cpu.ppu_reg_log[1] = PpuRegChange { dot: 130, addr: 0xFF40, value: 0xF1 };
         cpu.ppu_reg_log[2] = PpuRegChange { dot: 140, addr: 0xFF4B, value: 87 };
         cpu.ppu_reg_log_len = 3;
@@ -462,7 +468,10 @@ fn pixel_output_dots(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, ly: u8, first
     let mut window_regs = snap;
     let mut change_index = 0;
     let changes = &cpu.ppu_reg_log[..cpu.ppu_reg_log_len];
-    let mut window_origin: Option<i16> = None;
+    let mut window_origin = window::clipped_initial_origin(
+        snap, changes, cpu.ppu_mode3_start_dot, ly, cpu.cgb_native_mode()
+    ).map(|origin| origin as i16);
+    if window_origin.is_some() { delay += 6; }
     for x in 0..160 {
         delay += pauses[x];
         let dot = first_dot + x as u16 + delay;
@@ -484,17 +493,23 @@ fn pixel_output_dots(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, ly: u8, first
         if let Some(origin) = window_origin {
             if (x as i16 - origin) & 7 == 0 {
                 let fetch_dot = if x >= 7 { dots[x - 7] } else { first_dot.saturating_sub(7) };
-                if registers_at(snap, changes, fetch_dot).lcdc & 0x20 == 0 {
+                if registers_at(snap, changes, fetch_dot.saturating_sub(1)).lcdc & 0x20 == 0 {
                     window_origin = None;
                 }
             }
         }
         if window_origin.is_none() && enabled && window_regs.wx <= 166
+            && (window_regs.wx == 0 || window_regs.wx >= 7)
             && x == (window_regs.wx as i16 - 7).max(0) as usize {
             // At WX=0, nonzero fine scrolling delays window activation by
             // one dot (the Mealybug WX=0 hardware capture exercises this).
             delay += if window_regs.wx == 0 && fine != 0 { 7 } else { 6 };
             window_origin = Some(window_regs.wx as i16 - 7);
+        }
+        if let Some(origin) = window_origin {
+            if window::reactivation_zero_pixel(origin as i32, x as u32, window_regs.wx) {
+                window_origin = Some(origin + 1);
+            }
         }
         dots[x] = first_dot + x as u16 + delay;
     }
@@ -514,50 +529,6 @@ fn registers_at(mut registers: PpuLineSnapshot, changes: &[PpuRegChange], dot: u
         }
     }
     registers
-}
-
-/// The map index and the two bitplanes are separate bus reads. Once fetched,
-/// a tile's pixels stay in the FIFO even if its source registers are changed.
-fn fetch_background_tile(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, changes: &[PpuRegChange], ly: u8, fetcher_x: u16, map_dot: u16) -> (u8, u8, u8) {
-    // Peripheral reads precede the CPU bus write recorded at the same dot.
-    let map_regs = registers_at(snap, changes, map_dot.saturating_sub(1));
-    let dy = ly.wrapping_add(map_regs.scy);
-    let map = if map_regs.lcdc & 8 != 0 { 0x9C00 } else { 0x9800 };
-    let address = map + (dy as usize / 8) * 32 + (((map_regs.scx as u16 / 8) + fetcher_x) & 31) as usize;
-    let native = cpu.cgb_native_mode();
-    let (index, attr) = if native {
-        (cpu.cgb_vram[0][address - 0x8000], cpu.cgb_vram[1][address - 0x8000])
-    } else { (cpu.memory[address], 0) };
-    fetch_tile_planes(cpu, snap, changes, index, attr, ly, None, map_dot)
-}
-
-fn fetch_window_tile(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, changes: &[PpuRegChange], row: u8, fetcher_x: u16, map_dot: u16) -> (u8, u8, u8) {
-    let map_regs = registers_at(snap, changes, map_dot.saturating_sub(1));
-    let map = if map_regs.lcdc & 0x40 != 0 { 0x9C00 } else { 0x9800 };
-    let address = map + (row as usize / 8) * 32 + (fetcher_x as usize & 31);
-    let (index, attr) = if cpu.cgb_native_mode() {
-        (cpu.cgb_vram[0][address - 0x8000], cpu.cgb_vram[1][address - 0x8000])
-    } else { (cpu.memory[address], 0) };
-    fetch_tile_planes(cpu, snap, changes, index, attr, 0, Some(row & 7), map_dot)
-}
-
-fn fetch_tile_planes(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, changes: &[PpuRegChange], index: u8, attr: u8, ly: u8, window_row: Option<u8>, map_dot: u16) -> (u8, u8, u8) {
-    let native = cpu.cgb_native_mode();
-    let mut planes = [0; 2];
-    for plane in 0..2 {
-        // Like map reads, bitplane reads finish before the CPU write at
-        // their bus edge (+2 / +4). Sample only writes strictly preceding it.
-        let regs = registers_at(snap, changes, map_dot + 1 + plane as u16 * 2);
-        let base = if regs.lcdc & 0x10 != 0 { 0x8000 } else { 0x8800 };
-        let offset = if base == 0x8000 { index as usize * 16 }
-            else { (index as i8 as i16 + 128) as usize * 16 };
-        let row = window_row.unwrap_or_else(|| ly.wrapping_add(regs.scy) & 7);
-        let row = if native && attr & 0x40 != 0 { 7 - row } else { row };
-        let address = base + offset + row as usize * 2 + plane;
-        planes[plane] = if native { cpu.cgb_vram[((attr >> 3) & 1) as usize][address - 0x8000] }
-            else { cpu.memory[address] };
-    }
-    (planes[0], planes[1], attr)
 }
 
 pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
@@ -634,8 +605,10 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
 
     let win_line_active = ly >= wy;
     let mut log_idx     = 0usize;
-    let mut window_origin = None;
-    let mut window_activations = 0u8;
+    let mut window_origin = window::clipped_initial_origin(
+        snap, log, cpu.ppu_mode3_start_dot, ly, is_cgb
+    );
+    let mut window_activations = u8::from(window_origin.is_some());
     let mut bg_resume_shift = 0u16;
     let raster_fetch = log.iter().any(|change| matches!(change.addr, 0xFF40 | 0xFF42 | 0xFF43));
     let prefetched_obj_pauses = if raster_fetch { object_fetch_pauses(cpu, snap, ly).1 } else { [0; 160] };
@@ -703,16 +676,35 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
             let fetch_dot = if screen_x >= 7 { pixel_dots[screen_x as usize - 7] }
                 else { mode3_dot.saturating_sub(7) };
             if (screen_x as i32 - origin) & 7 == 0
-                && registers_at(snap, log, fetch_dot).lcdc & 0x20 == 0 {
+                && registers_at(snap, log, fetch_dot.saturating_sub(1)).lcdc & 0x20 == 0 {
                 window_origin = None;
                 bg_resume_shift = (screen_x as u16 + (snap.scx & 7) as u16) & 7;
                 cached_bg_tile = None;
             }
         }
-        if window_origin.is_none() && win_en && wx <= 166
+        if window_origin.is_none() {
+            let previous_dot = if screen_x > 0 { Some(pixel_dots[screen_x as usize - 1]) } else { None };
+            if let Some(origin) = window::restart_trigger_origin(snap, log, ly, is_cgb, screen_x, pixel_dot, previous_dot) {
+                window_origin = Some(origin);
+                window_activations += 1;
+            }
+        }
+        if window_origin.is_none() && win_en && wx <= 166 && (wx == 0 || wx >= 7)
             && screen_x == win_left.max(0) as u32 {
             window_origin = Some(win_left);
             window_activations += 1;
+        }
+
+        if window::insert_reactivation_zero(&mut window_origin, screen_x, wx) {
+            let (r, g, b) = if is_cgb {
+                get_cgb_color(&cpu.cgb_bg_palettes, 0, 0)
+            } else {
+                let color = palettes[PAL_BG as usize][apply_dmg_palette(0, pixel_bgp) as usize];
+                (color[0], color[1], color[2])
+            };
+            cpu.frame_buffer[buf_base + screen_x as usize] = pack_cgb_pixel(r, g, b, 0, false);
+            screen_x += 1;
+            continue;
         }
 
         let tile_data_base: usize = if lcdc & 0x10 != 0 { 0x8000 } else { 0x8800 };
@@ -898,31 +890,17 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
 
         for idx in (0..count).rev() {
             let (oam_idx, sprite_x) = sprites[idx];
+            if sprite_x >= 160 { continue; }
             let base        = 0xFE00 + (oam_idx as usize) * 4;
-            let sprite_y    = cpu.memory[base] as i16 - 16;
-            let mut tile_index = cpu.memory[base + 2];
             let attributes  = cpu.memory[base + 3];
 
             let pal_type     = if attributes & 0x10 != 0 { PAL_OBJ1 } else { PAL_OBJ0 };
             let flip_x       = attributes & 0x20 != 0;
-            let flip_y       = attributes & 0x40 != 0;
             let obj_priority = (attributes & 0x80) == 0;
-            let vram_bank    = if is_cgb { ((attributes >> 3) & 1) as usize } else { 0 };
             let cgb_pal      = attributes & 0x07;
 
-            let mut row = (ly_i16 - sprite_y) as u8;
-            if sprite_height == 16 {
-                tile_index &= 0xFE;
-                if flip_y { row = 15 - row; }
-                if row >= 8 { tile_index |= 0x01; row -= 8; }
-            } else {
-                if flip_y { row = 7 - row; }
-            }
-
-            let line_offset = (tile_index as u16) * 16 + (row as u16) * 2;
-            let addr        = 0x8000 + line_offset as usize;
-            let b1 = if is_cgb { cpu.cgb_vram[vram_bank][addr - 0x8000]     } else { cpu.memory[addr]     };
-            let b2 = if is_cgb { cpu.cgb_vram[vram_bank][addr - 0x8000 + 1] } else { cpu.memory[addr + 1] };
+            let first_dot = if log.is_empty() { 0 } else { pixel_dots[sprite_x.max(0) as usize] };
+            let (b1, b2) = objects::fetch_object_planes(cpu, snap, log, ly, oam_idx, first_dot);
 
             for px in 0..8u8 {
                 let sx = sprite_x as i32 + px as i32;
@@ -934,7 +912,10 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                 if raw == 0 { continue; }
 
                 // O(1) lookup via pre-built per-pixel palette state.
-                let cur_lcdc = px_lcdc_sp[sx];
+                let cur_lcdc = if log.is_empty() { px_lcdc_sp[sx] } else {
+                    (px_lcdc_sp[sx] & !2)
+                        | (registers_at(snap, log, pixel_dots[sx].saturating_sub(1)).lcdc & 2)
+                };
                 if cur_lcdc & 0x02 == 0 { continue; }
                 let obp = if attributes & 0x10 != 0 { px_obp1[sx] } else { px_obp0[sx] };
 
