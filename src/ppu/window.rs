@@ -2,6 +2,27 @@
 
 use super::{PpuLineSnapshot, PpuRegChange, registers_at};
 
+/// Enabling the window on the comparator edge leaves the background FIFO's
+/// head pixel in place before the restarted window data reaches the mixer.
+/// This boundary behavior is inferred from the combined WIN_EN/WX capture.
+pub(super) fn enable_on_comparison(snapshot: PpuLineSnapshot, changes: &[PpuRegChange], dot: u16) -> bool {
+    registers_at(snapshot, changes, dot.saturating_sub(1)).lcdc & 0x20 == 0
+        && registers_at(snapshot, changes, dot).lcdc & 0x20 != 0
+}
+
+/// The comparator can insert a zero at a map-read boundary even if WIN_EN
+/// was cleared after the earlier window fetch request was latched. The
+/// seven-dot request-to-output phase is inferred from that hardware capture.
+pub(super) fn disabled_comparison_zero(snapshot: PpuLineSnapshot, changes: &[PpuRegChange],
+    ly: u8, native: bool, x: u32, dot: u16) -> bool {
+    let live = registers_at(snapshot, changes, dot);
+    let wx = registers_at(snapshot, changes, dot.saturating_sub(2)).wx;
+    live.lcdc & 0x20 == 0 && (native || live.lcdc & 1 != 0) && ly >= live.wy
+        && (7..=166).contains(&wx) && x == wx as u32 - 7
+        && (x + (snapshot.scx & 7) as u32) & 7 == 0
+        && registers_at(snapshot, changes, dot.saturating_sub(8)).lcdc & 0x20 != 0
+}
+
 /// A left-clipped window is triggered during fetch startup, before the
 /// first visible pixel. Subsequent WX writes cannot relocate its FIFO.
 /// WX=0 has a distinct startup sequence and is handled by the normal path.
@@ -92,6 +113,28 @@ pub(super) fn restart_trigger_origin(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enable_edge_retains_a_fifo_head_only_on_the_comparison_dot() {
+        let snapshot = PpuLineSnapshot { lcdc: 0xC1, ..Default::default() };
+        let changes = [PpuRegChange { dot: 104, addr: 0xFF40, value: 0xE1 }];
+        assert!(!enable_on_comparison(snapshot, &changes, 103));
+        assert!(enable_on_comparison(snapshot, &changes, 104));
+        assert!(!enable_on_comparison(snapshot, &changes, 105));
+    }
+
+    #[test]
+    fn disabled_comparator_zero_requires_an_armed_map_boundary() {
+        let snapshot = PpuLineSnapshot { lcdc: 0xE1, wx: 15, ..Default::default() };
+        let changes = [
+            PpuRegChange { dot: 96, addr: 0xFF40, value: 0xC1 },
+            PpuRegChange { dot: 104, addr: 0xFF40, value: 0xE1 },
+        ];
+        assert!(disabled_comparison_zero(snapshot, &changes, 15, false, 8, 103));
+        assert!(!disabled_comparison_zero(PpuLineSnapshot { wx: 16, ..snapshot }, &changes, 16, false, 9, 103));
+        assert!(!disabled_comparison_zero(PpuLineSnapshot { lcdc: 0xC1, ..snapshot }, &changes, 15, false, 8, 103));
+        assert!(!disabled_comparison_zero(PpuLineSnapshot { wy: 16, ..snapshot }, &changes, 15, false, 8, 103));
+    }
 
     #[test]
     fn repeat_comparison_only_inserts_zero_on_map_read_boundary() {

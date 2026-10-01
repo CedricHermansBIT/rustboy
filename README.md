@@ -74,7 +74,10 @@ cargo test --locked --release --no-default-features --test headless
 
 `--roms` verifies recorded fixture/reference hashes and explicitly excludes only
 the two original micro-ROM errors listed in `tests/fixture_errata.json`. It does
-not suppress graphics failures or the unresolved Blargg timing ROM. CI covers
+not suppress the Blargg standalone timing ROM's documented logger overflow.
+All 31 Mealybug graphics captures currently pass; the unfiltered ROM run
+reports 604 passed, 3 original fixture failures, and 24 ignored testbenches/SGB
+cases. CI covers
 the self-contained checks, a clean WASM build, and browser initialization/error
 handling; licensed local fixtures must be tested separately.
 
@@ -95,4 +98,6 @@ Standard ROM/RAM, MBC1 (including multicarts), MBC2, MBC3/RTC, and MBC5 cartridg
 are supported. Unsupported controllers are rejected with an explanatory error.
 Super Game Boy features, physical link/infrared connections, and unusual
 cartridge peripherals are not part of the current validated baseline. Precise
-mid-scanline tile/window behavior remains a known compatibility gap.
+mid-scanline tile/window behavior is checked against all 31 bundled Mealybug
+hardware captures, which currently pass. Other games, hardware revisions, and
+uncovered timing sequences may still reveal compatibility issues.

@@ -72,6 +72,38 @@ mod save_state_tests {
     }
 
     #[test]
+    fn save_state_restores_ppu_bus_latches_including_a_retained_zero() {
+        let mut cpu = cpu_with_rom(1);
+        for retained_data in [None, Some(0), Some(0xA5)] {
+            let expected = crate::ppu::FetchBusState { last_data: 0x7F, retained_data };
+            cpu.ppu_fetch_bus = expected;
+            let state = cpu.export_state();
+            cpu.ppu_fetch_bus = crate::ppu::FetchBusState::default();
+            cpu.import_state(&state).unwrap();
+            assert_eq!(cpu.ppu_fetch_bus, expected);
+        }
+    }
+
+    #[test]
+    fn version_one_save_states_still_load_with_default_ppu_bus_latches() {
+        let mut cpu = cpu_with_rom(1);
+        cpu.reg_a = 0x42;
+        let mut legacy = cpu.export_state();
+        legacy.truncate(legacy.len() - 3); // v2 appends the three latch bytes.
+        legacy[4..6].copy_from_slice(&1u16.to_le_bytes());
+        let size = (legacy.len() - 22) as u32;
+        legacy[14..18].copy_from_slice(&size.to_le_bytes());
+        let checksum = legacy[22..].iter().fold(0x811c9dc5u32, |hash, byte|
+            (hash ^ *byte as u32).wrapping_mul(0x01000193));
+        legacy[18..22].copy_from_slice(&checksum.to_le_bytes());
+        cpu.reg_a = 0;
+        cpu.ppu_fetch_bus = crate::ppu::FetchBusState { last_data: 0xFF, retained_data: Some(0xAA) };
+        cpu.import_state(&legacy).unwrap();
+        assert_eq!(cpu.reg_a, 0x42);
+        assert_eq!(cpu.ppu_fetch_bus, crate::ppu::FetchBusState::default());
+    }
+
+    #[test]
     fn same_title_roms_have_separate_battery_save_keys() {
         let first = cpu_with_rom(1);
         let second = cpu_with_rom(2);
@@ -259,11 +291,12 @@ pub struct CPU {
     pub ppu_reg_log_dropped: u64,
     /// Snapshot of all rendering-relevant registers at the Mode 2 → 3 boundary.
     pub ppu_line_snapshot: crate::ppu::PpuLineSnapshot,
+    pub(crate) ppu_fetch_bus: crate::ppu::FetchBusState,
 }
 
 impl CPU {
     const STATE_MAGIC: [u8; 4] = *b"RBST";
-    const STATE_VERSION: u16 = 1;
+    const STATE_VERSION: u16 = 2;
 
     fn rom_fingerprint(&self) -> u64 {
         self.mbc.rom.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
@@ -315,6 +348,8 @@ impl CPU {
         bytes!(self.ppu_reg_log_dropped);
         payload.extend_from_slice(&self.gbc_palettes.iter().flatten().flatten().copied().collect::<Vec<_>>());
         payload.push(self.color_mode);
+        payload.extend_from_slice(&[self.ppu_fetch_bus.last_data,
+            self.ppu_fetch_bus.retained_data.is_some() as u8, self.ppu_fetch_bus.retained_data.unwrap_or(0)]);
 
         let checksum = payload.iter().fold(0x811c9dc5u32, |hash, byte| (hash ^ *byte as u32).wrapping_mul(0x01000193));
         let mut out = Vec::with_capacity(payload.len() + 22);
@@ -334,7 +369,7 @@ impl CPU {
         }
         if data.len() < 22 || data[..4] != Self::STATE_MAGIC { return Err("not a RustBoy save state"); }
         let version = u16::from_le_bytes(data[4..6].try_into().unwrap());
-        if version != Self::STATE_VERSION { return Err("unsupported save-state version"); }
+        if !(1..=Self::STATE_VERSION).contains(&version) { return Err("unsupported save-state version"); }
         let fingerprint = u64::from_le_bytes(data[6..14].try_into().unwrap());
         if fingerprint != self.rom_fingerprint() { return Err("save state belongs to a different ROM"); }
         let len = u32::from_le_bytes(data[14..18].try_into().unwrap()) as usize;
@@ -378,6 +413,13 @@ impl CPU {
         self.ppu_reg_log_dropped=num!(u64);
         for value in self.gbc_palettes.iter_mut().flatten().flatten() { *value = one!(); }
         self.color_mode=one!();
+        self.ppu_fetch_bus = if version >= 2 {
+            let last_data = one!();
+            let present = one!();
+            let value = one!();
+            if present > 1 { return Err("invalid PPU bus latch in save state"); }
+            crate::ppu::FetchBusState { last_data, retained_data: (present != 0).then_some(value) }
+        } else { crate::ppu::FetchBusState::default() };
         if !input.is_empty() { return Err("save state contains unexpected data"); }
 
         self.apu = APU::restore_from_memory(&self.memory, self.is_cgb);
@@ -484,6 +526,7 @@ impl CPU {
             ppu_reg_log_len: 0,
             ppu_reg_log_dropped: 0,
             ppu_line_snapshot: crate::ppu::PpuLineSnapshot::default(),
+            ppu_fetch_bus: crate::ppu::FetchBusState::default(),
         }
     }
 
@@ -1058,6 +1101,7 @@ impl CPU {
     }
 
     pub fn load_rom(&mut self, data: Vec<u8>) {
+        self.ppu_fetch_bus = crate::ppu::FetchBusState::default();
         let copy_len = data.len().min(0x8000);
         for i in 0..copy_len {
             self.memory[i] = data[i];

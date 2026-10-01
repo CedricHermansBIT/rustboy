@@ -6,7 +6,10 @@ use wasm_bindgen::Clamped;
 mod fetch;
 mod window;
 mod objects;
+#[cfg(test)]
 use fetch::{fetch_background_tile, fetch_window_tile};
+use fetch::{fetch_background_tile_latched, fetch_window_tile_latched, FetchBusLatch};
+pub(crate) use fetch::FetchBusState;
 
 /// Snapshot of PPU-rendering registers captured at the Mode 2→3 boundary.
 #[derive(Copy, Clone, Default)]
@@ -487,6 +490,88 @@ mod raster_tests {
             assert!(super::mixer_gate(&cpu, snap, &cpu.ppu_reg_log[..1], 104, 0, bit));
         }
     }
+
+    #[test]
+    fn window_enable_races_preserve_the_queued_head_and_first_fetched_tile() {
+        for (line, expected) in [
+            (15, [(7, 1), (8, 0), (9, 1)]),
+            (16, [(9, 1), (10, 3), (33, 3)]),
+            (39, [(31, 1), (32, 0), (33, 1)]),
+            (44, [(36, 1), (37, 1), (38, 3)]),
+        ] {
+            let mut cpu = crate::cpu::CPU::new();
+            cpu.booting = false;
+            cpu.memory[0xFF44] = line;
+            for row in 0..8 {
+                cpu.memory[0x9000 + row * 2] = 0xFF;
+                cpu.memory[0x9001 + row * 2] = 0;
+            }
+            cpu.memory[0x9010..0x9020].fill(0xFF);
+            cpu.memory[0x9800..0x9C00].fill(0);
+            cpu.memory[0x9C00..0xA000].fill(1);
+            cpu.memory[0xFE00..0xFEA0].fill(0);
+            cpu.ppu_line_snapshot = PpuLineSnapshot { lcdc: 0xE1, bgp: 0xE4, wx: line - 1, ..Default::default() };
+            cpu.ppu_mode3_start_dot = 84;
+            for (index, (dot, addr, value)) in [(84, 0xFF4B, line), (96, 0xFF40, 0xC1),
+                (104, 0xFF40, 0xE1), (124, 0xFF40, 0xC1), (132, 0xFF40, 0xE1)].into_iter().enumerate() {
+                cpu.ppu_reg_log[index] = PpuRegChange { dot, addr, value };
+            }
+            cpu.ppu_reg_log_len = 5;
+            super::draw_scanline(&mut cpu);
+            for (x, raw) in expected {
+                assert_eq!((cpu.frame_buffer[line as usize * 160 + x] >> 24) & 3, raw, "LY={line}, X={x}");
+            }
+        }
+    }
+
+    #[test]
+    fn cgb_end_of_line_prefetch_handles_all_clipped_and_right_edge_windows() {
+        let mut cpu = crate::cpu::CPU::new();
+        cpu.is_cgb = true;
+        cpu.booting = false;
+        cpu.memory[0xFF4C] = 4;
+        cpu.memory[0xFF44] = 0;
+        cpu.memory[0xFE00..0xFEA0].fill(0);
+        cpu.ppu_mode3_start_dot = 84;
+        for wx in 0..=167 {
+            for scx in 0..8 {
+                for lcdc in [0x91, 0xF1] {
+                    cpu.window_line_counter = 0;
+                    cpu.ppu_line_snapshot = PpuLineSnapshot { lcdc, wx, scx, ..Default::default() };
+                    super::draw_scanline(&mut cpu);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cgb_next_row_collision_reuses_an_undisplayed_prefetch_read() {
+        let mut cpu = crate::cpu::CPU::new();
+        cpu.is_cgb = true;
+        cpu.booting = false;
+        cpu.memory[0xFF4C] = 4;
+        cpu.memory[0xFF44] = 0;
+        cpu.memory[0xFE00..0xFEA0].fill(0);
+        cpu.memory[0x9800..0x9C00].fill(0);
+        cpu.memory[0x9800 + 20] = 1; // Ahead of the last displayed tile.
+        cpu.memory[0x8001] = 0x55;
+        cpu.memory[0x8003] = 0x55;
+        cpu.memory[0x8011] = 0xCC;
+        cpu.memory[0x9000..0x9020].fill(0);
+        cpu.ppu_mode3_start_dot = 84;
+        cpu.ppu_line_snapshot = PpuLineSnapshot { lcdc: 0x91, ..Default::default() };
+        super::draw_scanline(&mut cpu);
+        assert_eq!(cpu.ppu_fetch_bus.last_data, 0xCC);
+        cpu.memory[0xFF44] = 1;
+        cpu.ppu_line_snapshot.lcdc = 0x81;
+        cpu.ppu_reg_log[0] = PpuRegChange { dot: 104, addr: 0xFF40, value: 0x91 };
+        cpu.ppu_reg_log_len = 1;
+        super::draw_scanline(&mut cpu);
+        // The tile-2 low plane is CC from the previous line, not an earlier
+        // signed read (00) from this line. High plane is the ordinary 55.
+        assert_eq!((cpu.frame_buffer[160 + 16] >> 24) & 3, 1);
+        assert_eq!((cpu.frame_buffer[160 + 17] >> 24) & 3, 3);
+    }
 }
 
 /// Visible pixel clocks include fetcher pauses; raster register writes must
@@ -530,7 +615,7 @@ fn pixel_output_dots(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, ly: u8, first
         // behind the CPU bus write (inferred from the hardware references).
         let comparison_wx = registers_at(snap, changes, dot.saturating_sub(2)).wx;
         if let Some(origin) = window_origin {
-            if (x as i16 - origin) & 7 == 0 {
+            if x as i16 > origin && (x as i16 - origin) & 7 == 0 {
                 let fetch_dot = if x >= 7 { dots[x - 7] }
                     else { dots[0].saturating_sub(7).saturating_add(x as u16) };
                 if registers_at(snap, changes, fetch_dot.saturating_sub(1)).lcdc & 0x20 == 0 {
@@ -544,7 +629,8 @@ fn pixel_output_dots(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, ly: u8, first
             // At WX=0, nonzero fine scrolling delays window activation by
             // one dot (the Mealybug WX=0 hardware capture exercises this).
             delay += if comparison_wx == 0 && fine != 0 { 7 } else { 6 };
-            window_origin = Some(comparison_wx as i16 - 7);
+            let retained_head = !cpu.is_cgb && window::enable_on_comparison(snap, changes, dot);
+            window_origin = Some(comparison_wx as i16 - 7 + i16::from(retained_head));
         }
         if let Some(origin) = window_origin {
             if window::reactivation_zero_pixel(origin as i32, x as u32, comparison_wx) {
@@ -602,11 +688,24 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
     let mode3_dot = cpu.ppu_mode3_start_dot + 11;
     let is_cgb    = cpu.cgb_native_mode();
     let buf_base  = ly as usize * 160;
-    let pixel_dots = if log.is_empty() { [0; 160] }
+    let pixel_dots = if log.is_empty() && !cpu.is_cgb { [0; 160] }
         else { pixel_output_dots(cpu, snap, ly, mode3_dot) };
-    let object_schedule = if log.is_empty() { None } else {
+    let object_schedule = if log.is_empty() && !cpu.is_cgb { None } else {
         Some(objects::fetch_schedule(cpu, snap, ly))
     };
+    let mut fetch_bus = FetchBusLatch::new(cpu.ppu_fetch_bus);
+    if cpu.is_cgb {
+        if let Some(schedule) = &object_schedule {
+            for index in 0..40 {
+                if schedule.fetched[index] {
+                    let output = schedule.first_output[index];
+                    let (_, high) = objects::fetch_object_planes(cpu, snap, log, ly, index as u8, output);
+                    let clipped = 8u8.saturating_sub(cpu.memory[0xFE01 + index * 4]) as u16;
+                    fetch_bus.record_sprite_high(output.saturating_sub(clipped), high);
+                }
+            }
+        }
+    }
 
     // In CGB compatibility mode, BGP/OBP select among the colors installed by
     // the real boot ROM. Cartridge writes cannot replace native palettes.
@@ -666,7 +765,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
     let mut window_activations = u8::from(window_origin.is_some());
     let mut bg_resume_shift = 0u16;
     let raster_fetch = log.iter().any(|change| matches!(change.addr, 0xFF40 | 0xFF42 | 0xFF43));
-    let prefetched_obj_pauses = if raster_fetch { object_fetch_pauses(cpu, snap, ly).1 } else { [0; 160] };
+    let prefetched_obj_pauses = if raster_fetch || cpu.is_cgb { object_fetch_pauses(cpu, snap, ly).1 } else { [0; 160] };
     let mut cached_bg_tile = None;
     let mut cached_window_tile = None;
 
@@ -739,7 +838,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
         if let Some(origin) = window_origin {
             let fetch_dot = if screen_x >= 7 { pixel_dots[screen_x as usize - 7] }
                 else { pixel_dots[0].saturating_sub(7).saturating_add(screen_x as u16) };
-            if (screen_x as i32 - origin) & 7 == 0
+            if screen_x as i32 > origin && (screen_x as i32 - origin) & 7 == 0
                 && registers_at(snap, log, fetch_dot.saturating_sub(1)).lcdc & 0x20 == 0 {
                 window_origin = None;
                 bg_resume_shift = (screen_x as u16 + (snap.scx & 7) as u16) & 7;
@@ -749,7 +848,9 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
         if window_origin.is_none() {
             let previous_dot = if screen_x > 0 { Some(pixel_dots[screen_x as usize - 1]) } else { None };
             if let Some(origin) = window::restart_trigger_origin(snap, log, ly, is_cgb, screen_x, pixel_dot, previous_dot) {
-                window_origin = Some(origin);
+                let restart_dot = pixel_dot.saturating_sub(if origin == -7 && snap.scx & 7 != 0 { 7 } else { 6 });
+                let retained_head = !cpu.is_cgb && window::enable_on_comparison(snap, log, restart_dot);
+                window_origin = Some(origin + i32::from(retained_head));
                 window_activations += 1;
             }
         }
@@ -759,7 +860,12 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
             window_activations += 1;
         }
 
-        if window::insert_reactivation_zero(&mut window_origin, screen_x, wx) {
+        let disabled_zero = window_origin.is_none() && window::disabled_comparison_zero(snap, log, ly, is_cgb, screen_x, pixel_dot);
+        if disabled_zero || window::insert_reactivation_zero(&mut window_origin, screen_x, wx) {
+            if disabled_zero {
+                bg_resume_shift = bg_resume_shift.wrapping_add(1) & 7;
+                cached_bg_tile = None;
+            }
             let (r, g, b) = if is_cgb {
                 get_cgb_color(&cpu.cgb_bg_palettes, 0, 0)
             } else {
@@ -773,7 +879,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
 
         let tile_data_base: usize = if lcdc & 0x10 != 0 { 0x8000 } else { 0x8800 };
 
-        if let Some(origin) = window_origin {
+        if let Some(origin) = window_origin.filter(|&origin| screen_x as i32 >= origin) {
             // ── Window tile ─────────────────────────────────────────────────
             let wy_row       = cpu.window_line_counter.wrapping_add(window_activations - 1);
             let tile_map_base: usize = if lcdc & 0x40 != 0 { 0x9C00 } else { 0x9800 };
@@ -819,13 +925,14 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                         first.saturating_sub(if wx == 0 && snap.scx & 7 != 0 { 6 } else { 5 })
                             .saturating_sub(prefetched_obj_pauses[origin.max(0) as usize])
                     };
-                    let (low, high, attributes) = fetch_window_tile(cpu, snap, log, wy_row, tile, map_dot);
+                    let (low, high, attributes) = fetch_window_tile_latched(cpu, snap, log, wy_row, tile, map_dot, &mut fetch_bus);
                     cached_window_tile = Some((key, low, high, attributes));
                 }
                 let (_, low, high, attributes) = cached_window_tile.unwrap();
                 b1 = low; b2 = high; attr = attributes;
             }
             let flip_x = is_cgb && attr & 0x20 != 0;
+            if !raster_fetch { fetch_bus.record_static_high(b2); }
             let cgb_pal = attr & 7;
             let bg_prio = is_cgb && attr & 0x80 != 0;
 
@@ -896,19 +1003,22 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                         map_dot = map_dot.saturating_sub(prefetched_obj_pauses[previous]
                             + prefetched_obj_pauses[previous + 1]);
                     }
-                    let (low, high, attributes) = fetch_background_tile(cpu, snap, log, ly, fetcher_x, map_dot);
+                    let (low, high, attributes) = fetch_background_tile_latched(cpu, snap, log, ly, fetcher_x, map_dot, &mut fetch_bus);
                     cached_bg_tile = Some((fetcher_x, low, high, attributes));
                 }
                 let (_, low, high, attributes) = cached_bg_tile.unwrap();
                 b1 = low; b2 = high; attr = attributes;
             }
             let flip_x = is_cgb && attr & 0x20 != 0;
+            if !raster_fetch { fetch_bus.record_static_high(b2); }
             let cgb_pal = attr & 7;
             let bg_prio = is_cgb && attr & 0x80 != 0;
 
             // Run to tile boundary, next log entry, window left edge, or screen end.
             let tile_run: u32 = 8 - (dx % 8) as u32;
-            let win_boundary: u32 = if win_en && win_left > screen_x as i32 {
+            let win_boundary: u32 = if let Some(origin) = window_origin.filter(|&origin| origin > screen_x as i32) {
+                (origin as u32).min(160)
+            } else if win_en && win_left > screen_x as i32 {
                 (win_left as u32).min(160)
             } else { 160 };
             let run_end = (screen_x + tile_run).min(next_log_x).min(win_boundary).min(160);
@@ -939,6 +1049,35 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
         }
     }
 
+    if cpu.is_cgb {
+        // The fetcher is ahead of LCD output: a final, undisplayed tile can
+        // already have driven VRAM before Mode 3 ends. Retain only reads
+        // that precede the final output edge (including a partial word).
+        fetch_bus.set_cutoff(pixel_dots[159]);
+        if let Some(origin) = window_origin {
+            let tile = ((159 - origin).div_euclid(8) + 1) as u16;
+            let start = origin + tile as i32 * 8;
+            if tile == 0 || start - 7 < 160 {
+                let map_dot = if tile == 0 { pixel_dots[159].saturating_sub(4) } else {
+                    let previous = (start - 8).max(0) as usize;
+                    pixel_dots[(start - 7) as usize].saturating_sub(
+                        prefetched_obj_pauses[previous] + prefetched_obj_pauses[previous + 1])
+                };
+                let row = cpu.window_line_counter.wrapping_add(window_activations - 1);
+                fetch_window_tile_latched(cpu, snap, log, row, tile, map_dot, &mut fetch_bus);
+            }
+        } else {
+            let tile = (159 + (snap.scx & 7) as i32 - bg_resume_shift as i32) / 8 + 1;
+            let start = tile * 8 - (snap.scx & 7) as i32 + bg_resume_shift as i32;
+            if start - 7 < 160 {
+                let previous = (start - 8).max(0) as usize;
+                let map_dot = pixel_dots[(start - 7) as usize].saturating_sub(
+                    prefetched_obj_pauses[previous] + prefetched_obj_pauses[previous + 1]);
+                fetch_background_tile_latched(cpu, snap, log, ly, tile as u16, map_dot, &mut fetch_bus);
+            }
+        }
+        cpu.ppu_fetch_bus = fetch_bus.state();
+    }
     cpu.window_line_counter = cpu.window_line_counter.wrapping_add(window_activations);
 
     // ── Sprite pass ──────────────────────────────────────────────────────────

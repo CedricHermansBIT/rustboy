@@ -7,16 +7,17 @@ Verified on 2026-10-01 in the original checkout. ROM fixtures remain unchanged.
 | Mooneye | 46 | 0 | 3 |
 | Blargg | 43 | 1 | 0 |
 | GBMicrotest (including raw-byte publishers) | 484 | 2 | 21 |
-| Mealybug screenshot comparisons | 28 | 3 | 0 |
-| Total registered ROMs | 601 | 6 | 24 |
+| Mealybug screenshot comparisons | 31 | 0 | 0 |
+| Total registered ROMs | 604 | 3 | 24 |
 
-The ignored count has fallen from 77 to 24. This does **not** mean all newly
-enabled cases pass: 3 graphics failures and one unreliable standalone Blargg ROM are now
-visible instead of excluded. Only the three Super Game Boy cases are outside
+All 31 enabled Mealybug graphics captures pass. The unfiltered ROM suite still
+reports the three original fixture failures below; none was rewritten or
+silenced to obtain a green result. The ignored count has fallen from 77 to 24.
+Only the three Super Game Boy cases are outside
 the target hardware; the 21 remaining older testbenches have no curated
 automated oracle yet. They are not counted as validated.
 
-Separate checks pass: 60 core unit tests, 2 PPU regressions, 5 boot/timer
+Separate checks pass: 71 core unit tests, 2 PPU regressions, 5 boot/timer
 diagnostics, and both DMG/CGB Acid2 reference images. Both optional Pinball
 diagnostics pass with the locally supplied games. Browser smoke checks pass
 for DMG and CGB loading, nonblank rendering, pause/resume, and malformed-upload
@@ -41,10 +42,11 @@ Also passing: `m3_lcdc_tile_sel_change`, `m3_scy_change`, `m3_scy_change2`,
 `m3_wx_5_change`, `m3_wx_6_change`, `m3_lcdc_bg_en_change2`,
 `m3_lcdc_win_map_change`, `m3_lcdc_tile_sel_win_change`,
 `m3_lcdc_bg_en_change`, both `m3_lcdc_obj_en_change` variants,
-and both `m3_lcdc_obj_size_change` variants.
-Remaining failures involve CGB tile-selection fetches and the combined
-window-enable/WX capture.
-They are emulator compatibility gaps, not accepted fixture exceptions.
+both `m3_lcdc_obj_size_change` variants, both CGB tile-selection captures
+(`m3_lcdc_tile_sel_change2`, `m3_lcdc_tile_sel_win_change2`), and
+`m3_lcdc_win_en_change_multiple_wx`. There are no remaining failures in this
+graphics suite. This validates the supplied captures, not every hardware
+revision or every possible raster-write sequence.
 
 The renderer now accounts for visible-output startup, OBJ/window stalls,
 one-dot DMG palette overlap, and separately latched map/bitplane reads.
@@ -53,11 +55,15 @@ Window stalls follow live WX writes before the horizontal trigger, including
 the extra activation dot at WX=0 with nonzero fine scroll.
 Window disabling drains previously fetched tiles; changing WX does not
 relocate active window pixels, and reactivation advances the window row.
-The multiple-WX/window-enable capture still differs by five pixels.
+The combined WX/window-enable capture now matches all pixels. A comparison-edge
+enable can retain the queued background head before window data arrives;
+disabling after a fetch request was latched can insert a raw-zero pixel at a
+map boundary. These boundary phases are inferred from the hardware capture
+and have dedicated regressions. The first fetched window tile is not canceled
+retroactively by a pre-restart register value.
 Window tiles retain their fetched map index and bitplanes across register
 writes, with SCY affecting only background fetches. Window map/tile-select
-captures now pass on DMG; the two CGB tile-selection captures still expose
-remaining fetch-stage/bus-latch differences.
+captures now pass on both DMG and CGB.
 Map reads precede CPU writes recorded on the same dot. Visible OBJ stalls
 must not move an already-started background map read; left-clipped objects
 instead delay startup. These orderings have dedicated unit regressions.
@@ -78,10 +84,23 @@ The first visible DMG pixel uses the current BG/OBJ enable gates while later
 pixels use the output latch. This startup phase is inferred from three
 independent hardware captures; a regression also checks that it does not
 alter CGB's ordinary propagation or later DMG pixel clocks.
+CGB A-C tile-address controls have an inferred two-dot latch phase. On a
+tile-selection reset/read collision, the tile index reaches the visible FIFO
+but the original VRAM byte is retained separately. Later set/read collisions
+reuse that byte, or a subsequently fetched object's high plane; the older
+object read must not override a newer reset. These rules match both independent
+BG and window captures. The renderer retains completed off-screen prefetch
+reads across scanlines, including partial words at the Mode-3 cutoff.
+Save-state format v2 preserves these bus latches; v1 states remain loadable
+with default latch state. None of these changes replaces ROM-specific pixel
+values or modifies a hardware reference.
+The underlying bus-glitch observations are documented in the
+[test author's PPU notes](https://github.com/mattcurrie/mealybug-tearoom-tests/blob/master/the-comprehensive-game-boy-ppu-documentation.md);
+the precise latch phases above are inferred from the bundled captures.
 CGB KEY0 compatibility mode is locked after boot; monochrome cartridges no
 longer accidentally use native palette/VRAM banking.
 
-## Unresolved Blargg timing ROM
+## Original Blargg standalone logger defect
 
 `blargg_n7_timing_effect` is enabled and still fails to finish. Its original
 single-ROM build prints every corruption dump to an 8 KiB cartridge-RAM
@@ -148,7 +167,7 @@ ab1656911841d9fdcbe34aad21dc44f554e84a6eef5a82558dc27c8e9a89250c  halt_op_dupe_d
 ## Reproduction
 
 ```sh
-# All original cases: currently exits nonzero (601 pass / 6 fail / 24 ignore).
+# All original cases: currently exits nonzero (604 pass / 3 fail / 24 ignore).
 cargo test --locked --offline --release --no-default-features --test headless
 
 # Self-contained regressions; no ROMs/BIOS needed.
