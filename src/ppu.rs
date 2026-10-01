@@ -433,6 +433,29 @@ mod raster_tests {
             assert_eq!(raw(6), 0, "disabled BG must also clear OBJ-priority metadata");
         }
     }
+
+    #[test]
+    fn visible_objects_do_not_retime_an_inflight_window_map_read() {
+        for (raw_x, expected) in [(2, 3), (8, 0)] {
+            let mut cpu = crate::cpu::CPU::new();
+            cpu.booting = false;
+            cpu.memory[0xFF44] = 0;
+            cpu.memory[0x9000..0x9010].fill(0);
+            cpu.memory[0x9010..0x9020].fill(0xFF);
+            cpu.memory[0x9800..0x9C00].fill(0);
+            cpu.memory[0x9C00..0xA000].fill(1);
+            cpu.memory[0xFE00..0xFEA0].fill(0);
+            cpu.memory[0xFE00] = 16;
+            cpu.memory[0xFE01] = raw_x;
+            cpu.ppu_line_snapshot = PpuLineSnapshot { lcdc: 0xA3, bgp: 0xE4, wx: 7, ..Default::default() };
+            cpu.ppu_mode3_start_dot = 84;
+            cpu.ppu_reg_log[0] = PpuRegChange { dot: 104, addr: 0xFF40, value: 0xE3 };
+            cpu.ppu_reg_log[1] = PpuRegChange { dot: 112, addr: 0xFF40, value: 0xA3 };
+            cpu.ppu_reg_log_len = 2;
+            super::draw_scanline(&mut cpu);
+            assert_eq!((cpu.frame_buffer[0] >> 24) & 3, expected, "OAM X={raw_x}");
+        }
+    }
 }
 
 /// Visible pixel clocks include fetcher pauses; raster register writes must
@@ -742,10 +765,16 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                 if cached_window_tile.map(|(k, _, _, _)| k) != Some(key) {
                     let tile_start = screen_x as i32 - (wx_pos_start & 7) as i32;
                     let map_dot = if tile_start >= origin + 8 && tile_start >= 7 {
-                        pixel_dots[tile_start as usize - 7]
+                        let previous = (tile_start - 8).max(0) as usize;
+                        pixel_dots[tile_start as usize - 7].saturating_sub(
+                            prefetched_obj_pauses[previous] + prefetched_obj_pauses[previous + 1]
+                        )
                     } else {
                         let first = pixel_dots[origin.max(0) as usize];
-                        first.saturating_sub(if wx == 0 && snap.scx & 7 != 0 { 7 } else { 6 })
+                        // The map bus read follows the restart/comparator
+                        // edge by one dot; the restart itself takes six.
+                        first.saturating_sub(if wx == 0 && snap.scx & 7 != 0 { 6 } else { 5 })
+                            .saturating_sub(prefetched_obj_pauses[origin.max(0) as usize])
                     };
                     let (low, high, attributes) = fetch_window_tile(cpu, snap, log, wy_row, tile, map_dot);
                     cached_window_tile = Some((key, low, high, attributes));
