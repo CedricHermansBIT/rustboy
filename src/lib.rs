@@ -8,6 +8,7 @@ pub mod debug_tracer;
 pub mod emulator;
 pub mod gameboy;
 pub mod session;
+pub mod boot_roms;
 
 #[cfg(target_arch = "wasm32")]
 mod web;

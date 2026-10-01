@@ -19,11 +19,21 @@ cargo install wasm-bindgen-cli --locked --version 0.2.118
 python3 scripts/build_web.py
 ```
 
-The build does not require game files or embed copyrighted boot ROMs.
-Before playing, supply your own boot ROMs at these paths:
+The build includes openly licensed SameBoy replacement boot ROMs, including
+startup animations and chimes. **Users do not need boot-ROM files to play.**
+The CGB replacement uses SameBoy branding, rather than the exact Nintendo
+animation. Attribution, source links and pinned hashes are in
+[the replacement firmware notes](third_party/sameboy/README.md).
+
+To use the exact original startup instead, optionally supply your own firmware:
 
 - `roms/dmg_boot.bin`: 256 bytes, for Game Boy games.
 - `roms/cgb_boot.bin`: 2,304 bytes, for Game Boy Color games.
+
+Missing/unreachable optional firmware falls back to the bundled replacement.
+An existing file of the wrong size is reported as an error. Original-firmware
+boot/timing ROM tests still require local firmware; they do not substitute the
+replacement or change their expected results.
 
 Serve the repository over HTTP; opening `index.html` directly is not supported:
 
@@ -64,6 +74,10 @@ python3 scripts/check.py
 
 # Built out/ bundle, Node.js 24, and Chromium installed.
 python3 scripts/check.py --browser
+
+# Deployed-site startup with no external firmware; synthetic game, no ROM needed.
+RUSTBOY_NO_BOOT=1 node tests/browser_smoke.mjs
+RUSTBOY_NO_BOOT=1 RUSTBOY_SYNTHETIC_CGB=1 node tests/browser_smoke.mjs
 
 # Your local testroms/ fixtures and boot ROMs are required. Reports real failures.
 python3 scripts/check.py --roms

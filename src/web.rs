@@ -181,6 +181,12 @@ pub fn get_debug_state() -> String {
 pub fn get_is_cgb() -> bool {
     with_gb(|cpu| cpu.is_cgb).unwrap_or(false)
 }
+
+/// Keep the replacement firmware's attribution available in binary deployments.
+#[wasm_bindgen]
+pub fn get_boot_rom_license() -> String {
+    crate::boot_roms::LICENSE.to_owned()
+}
 #[wasm_bindgen]
 pub fn add_breakpoint_pc(addr: u16) {
     with_gb_mut(|cpu| cpu.add_breakpoint_pc(addr));

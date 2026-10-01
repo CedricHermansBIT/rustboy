@@ -21,6 +21,13 @@ def main():
     node = shutil.which("node")
     if not node:
         parser.error("Node.js 24 is required for the browser/audio checks")
+    for name, size, digest in [
+        ("dmg_boot.hex", 256, "6f64da4cecd7e54e2f928eb3e3ba7810a7a567d0d247cc71737d1771e073a916"),
+        ("cgb_boot.hex", 2304, "f767b8e7e510a255f81328c89dba6e0c996b370e1bc86aebb8584a7da47a5bba"),
+    ]:
+        data = bytes.fromhex((ROOT / "third_party/sameboy" / name).read_text())
+        if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+            parser.error(f"Bundled replacement firmware changed unexpectedly: {name}")
     cargo = ["cargo", "test", "--locked", "--release", "--no-default-features", "--target-dir", args.target_dir]
     if args.offline:
         cargo.append("--offline")
@@ -51,6 +58,13 @@ def main():
         subprocess.run(cargo + ["--test", "headless", "--test", "graphics", "--test", "boot_diagnostics", "--"] + filters, cwd=ROOT, check=True)
     if args.browser:
         subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT, check=True)
+        for cgb in [False, True]:
+            environment = {**os.environ, "RUSTBOY_NO_BOOT": "1"}
+            environment.pop("RUSTBOY_ROM", None)
+            environment.pop("RUSTBOY_SYNTHETIC_CGB", None)
+            if cgb:
+                environment["RUSTBOY_SYNTHETIC_CGB"] = "1"
+            subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT, env=environment, check=True)
 
 
 if __name__ == "__main__":

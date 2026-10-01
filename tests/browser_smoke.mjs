@@ -15,6 +15,10 @@ const contentTypes = {'.wasm': 'application/wasm', '.js': 'text/javascript', '.m
 const server = http.createServer(async (request, response) => {
   try {
     const name = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
+    // Model the deployed site: no user-supplied firmware is present.
+    if (process.env.RUSTBOY_NO_BOOT && /^\/roms\/(dmg|cgb)_boot\.bin$/.test(name)) {
+      response.writeHead(404).end(); return;
+    }
     const file = path.resolve(root, '.' + (name === '/' ? '/index.html' : name));
     if (!file.startsWith(root + path.sep)) { response.writeHead(403).end(); return; }
     response.setHeader('Content-Type', contentTypes[path.extname(file)] || 'application/octet-stream');
@@ -93,19 +97,39 @@ try {
   await call('DOM.setFileInputFiles', {nodeId, files: [invalidRom]});
   await until("document.body.textContent.includes('ROM is truncated')");
   assert.deepEqual(exceptions, [], 'unhandled browser errors');
-  if (process.env.RUSTBOY_ROM) {
-    await call('DOM.setFileInputFiles', {nodeId, files: [path.resolve(process.env.RUSTBOY_ROM)]});
+  let gamePath = process.env.RUSTBOY_ROM && path.resolve(process.env.RUSTBOY_ROM);
+  if (!gamePath && process.env.RUSTBOY_NO_BOOT) {
+    // Public-domain synthetic program: draw a repeating tile and publish 0x66.
+    const rom = new Uint8Array(32768);
+    rom.set([0xC3, 0x50, 0x01], 0x100);
+    rom.fill(0xAA, 0x104, 0x134);
+    rom[0x143] = process.env.RUSTBOY_SYNTHETIC_CGB ? 0x80 : 0;
+    const code = [0xF3, 0xAF, 0xE0, 0x40, 0x3E, 0xE4, 0xE0, 0x47,
+      0x21, 0x00, 0x80, 0x06, 0x10, 0x3E, 0xAA, 0x22, 0x05, 0x20, 0xFC,
+      0x3E, 0x80, 0xE0, 0x68];
+    for (const color of [0xFF, 0x7F, 0, 0, 0, 0, 0, 0]) code.push(0x3E, color, 0xE0, 0x69);
+    code.push(0x3E, 0x91, 0xE0, 0x40, 0x3E, 0x66, 0xEA, 0x00, 0xC0, 0x18, 0xFE);
+    rom.set(code, 0x150);
+    gamePath = path.join(temporary, rom[0x143] ? 'synthetic.gbc' : 'synthetic.gb');
+    await fs.writeFile(gamePath, rom);
+  }
+  if (gamePath) {
+    await call('DOM.setFileInputFiles', {nodeId, files: [gamePath]});
     await until("document.querySelector('#quick-pause').textContent.includes('Pause')");
     await new Promise(resolve => setTimeout(resolve, 6000));
     const colors = await evaluate("new Set(new Uint32Array(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,160,144).data.buffer)).size");
     assert.ok(colors > 1, 'game canvas must render nonblank content');
+    if (!process.env.RUSTBOY_ROM && process.env.RUSTBOY_NO_BOOT) {
+      assert.equal(await evaluate("window.mem(0xC000)"), '0x66', 'replacement boot must reach the cartridge');
+      assert.ok(await evaluate("(async () => (await import('./out/rustboy.js')).get_boot_rom_license().includes('Lior Halphon'))()"));
+    }
     await evaluate("document.querySelector('#quick-pause').click()");
     await until("document.querySelector('#quick-pause').textContent.includes('Resume')");
     await evaluate("document.querySelector('#quick-pause').click()");
     await until("document.querySelector('#quick-pause').textContent.includes('Pause')");
     assert.deepEqual(exceptions, [], 'gameplay browser errors');
   }
-  console.log('Browser smoke: WASM initialization, canvas, upload error handling' + (process.env.RUSTBOY_ROM ? ', rendering, pause/resume' : '') + ' passed');
+  console.log('Browser smoke: WASM initialization, canvas, upload error handling' + (gamePath ? ', rendering, pause/resume' : '') + (process.env.RUSTBOY_NO_BOOT ? ', bundled boot without external firmware' : '') + ' passed');
 } finally {
   socket?.close();
   browser.kill();

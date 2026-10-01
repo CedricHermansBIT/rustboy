@@ -29,6 +29,16 @@ impl GameBoy {
             }
             HardwareModel::Cgb => true,
         };
+        // An empty override selects the bundled replacement, including animation.
+        let boot_rom = if boot_rom.is_empty() {
+            if cgb {
+                &crate::boot_roms::CGB[..]
+            } else {
+                &crate::boot_roms::DMG[..]
+            }
+        } else {
+            boot_rom
+        };
         crate::cartridge::validate_boot_rom(boot_rom, cgb)?;
         let mut cpu = Box::new(CPU::new());
         cpu.bootload(boot_rom.to_vec());
@@ -353,5 +363,48 @@ mod tests {
         color_only[0x143] = 0xC0;
         assert!(GameBoy::load(&color_only, &[0; 0x100], HardwareModel::Dmg).is_err());
         assert!(GameBoy::load(&[], &[0; 0x100], HardwareModel::Auto).is_err());
+    }
+
+    #[test]
+    fn bundled_boot_roms_animate_play_audio_and_handoff_without_external_files() {
+        for cgb in [false, true] {
+            let mut rom = vec![0; 0x8000];
+            // Synthetic cartridge logo, not an embedded Nintendo logo.
+            rom[0x104..0x134].fill(0xAA);
+            rom[0x143] = if cgb { 0x80 } else { 0 };
+            let mut gb = GameBoy::load(&rom, &[], HardwareModel::Auto).unwrap();
+            assert!(gb.cpu.booting);
+            let mut seen_pixels = false;
+            let mut heard_chime = false;
+            let mut frames = 0;
+            while gb.cpu.booting && frames < 240 {
+                let target = gb.cpu.total_cycles + 17_556;
+                while gb.cpu.booting && gb.cpu.total_cycles < target {
+                    gb.step();
+                }
+                let first = gb.cpu.frame_buffer[0] & 0xFFFFFF;
+                seen_pixels |= gb
+                    .cpu
+                    .frame_buffer
+                    .iter()
+                    .any(|pixel| pixel & 0xFFFFFF != first);
+                heard_chime |= gb
+                    .drain_audio()
+                    .samples
+                    .iter()
+                    .any(|sample| sample.abs() > 0.001);
+                frames += 1;
+            }
+            assert!(!gb.cpu.booting, "replacement did not hand off (cgb={cgb})");
+            assert_eq!(gb.cpu.program_counter, 0x100);
+            assert_eq!(gb.cpu.get_reg_a(), if cgb { 0x11 } else { 1 });
+            assert!(
+                seen_pixels,
+                "replacement animation did not render (cgb={cgb})"
+            );
+            assert!(heard_chime, "replacement chime was silent (cgb={cgb})");
+            gb.reset();
+            assert!(gb.cpu.booting, "reset must replay the replacement boot");
+        }
     }
 }

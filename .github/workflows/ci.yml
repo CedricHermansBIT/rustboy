@@ -33,6 +33,9 @@ jobs:
       - name: Build without local boot ROMs or game files
         run: python3 scripts/build_web.py
       - name: Real-browser initialization and upload-error smoke test
-        run: node tests/browser_smoke.mjs
+        run: |
+          node tests/browser_smoke.mjs
+          RUSTBOY_NO_BOOT=1 node tests/browser_smoke.mjs
+          RUSTBOY_NO_BOOT=1 RUSTBOY_SYNTHETIC_CGB=1 node tests/browser_smoke.mjs
       # Licensed/local ROM and boot-ROM suites are a separate release gate:
       # python3 scripts/check.py --roms --browser
