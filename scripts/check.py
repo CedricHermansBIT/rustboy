@@ -25,13 +25,13 @@ def main():
         ("dmg_boot.hex", 256, "6f64da4cecd7e54e2f928eb3e3ba7810a7a567d0d247cc71737d1771e073a916"),
         ("cgb_boot.hex", 2304, "f767b8e7e510a255f81328c89dba6e0c996b370e1bc86aebb8584a7da47a5bba"),
     ]:
-        data = bytes.fromhex((ROOT / "third_party/sameboy" / name).read_text())
+        data = bytes.fromhex((ROOT / "crates/gameboy/third_party/sameboy" / name).read_text())
         if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
             parser.error(f"Bundled replacement firmware changed unexpectedly: {name}")
     cargo = ["cargo", "test", "--locked", "--release", "--no-default-features", "--target-dir", args.target_dir]
     if args.offline:
         cargo.append("--offline")
-    subprocess.run(cargo + ["--lib", "--test", "ppu_strict"], cwd=ROOT, check=True)
+    subprocess.run(cargo + ["--workspace", "--lib", "--test", "ppu_strict"], cwd=ROOT, check=True)
     for test in ["tests/audio_queue.cjs", "tests/rom_loader.mjs"]:
         subprocess.run([node, test], cwd=ROOT, check=True)
     if args.roms:

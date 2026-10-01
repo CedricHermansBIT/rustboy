@@ -1,3 +1,4 @@
+//! Game Boy pixel generation; no host canvas operations.
 use crate::cpu::CPU;
 
 mod fetch;

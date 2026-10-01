@@ -304,10 +304,3 @@ mod tests {
         assert!(!tracer.enabled);
     }
 }
-
-
-
-
-
-
-

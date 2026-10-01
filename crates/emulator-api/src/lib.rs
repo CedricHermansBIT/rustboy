@@ -1,8 +1,47 @@
-//! Small, platform-independent contract between a console and its frontend.
+//! Small, platform-independent contract between consoles and their frontends.
 //!
 //! Ticks belong to each backend's reported presentation clock, not its CPU.
 //! Internal bus/CPU/PPU scheduling is deliberately outside this interface.
 use std::any::Any;
+
+/// Host-owned services, injected per machine. Callbacks are never serialized.
+#[derive(Clone, Copy)]
+pub struct HostServices {
+    pub now_unix_seconds: fn() -> u64,
+    pub log: Option<fn(&str)>,
+}
+
+impl Default for HostServices {
+    fn default() -> Self {
+        Self {
+            now_unix_seconds: default_unix_seconds,
+            log: None,
+        }
+    }
+}
+
+fn default_unix_seconds() -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |time| time.as_secs())
+    }
+    // WASM hosts inject a wall clock. Unconfigured headless hosts use a frozen
+    // deterministic clock rather than making an unsupported SystemTime call.
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
+}
+
+impl HostServices {
+    pub fn log(&self, arguments: std::fmt::Arguments<'_>) {
+        if let Some(log) = self.log {
+            log(&arguments.to_string());
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VideoGeometry {
@@ -75,6 +114,12 @@ pub trait Emulator {
     fn system_name(&self) -> &'static str;
     fn clock_hz(&self) -> u64;
     fn title(&self) -> String;
+    /// Stable persistence namespace, even for games without battery RAM.
+    fn save_key(&self) -> String {
+        self.save_info()
+            .map(|info| info.key)
+            .unwrap_or_else(|| self.state_id())
+    }
     fn run(&mut self, ticks: u64) -> RunResult;
     /// Advance one backend-defined debug step, even while paused.
     fn step(&mut self) -> RunResult;

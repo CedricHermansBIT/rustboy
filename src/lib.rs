@@ -1,14 +1,10 @@
-pub mod cpu;
-pub mod cartridge;
 pub mod pacing;
-pub mod mbc;
-pub mod ppu;
-pub mod apu;
-pub mod debug_tracer;
-pub mod emulator;
-pub mod gameboy;
 pub mod session;
-pub mod boot_roms;
+
+pub use rustboy_emulator_api as emulator;
+pub use rustboy_gameboy as gameboy;
+// Preserve the existing native test/debug API while relocating the core.
+pub use rustboy_gameboy::{apu, boot_roms, cartridge, cpu, debug_tracer, mbc, ppu};
 
 #[cfg(target_arch = "wasm32")]
 mod web;

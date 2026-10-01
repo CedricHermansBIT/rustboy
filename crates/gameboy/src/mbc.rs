@@ -1,9 +1,3 @@
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::{SystemTime, UNIX_EPOCH};
-
-#[cfg(target_arch = "wasm32")]
-use js_sys::Date;
-
 /// src/mbc.rs — Memory Bank Controller implementations.
 ///
 /// Each cartridge type gets its own variant in `MbcKind` which carries the
@@ -61,6 +55,7 @@ pub enum MbcKind {
 // ──────────────────────────────────────────────────────────────────────────────
 
 pub struct Mbc {
+    now: fn() -> u64,
     pub kind: MbcKind,
     /// Cartridge ROM bytes (the full file as loaded).
     pub rom: Vec<u8>,
@@ -154,6 +149,10 @@ impl Mbc {
     /// Build an `Mbc` for `rom`, using `ram_size_bytes` (pre-calculated by the
     /// caller who may override the header value, e.g. for MBC2).
     pub fn new(rom: Vec<u8>, ram_size_bytes: usize) -> Self {
+        Self::new_with_clock(rom, ram_size_bytes, crate::emulator::HostServices::default().now_unix_seconds)
+    }
+
+    pub fn new_with_clock(rom: Vec<u8>, ram_size_bytes: usize, now: fn() -> u64) -> Self {
         let cart_type = *rom.get(0x147).unwrap_or(&0);
 
         let num_rom_banks = (rom.len() / 0x4000).max(2) as u16;
@@ -179,9 +178,10 @@ impl Mbc {
             0x03 | 0x06 | 0x09 | 0x0D | 0x0F | 0x10 | 0x13 | 0x1B | 0x1E
         );
         let has_rtc = matches!(cart_type, 0x0F | 0x10);
-        let rtc_now = Self::now_unix_seconds();
+        let rtc_now = now();
 
         Mbc {
+            now,
             kind,
             rom,
             ram: [[0; 0x2000]; 16],
@@ -203,7 +203,9 @@ impl Mbc {
 
     /// An empty/no-cart Mbc used before any ROM is loaded.
     pub fn empty() -> Self {
+        let now = crate::emulator::HostServices::default().now_unix_seconds;
         Mbc {
+            now,
             kind: MbcKind::None,            rom: Vec::new(),
             ram: [[0; 0x2000]; 16],
             rombank: 1,
@@ -215,7 +217,7 @@ impl Mbc {
             rtc_latched_registers: [0; 5],
             rtc_latch_active: false,
             rtc_latch_armed: false,
-            rtc_last_update_unix: Self::now_unix_seconds(),
+            rtc_last_update_unix: now(),
             has_rtc: false,
             has_battery: false,
             save_dirty: false,
@@ -223,17 +225,8 @@ impl Mbc {
     }
 
     #[inline]
-    fn now_unix_seconds() -> u64 {
-        #[cfg(target_arch = "wasm32")]
-        {
-            (Date::now() / 1000.0) as u64
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs())
-        }
+    fn now_unix_seconds(&self) -> u64 {
+        (self.now)()
     }
 
     #[inline]
@@ -279,7 +272,7 @@ impl Mbc {
         if !self.has_rtc {
             return self.rtc_registers;
         }
-        let now = Self::now_unix_seconds();
+        let now = self.now_unix_seconds();
         let delta = now.saturating_sub(self.rtc_last_update_unix);
         Self::rtc_apply_delta(self.rtc_registers, delta)
     }
@@ -290,7 +283,7 @@ impl Mbc {
             return;
         }
         self.rtc_registers = self.rtc_effective_registers();
-        self.rtc_last_update_unix = Self::now_unix_seconds();
+        self.rtc_last_update_unix = self.now_unix_seconds();
     }
 
     #[inline]
@@ -321,7 +314,7 @@ impl Mbc {
                 self.rtc_registers[4] = dh;
                 let new_halt = self.rtc_registers[4] & 0x40;
                 if prev_halt != new_halt {
-                    self.rtc_last_update_unix = Self::now_unix_seconds();
+                    self.rtc_last_update_unix = self.now_unix_seconds();
                 }
             }
             _ => {}
@@ -774,7 +767,7 @@ impl Mbc {
             // Append optional RTC trailer. Older saves without this trailer
             // remain valid and are still accepted by import_save_ram().
             let regs = self.rtc_effective_registers();
-            let now = Self::now_unix_seconds();
+            let now = self.now_unix_seconds();
             data.extend_from_slice(&Self::RTC_SAVE_MAGIC);
             data.extend_from_slice(&regs);
             data.extend_from_slice(&now.to_le_bytes());
@@ -830,14 +823,14 @@ impl Mbc {
                     self.rtc_registers = regs;
                     self.rtc_last_update_unix = u64::from_le_bytes(ts_bytes);
                     self.rtc_registers = self.rtc_effective_registers();
-                    self.rtc_last_update_unix = Self::now_unix_seconds();
+                    self.rtc_last_update_unix = self.now_unix_seconds();
                     return;
                 }
             }
 
             // Legacy RAM-only save: keep existing RTC registers but resume
             // progression from current wall-clock time.
-            self.rtc_last_update_unix = Self::now_unix_seconds();
+            self.rtc_last_update_unix = self.now_unix_seconds();
         }
     }
 
@@ -847,7 +840,7 @@ impl Mbc {
         self.rtc_latched_registers = [0; 5];
         self.rtc_latch_active = false;
         self.rtc_latch_armed = false;
-        self.rtc_last_update_unix = Self::now_unix_seconds();
+        self.rtc_last_update_unix = self.now_unix_seconds();
         self.save_dirty = false;
     }
 }
@@ -961,7 +954,7 @@ mod tests {
     fn rtc_save_trailer_roundtrip_for_halted_clock() {
         let mut mbc = make_mbc3_timer();
         mbc.rtc_registers = [12, 34, 5, 0xAB, 0x41]; // halted + day high bit
-        mbc.rtc_last_update_unix = Mbc::now_unix_seconds();
+        mbc.rtc_last_update_unix = mbc.now_unix_seconds();
 
         let blob = mbc.export_save_ram();
         assert!(blob.windows(Mbc::RTC_SAVE_MAGIC.len()).any(|w| w == Mbc::RTC_SAVE_MAGIC));

@@ -8,6 +8,10 @@ Compatibility development is ongoing. See [the test results](ROM_TEST_RESULTS.md
 for the actual coverage and remaining failures; this is not a claim that every
 game or hardware timing quirk is supported.
 
+The project now separates its frontend, shared emulator interface and Game Boy
+backend into a Cargo workspace. See [the architecture guide](ARCHITECTURE.md)
+for the extension boundaries intended for future NES/SNES/SGB support.
+
 ## Building
 
 Requirements: Rust, the WASM target, Python 3.11+, and the matching
@@ -23,7 +27,7 @@ The build includes openly licensed SameBoy replacement boot ROMs, including
 startup animations and chimes. **Users do not need boot-ROM files to play.**
 The CGB replacement uses SameBoy branding, rather than the exact Nintendo
 animation. Attribution, source links and pinned hashes are in
-[the replacement firmware notes](third_party/sameboy/README.md).
+[the replacement firmware notes](crates/gameboy/third_party/sameboy/README.md).
 
 To use the exact original startup instead, optionally supply your own firmware:
 

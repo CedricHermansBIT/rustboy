@@ -1,7 +1,5 @@
+//! Game Boy machine state and cycle-precise instruction execution.
 use std::sync::atomic::{AtomicBool, Ordering};
-
-#[cfg(target_arch = "wasm32")]
-use web_sys::console;
 
 use crate::apu::APU;
 use crate::debug_tracer::InstructionTracer;
@@ -10,9 +8,8 @@ use crate::mbc::Mbc;
 mod oam;
 use oam::OamAccess;
 
-#[cfg(target_arch = "wasm32")]
 macro_rules! console_log {
-    ($($t:tt)*) => { console::log_1(&format!($($t)*).into()) }
+    ($cpu:expr, $($t:tt)*) => { $cpu.host.log(format_args!($($t)*)) }
 }
 
 #[cfg(test)]
@@ -184,11 +181,6 @@ mod save_state_tests {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-macro_rules! console_log {
-    ($($t:tt)*) => { }
-}
-
 #[derive(Clone, Debug)]
 pub enum Breakpoint {
     Pc(u16),
@@ -199,6 +191,7 @@ pub enum Breakpoint {
 }
 
 pub struct CPU {
+    pub host: crate::emulator::HostServices,
     reg_a: u8,
     reg_b: u8,
     reg_c: u8,
@@ -441,6 +434,7 @@ impl CPU {
 
     pub fn new() -> CPU {
         CPU {
+            host: crate::emulator::HostServices::default(),
             reg_a: 0,
             reg_b: 0,
             reg_c: 0,
@@ -553,9 +547,9 @@ impl CPU {
     pub fn toggle_trace(&mut self) {
         self.tracing = !self.tracing;
         if self.tracing {
-            console_log!(" Trace recording started");
+            console_log!(self, " Trace recording started");
         } else {
-            console_log!("⏹ Trace recording stopped ({} lines)", self.trace_buffer.len());
+            console_log!(self, "⏹ Trace recording stopped ({} lines)", self.trace_buffer.len());
         }
     }
 
@@ -570,15 +564,15 @@ impl CPU {
     pub fn clear_trace(&mut self) {
         let _count = self.trace_buffer.len();
         self.trace_buffer.clear();
-        console_log!("Trace cleared ({} lines)", _count);
+        console_log!(self, "Trace cleared ({} lines)", _count);
     }
 
     pub fn set_instruction_tracing(&mut self, enabled: bool) {
         self.instruction_tracer.set_enabled(enabled);
         if enabled {
-            console_log!(" Instruction-level tracing enabled");
+            console_log!(self, " Instruction-level tracing enabled");
         } else {
-            console_log!("⏹ Instruction-level tracing disabled ({} traces)", self.instruction_tracer.traces.len());
+            console_log!(self, "⏹ Instruction-level tracing disabled ({} traces)", self.instruction_tracer.traces.len());
         }
     }
 
@@ -889,7 +883,7 @@ impl CPU {
 
     pub fn toggle_color_mode(&mut self) {
         self.color_mode = if self.color_mode == 0 { 1 } else { 0 };
-        console_log!("Color mode: {}", if self.color_mode == 0 { "GBC Color" } else { "DMG Green" });
+        console_log!(self, "Color mode: {}", if self.color_mode == 0 { "GBC Color" } else { "DMG Green" });
     }
 
     pub fn cycle_speed(&mut self) {
@@ -911,25 +905,25 @@ impl CPU {
 
     pub fn add_breakpoint_pc(&mut self, addr: u16) {
         self.breakpoints.push(Breakpoint::Pc(addr));
-        console_log!("Breakpoint added: PC == {:04X}  [#{}]", addr, self.breakpoints.len() - 1);
+        console_log!(self, "Breakpoint added: PC == {:04X}  [#{}]", addr, self.breakpoints.len() - 1);
     }
 
     pub fn add_breakpoint_reg(&mut self, reg: &str, value: u16) {
         self.breakpoints.push(Breakpoint::Reg(reg.to_ascii_lowercase(), value));
-        console_log!("Breakpoint added: {} == {:04X}[#{}]", reg, value, self.breakpoints.len() - 1);
+        console_log!(self, "Breakpoint added: {} == {:04X}[#{}]", reg, value, self.breakpoints.len() - 1);
     }
 
     pub fn add_breakpoint_mem(&mut self, addr: u16, value: u8) {
         self.breakpoints.push(Breakpoint::Mem(addr, value));
-        console_log!("Breakpoint added:[${:04X}] == {:02X}  [#{}]", addr, value, self.breakpoints.len() - 1);
+        console_log!(self, "Breakpoint added:[${:04X}] == {:02X}  [#{}]", addr, value, self.breakpoints.len() - 1);
     }
 
     pub fn remove_breakpoint(&mut self, index: usize) {
         if index < self.breakpoints.len() {
             let _removed = self.breakpoints.remove(index);
-            console_log!("Removed breakpoint #{}: {:?}", index, _removed);
+            console_log!(self, "Removed breakpoint #{}: {:?}", index, _removed);
         } else {
-            console_log!("Invalid breakpoint index: {}", index);
+            console_log!(self, "Invalid breakpoint index: {}", index);
         }
     }
 
@@ -944,7 +938,7 @@ impl CPU {
     pub fn clear_breakpoints(&mut self) {
         let _count = self.breakpoints.len();
         self.breakpoints.clear();
-        console_log!("Cleared {} breakpoint(s)", _count);
+        console_log!(self, "Cleared {} breakpoint(s)", _count);
     }
 
     pub fn list_breakpoints(&self) -> String {
@@ -1021,7 +1015,7 @@ impl CPU {
                     Breakpoint::Opcode(op) => format!("Opcode == ${:02X}", op),
                     Breakpoint::CbOpcode(op) => format!("CbOpcode == ${:02X}", op),
                 };
-                console_log!(" Breakpoint hit: {}  (PC=${:04X})", _desc, self.program_counter);
+                console_log!(self, " Breakpoint hit: {}  (PC=${:04X})", _desc, self.program_counter);
                 self.consolelog = true;
                 self.is_paused.store(true, Ordering::Relaxed);
                 return true;
@@ -1125,13 +1119,13 @@ impl CPU {
         let num_ram_banks = if ram_size == 0 { 0 } else { (ram_size / 0x2000).max(1) };
         let _ram_bank_mask = if num_ram_banks > 0 { num_ram_banks.next_power_of_two() - 1 } else { 0 };
 
-        console_log!("Cartridge type: {:02X}, ROM size: {} KB, ROM banks: {}, RAM size: {} KB, RAM banks: {}, CGB: {}",
+        console_log!(self, "Cartridge type: {:02X}, ROM size: {} KB, ROM banks: {}, RAM size: {} KB, RAM banks: {}, CGB: {}",
             cart_type, data.len() / 1024, num_rom_banks, ram_size, num_ram_banks, self.is_cgb);
 
         self.gbc_palettes = crate::ppu::gbc_palette_for_rom(&data);
-        self.mbc = Mbc::new(data, ram_size);
+        self.mbc = Mbc::new_with_clock(data, ram_size, self.host.now_unix_seconds);
 
-        console_log!("GBC palette assigned for title: '{}'", self.rom_title());
+        console_log!(self, "GBC palette assigned for title: '{}'", self.rom_title());
     }
 
     /// Reads the RAM size declared in the ROM header.
@@ -1175,7 +1169,7 @@ impl CPU {
 
     pub fn import_save_ram(&mut self, data: &[u8]) {
         self.mbc.import_save_ram(data);
-        console_log!("Loaded save RAM: {} bytes", data.len());
+        console_log!(self, "Loaded save RAM: {} bytes", data.len());
     }
 
     pub fn clear_save_ram(&mut self) {
@@ -1465,7 +1459,7 @@ impl CPU {
                 if data == 0x81 {
                     let sb = self.memory[0xFF01];
                     self.serial_output.push(sb);
-                    console_log!("{}", sb as char);
+                    console_log!(self, "{}", sb as char);
                     self.memory[0xFF02] &= 0x7F;
                     self.request_interrupt(3);
                 }
@@ -1742,6 +1736,7 @@ impl CPU {
         let breakpoints = std::mem::take(&mut self.breakpoints);
 
         let mut fresh = CPU::new();
+        fresh.host = self.host;
         if !boot_rom.is_empty() { fresh.bootload(boot_rom); }
         fresh.load_rom(rom);
         if fresh.has_battery() { fresh.import_save_ram(&save_ram); }
@@ -2365,7 +2360,7 @@ impl CPU {
 
         if self.consolelog {
             let _opcode_name = self.get_opcode_name(opcode);
-            console_log!("Pointer: {:x}, opcode: {:x}, name: {}, AF: {:x}, BC: {:x}, DE: {:x}, HL: {:x}, SP: {:x}", self.program_counter-1, opcode, _opcode_name, self.af(), self.bc(), self.de(), self.hl(), self.stackpointer);
+            console_log!(self, "Pointer: {:x}, opcode: {:x}, name: {}, AF: {:x}, BC: {:x}, DE: {:x}, HL: {:x}, SP: {:x}", self.program_counter-1, opcode, _opcode_name, self.af(), self.bc(), self.de(), self.hl(), self.stackpointer);
         }
 
         match opcode {
@@ -2650,7 +2645,7 @@ impl CPU {
     fn execute_cb_with_opcode(&mut self, opcode: u8) {
         if self.consolelog {
             let _opcode_name = self.get_extra_opcode_name(opcode);
-            console_log!("Pointer: {:x}, opcode: {:x}, name: {}, AF: {:x}, BC: {:x}, DE: {:x}, HL: {:x}, SP: {:x}", self.program_counter-1, opcode, _opcode_name, self.af(), self.bc(), self.de(), self.hl(), self.stackpointer);
+            console_log!(self, "Pointer: {:x}, opcode: {:x}, name: {}, AF: {:x}, BC: {:x}, DE: {:x}, HL: {:x}, SP: {:x}", self.program_counter-1, opcode, _opcode_name, self.af(), self.bc(), self.de(), self.hl(), self.stackpointer);
         }
 
         match opcode {

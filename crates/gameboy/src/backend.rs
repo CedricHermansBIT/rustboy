@@ -1,4 +1,4 @@
-//! Adapter around the existing cycle-precise Game Boy implementation.
+//! Portable adapter around the existing cycle-precise Game Boy implementation.
 use crate::cpu::CPU;
 use crate::emulator::*;
 use std::sync::atomic::Ordering;
@@ -18,6 +18,15 @@ pub struct GameBoy {
 
 impl GameBoy {
     pub fn load(rom: &[u8], boot_rom: &[u8], model: HardwareModel) -> Result<Self, String> {
+        Self::load_with_host(rom, boot_rom, model, HostServices::default())
+    }
+
+    pub fn load_with_host(
+        rom: &[u8],
+        boot_rom: &[u8],
+        model: HardwareModel,
+        host: HostServices,
+    ) -> Result<Self, String> {
         crate::cartridge::validate_rom(rom)?;
         let cgb = match model {
             HardwareModel::Auto => rom[0x143] & 0x80 != 0,
@@ -41,6 +50,7 @@ impl GameBoy {
         };
         crate::cartridge::validate_boot_rom(boot_rom, cgb)?;
         let mut cpu = Box::new(CPU::new());
+        cpu.host = host;
         cpu.bootload(boot_rom.to_vec());
         cpu.load_rom(rom.to_vec());
         cpu.is_cgb = cgb;
@@ -91,6 +101,9 @@ impl Emulator for GameBoy {
     }
     fn title(&self) -> String {
         self.cpu.rom_title()
+    }
+    fn save_key(&self) -> String {
+        self.cpu.save_key()
     }
     fn run(&mut self, budget: u64) -> RunResult {
         let mut ticks = 0;
@@ -406,5 +419,52 @@ mod tests {
             gb.reset();
             assert!(gb.cpu.booting, "reset must replay the replacement boot");
         }
+    }
+
+    #[test]
+    fn rtc_and_logging_use_injected_host_services_across_reset_and_restore() {
+        use std::sync::atomic::{AtomicU64, AtomicUsize};
+        static NOW: AtomicU64 = AtomicU64::new(100);
+        static LOGS: AtomicUsize = AtomicUsize::new(0);
+        let host = HostServices {
+            now_unix_seconds: || NOW.load(Ordering::Relaxed),
+            log: Some(|_| {
+                LOGS.fetch_add(1, Ordering::Relaxed);
+            }),
+        };
+        let mut rom = vec![0; 0x8000];
+        rom[0x147] = 0x0F; // MBC3 timer+battery, no external RAM.
+        let mut gb = GameBoy::load_with_host(&rom, &[0; 256], HardwareModel::Auto, host).unwrap();
+        let logs_before = LOGS.load(Ordering::Relaxed);
+        gb.cpu.toggle_trace();
+        assert!(LOGS.load(Ordering::Relaxed) > logs_before);
+        NOW.store(105, Ordering::Relaxed);
+        gb.cpu.write_byte(0x0000, 0x0A);
+        gb.cpu.write_byte(0x4000, 0x08);
+        assert_eq!(gb.cpu.peek_byte(0xA000), 5);
+        let state = gb.export_state();
+        gb.reset();
+        gb.cpu.write_byte(0x0000, 0x0A);
+        gb.cpu.write_byte(0x4000, 0x08);
+        assert_eq!(
+            gb.cpu.peek_byte(0xA000),
+            5,
+            "reset changed the RTC wall-clock source"
+        );
+        gb.import_state(&state).unwrap();
+        NOW.store(110, Ordering::Relaxed);
+        assert_eq!(
+            gb.cpu.peek_byte(0xA000),
+            10,
+            "state restore lost the host clock callback"
+        );
+    }
+
+    #[test]
+    fn batteryless_games_retain_their_legacy_persistence_namespace() {
+        let gb = GameBoy::load(&vec![0; 0x8000], &[0; 256], HardwareModel::Auto).unwrap();
+        assert!(gb.save_info().is_none());
+        assert_eq!(gb.save_key(), gb.cpu.save_key());
+        assert!(!gb.save_key().is_empty());
     }
 }

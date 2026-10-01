@@ -3,7 +3,7 @@ use std::{cell::RefCell, rc::Rc, sync::Mutex};
 use wasm_bindgen::{prelude::*, Clamped, JsCast};
 use web_sys::console;
 
-use crate::emulator::{Button, Emulator, PixelFormat, VideoFrame, VideoGeometry};
+use crate::emulator::{Button, Emulator, HostServices, PixelFormat, VideoFrame, VideoGeometry};
 use crate::gameboy::{GameBoy, HardwareModel};
 use crate::session::Session;
 
@@ -69,8 +69,16 @@ pub fn set_key_state(key_code: u32, pressed: bool) {
 #[wasm_bindgen]
 pub fn load_rom_data(rom: &[u8], boot_rom: &[u8]) -> Result<(), JsValue> {
     // Construct and validate before replacing the running session or its saves.
-    let mut backend = GameBoy::load(rom, boot_rom, HardwareModel::Auto)
-        .map_err(|error| JsValue::from_str(&error))?;
+    let mut backend = GameBoy::load_with_host(
+        rom,
+        boot_rom,
+        HardwareModel::Auto,
+        HostServices {
+            now_unix_seconds: || (js_sys::Date::now() / 1000.0) as u64,
+            log: Some(|message| console::log_1(&message.into())),
+        },
+    )
+    .map_err(|error| JsValue::from_str(&error))?;
     save_game();
     let previous_speed = get_speed();
     console::log_1(&format!("Loaded {}: {}", backend.system_name(), backend.title()).into());
@@ -131,13 +139,7 @@ pub fn get_rom_title() -> String {
 }
 #[wasm_bindgen]
 pub fn get_save_key() -> String {
-    with_session(|s| {
-        s.backend
-            .save_info()
-            .map(|info| info.key)
-            .unwrap_or_default()
-    })
-    .unwrap_or_default()
+    with_session(|s| s.backend.save_key()).unwrap_or_default()
 }
 #[wasm_bindgen]
 pub fn export_save_data() -> Vec<u8> {

@@ -145,8 +145,21 @@ dependencies = [
  "js-sys",
  "lazy_static",
  "png",
+ "rustboy-emulator-api",
+ "rustboy-gameboy",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "rustboy-emulator-api"
+version = "0.1.0"
+
+[[package]]
+name = "rustboy-gameboy"
+version = "0.1.0"
+dependencies = [
+ "rustboy-emulator-api",
 ]
 
 [[package]]

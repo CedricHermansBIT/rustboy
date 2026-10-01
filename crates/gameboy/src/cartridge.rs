@@ -1,4 +1,4 @@
-//! Checks at the user-facing loader boundary; the CPU can still load synthetic
+//! Checks at the Game Boy loader boundary; the CPU can still load synthetic
 //! ROMs directly for instruction tests.
 pub fn validate_rom(data: &[u8]) -> Result<(), String> {
     if data.len() < 0x8000 { return Err("ROM is truncated: at least 32 KiB is required".into()); }
