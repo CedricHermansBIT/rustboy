@@ -114,8 +114,28 @@ try {
     await fs.writeFile(gamePath, rom);
   }
   if (gamePath) {
+    // Chromium can silently accept a nonexistent file in its input command.
+    await fs.access(gamePath);
     await call('DOM.setFileInputFiles', {nodeId, files: [gamePath]});
     await until("document.querySelector('#quick-pause').textContent.includes('Pause')");
+    if (!process.env.RUSTBOY_ROM && process.env.RUSTBOY_NO_BOOT) {
+      const cgb = !!process.env.RUSTBOY_SYNTHETIC_CGB;
+      const mask = (await fs.readFile(path.join(root, `crates/gameboy/bootroms/logo_${cgb ? 'cgb' : 'dmg'}.txt`), 'utf8')).trim().split('\n');
+      await until(`(() => {
+        const pixels = document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,160,144).data;
+        const mask = ${JSON.stringify(mask)};
+        return mask.every((row,y) => [...row].every((bit,x) => {
+          const i = ((${cgb ? 48 : 64}+y)*160+${cgb ? 16 : 32}+x)*4;
+          const foreground = pixels[i] !== pixels[0] || pixels[i+1] !== pixels[1] || pixels[i+2] !== pixels[2];
+          return foreground === (bit === '1');
+        }));
+      })()`, 5000);
+      if (process.env.RUSTBOY_BOOT_SCREENSHOT) {
+        // Optional debugging artifact, outside the temporary browser profile.
+        const data = await evaluate("document.querySelector('#rustboy-canvas').toDataURL('image/png').split(',')[1]");
+        await fs.writeFile(process.env.RUSTBOY_BOOT_SCREENSHOT, Buffer.from(data, 'base64'));
+      }
+    }
     await new Promise(resolve => setTimeout(resolve, 6000));
     const colors = await evaluate("new Set(new Uint32Array(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,160,144).data.buffer)).size");
     assert.ok(colors > 1, 'game canvas must render nonblank content');
@@ -129,7 +149,7 @@ try {
     await until("document.querySelector('#quick-pause').textContent.includes('Pause')");
     assert.deepEqual(exceptions, [], 'gameplay browser errors');
   }
-  console.log('Browser smoke: WASM initialization, canvas, upload error handling' + (gamePath ? ', rendering, pause/resume' : '') + (process.env.RUSTBOY_NO_BOOT ? ', bundled boot without external firmware' : '') + ' passed');
+  console.log('Browser smoke: WASM initialization, canvas, upload error handling' + (gamePath ? ', rendering, pause/resume' : '') + (process.env.RUSTBOY_NO_BOOT ? (process.env.RUSTBOY_ROM ? ', bundled boot without external firmware' : ', RustBoy wordmark and bundled boot without external firmware') : '') + ' passed');
 } finally {
   socket?.close();
   browser.kill();

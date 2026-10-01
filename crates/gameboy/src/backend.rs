@@ -380,14 +380,26 @@ mod tests {
 
     #[test]
     fn bundled_boot_roms_animate_play_audio_and_handoff_without_external_files() {
-        for cgb in [false, true] {
+        for (model, flag) in [
+            (HardwareModel::Dmg, 0),
+            (HardwareModel::Cgb, 0x80),
+            (HardwareModel::Cgb, 0xC0),
+            (HardwareModel::Cgb, 0),
+        ] {
+            let cgb = model == HardwareModel::Cgb;
             let mut rom = vec![0; 0x8000];
             // Synthetic cartridge logo, not an embedded Nintendo logo.
             rom[0x104..0x134].fill(0xAA);
-            rom[0x143] = if cgb { 0x80 } else { 0 };
-            let mut gb = GameBoy::load(&rom, &[], HardwareModel::Auto).unwrap();
+            rom[0x143] = flag;
+            let mut gb = GameBoy::load(&rom, &[], model).unwrap();
             assert!(gb.cpu.booting);
             let mut seen_pixels = false;
+            let mut seen_rustboy = false;
+            let (logo, left, top) = if cgb {
+                (include_str!("../bootroms/logo_cgb.txt"), 16, 48)
+            } else {
+                (include_str!("../bootroms/logo_dmg.txt"), 32, 64)
+            };
             let mut heard_chime = false;
             let mut frames = 0;
             while gb.cpu.booting && frames < 240 {
@@ -401,6 +413,15 @@ mod tests {
                     .frame_buffer
                     .iter()
                     .any(|pixel| pixel & 0xFFFFFF != first);
+                // Check the actual wordmark, not merely a nonblank screen.
+                // The unrelated cartridge logo must not replace our branding.
+                seen_rustboy |= logo.lines().enumerate().all(|(y, row)| {
+                    row.bytes().enumerate().all(|(x, expected)| {
+                        let foreground =
+                            gb.cpu.frame_buffer[(top + y) * 160 + left + x] & 0xFFFFFF != first;
+                        foreground == (expected == b'1')
+                    })
+                });
                 heard_chime |= gb
                     .drain_audio()
                     .samples
@@ -411,11 +432,16 @@ mod tests {
             assert!(!gb.cpu.booting, "replacement did not hand off (cgb={cgb})");
             assert_eq!(gb.cpu.program_counter, 0x100);
             assert_eq!(gb.cpu.get_reg_a(), if cgb { 0x11 } else { 1 });
+            assert_eq!(gb.cpu.cgb_native_mode(), cgb && flag & 0x80 != 0);
             assert!(
                 seen_pixels,
                 "replacement animation did not render (cgb={cgb})"
             );
             assert!(heard_chime, "replacement chime was silent (cgb={cgb})");
+            assert!(
+                seen_rustboy,
+                "RustBoy wordmark did not render correctly (cgb={cgb})"
+            );
             gb.reset();
             assert!(gb.cpu.booting, "reset must replay the replacement boot");
         }

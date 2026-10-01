@@ -22,10 +22,10 @@ def main():
     if not node:
         parser.error("Node.js 24 is required for the browser/audio checks")
     for name, size, digest in [
-        ("dmg_boot.hex", 256, "6f64da4cecd7e54e2f928eb3e3ba7810a7a567d0d247cc71737d1771e073a916"),
-        ("cgb_boot.hex", 2304, "f767b8e7e510a255f81328c89dba6e0c996b370e1bc86aebb8584a7da47a5bba"),
+        ("dmg_boot.hex", 256, "4a94edecfe82dac122417b1a970dcc2513385081a413c0a059d64d1ebc956e97"),
+        ("cgb_boot.hex", 2304, "e356af876376ec1ba838b7689957360f1d4422c11bae2eed2ed33eb0ee7a1b2a"),
     ]:
-        data = bytes.fromhex((ROOT / "crates/gameboy/third_party/sameboy" / name).read_text())
+        data = bytes.fromhex((ROOT / "crates/gameboy/bootroms" / name).read_text())
         if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
             parser.error(f"Bundled replacement firmware changed unexpectedly: {name}")
     cargo = ["cargo", "test", "--locked", "--release", "--no-default-features", "--target-dir", args.target_dir]

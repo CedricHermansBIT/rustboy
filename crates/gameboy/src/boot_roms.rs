@@ -1,8 +1,8 @@
-//! Redistributable SameBoy replacement boot ROMs (Expat license), not Nintendo
-//! firmware. Compiled into the backend so standalone WASM builds can boot.
+//! RustBoy-branded replacement boot ROMs, adapted from SameBoy (Expat license),
+//! not Nintendo firmware. Embedded so standalone WASM builds can boot.
 pub const LICENSE: &str = include_str!("../third_party/sameboy/LICENSE");
-pub static DMG: [u8; 256] = decode(include_str!("../third_party/sameboy/dmg_boot.hex"));
-pub static CGB: [u8; 2304] = decode(include_str!("../third_party/sameboy/cgb_boot.hex"));
+pub static DMG: [u8; 256] = decode(include_str!("../bootroms/dmg_boot.hex"));
+pub static CGB: [u8; 2304] = decode(include_str!("../bootroms/cgb_boot.hex"));
 
 const fn decode<const N: usize>(hex: &str) -> [u8; N] {
     let source = hex.as_bytes();

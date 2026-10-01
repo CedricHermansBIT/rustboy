@@ -1,32 +1,54 @@
-# Replacement boot ROMs
+# SameBoy-derived replacement firmware
 
-These are the **unmodified, openly licensed SameBoy replacement boot ROMs**,
-not dumps of Nintendo firmware. They run on the emulated CPU and provide a logo
-animation/chime before handing off to the game. The DMG animation uses the logo
-from the game's header; the CGB replacement features SameBoy branding and is
-not the exact Nintendo Game Boy Color animation.
+RustBoy's built-in boot ROMs are **modified replacements, not Nintendo firmware
+dumps**. Both models display original RustBoy artwork. The source, generated hex
+and visual test references are in [`../../bootroms/`](../../bootroms/).
+DMG slides the wordmark into view; CGB uses a color-wave animation. Both play a
+chime and execute on the emulated CPU before handing off to the cartridge.
 
-Source: [SameBoy v1.0.3](https://github.com/LIJI32/SameBoy/tree/v1.0.3/BootROMs).
-Copyright and redistribution terms are retained in [LICENSE](LICENSE).
-The same notice is embedded in the WASM bundle and exposed by
-`get_boot_rom_license()`.
+Initialization and compatibility code were adapted from
+[SameBoy v1.0.3](https://github.com/LIJI32/SameBoy/tree/v1.0.3/BootROMs).
+Original helper files (`sameboot.inc`, `hardware.inc`, `pb12.c`) are retained
+in [source/](source/) with normalized whitespace. `hardware.inc` retains its
+own CC0-1.0 notice; its unused Nintendo-logo macro is omitted.
+Upstream's Expat copyright and redistribution notice is retained in
+[LICENSE](LICENSE), embedded in the WASM bundle, and available through
+`get_boot_rom_license()`. RustBoy's modifications/artwork are covered by the
+repository's GPL-3.0 license.
 
-Provenance: `dmg_boot.bin` and `cgb_boot.bin` from the official
-[v1.0.3 Windows SDL archive](https://github.com/LIJI32/SameBoy/releases/download/v1.0.3/sameboy_winsdl_v1.0.3.zip),
-encoded as whitespace-separated hexadecimal for source control. The archive's
-SHA-256, also published in GitHub release metadata, is:
+Changes from upstream:
+- Original RustBoy pixel glyphs generated from [logo.py](../../bootroms/logo.py),
+  replacing SameBoy artwork and the DMG cartridge-header logo during startup.
+- DMG uses a compact slide-in animation so code plus artwork fit in 256 bytes.
+- CGB uses a sequential three-row tilemap without the upstream E/B tile reuse
+  or cartridge-logo subtitle. Cartridge-header tiles and per-game palettes
+  remain available for compatibility after handoff.
+- No embedded Nintendo logo, firmware dump, or external font/image dependency.
 
+## Rebuilding
+
+Ordinary Cargo/WASM builds decode the checked-in hex at compile time and need
+**no network, C compiler or RGBDS**. To modify/rebuild the firmware, install
+RGBDS **1.0.4** and a C99 compiler, then run:
+
+```sh
+python3 scripts/build_bootroms.py
+# Or point at a locally built RGBDS checkout:
+python3 scripts/build_bootroms.py --rgbds-dir /path/to/rgbds
+# Check byte-for-byte reproducibility without changing files:
+python3 scripts/build_bootroms.py --rgbds-dir /path/to/rgbds --check
 ```
-66fb05acc075abba860f2c5fa31af2198fef9767573d28834c78d0dfc15746b2
-```
 
-Decoded binaries:
+The script builds in a temporary directory; it regenerates hex and wordmark
+silhouettes. Both the native boot test and the no-firmware browser tests verify
+the actual rendered RustBoy silhouette, not just nonblank output.
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| dmg_boot.hex | 256 | 6f64da4cecd7e54e2f928eb3e3ba7810a7a567d0d247cc71737d1771e073a916 |
-| cgb_boot.hex | 2304 | f767b8e7e510a255f81328c89dba6e0c996b370e1bc86aebb8584a7da47a5bba |
+| dmg_boot.hex | 256 | 4a94edecfe82dac122417b1a970dcc2513385081a413c0a059d64d1ebc956e97 |
+| cgb_boot.hex | 2304 | e356af876376ec1ba838b7689957360f1d4422c11bae2eed2ed33eb0ee7a1b2a |
 
-Builds decode these files at compile time; no network or RGBDS installation is
-required. Original-firmware boot/timing tests continue to use locally supplied
-boot ROMs and do not silently switch to these replacements.
+Hashes are checked by `scripts/check.py`. Optional external firmware still takes
+precedence. Original-firmware boot/timing tests keep using locally supplied
+firmware and unchanged fixtures; RustBoy replacements do not promise the exact
+Nintendo startup sequence or boot-cycle timing.

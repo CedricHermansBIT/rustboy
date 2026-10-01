@@ -23,9 +23,9 @@ cargo install wasm-bindgen-cli --locked --version 0.2.118
 python3 scripts/build_web.py
 ```
 
-The build includes openly licensed SameBoy replacement boot ROMs, including
-startup animations and chimes. **Users do not need boot-ROM files to play.**
-The CGB replacement uses SameBoy branding, rather than the exact Nintendo
+The build includes RustBoy-branded replacement boot ROMs, with startup
+animations and chimes. **Users do not need boot-ROM files to play.**
+Both DMG and CGB display our own RustBoy pixel wordmark, rather than the exact Nintendo
 animation. Attribution, source links and pinned hashes are in
 [the replacement firmware notes](crates/gameboy/third_party/sameboy/README.md).
 
