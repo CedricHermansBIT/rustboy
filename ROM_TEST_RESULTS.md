@@ -7,16 +7,16 @@ Verified on 2026-10-01 in the original checkout. ROM fixtures remain unchanged.
 | Mooneye | 46 | 0 | 3 |
 | Blargg | 43 | 1 | 0 |
 | GBMicrotest (including raw-byte publishers) | 484 | 2 | 21 |
-| Mealybug screenshot comparisons | 21 | 10 | 0 |
-| Total registered ROMs | 594 | 13 | 24 |
+| Mealybug screenshot comparisons | 23 | 8 | 0 |
+| Total registered ROMs | 596 | 11 | 24 |
 
 The ignored count has fallen from 77 to 24. This does **not** mean all newly
-enabled cases pass: 10 graphics failures and one unresolved Blargg ROM are now
+enabled cases pass: 8 graphics failures and one unreliable standalone Blargg ROM are now
 visible instead of excluded. Only the three Super Game Boy cases are outside
 the target hardware; the 21 remaining older testbenches have no curated
 automated oracle yet. They are not counted as validated.
 
-Separate checks pass: 51 core unit tests, 2 PPU regressions, 5 boot/timer
+Separate checks pass: 58 core unit tests, 2 PPU regressions, 5 boot/timer
 diagnostics, and both DMG/CGB Acid2 reference images. Both optional Pinball
 diagnostics pass with the locally supplied games. Browser smoke checks pass
 for DMG and CGB loading, nonblank rendering, pause/resume, and malformed-upload
@@ -38,9 +38,10 @@ Passing: `m2_win_en_toggle`, `m3_bgp_change`, `m3_bgp_change_sprites`,
 Also passing: `m3_lcdc_tile_sel_change`, `m3_scy_change`, `m3_scy_change2`,
 `m3_lcdc_bg_map_change2`, `m3_lcdc_win_map_change2`,
 `m3_scx_high_5_bits_change2`, `m3_wx_4_change`, `m3_wx_4_change_sprites`,
-`m3_wx_5_change`, and both `m3_lcdc_obj_size_change` variants.
+`m3_wx_5_change`, `m3_wx_6_change`, `m3_lcdc_bg_en_change2`,
+and both `m3_lcdc_obj_size_change` variants.
 Remaining failures involve mid-line tile/map/scroll
-fetches, OBJ enable/size changes, and window activation/restart behavior.
+fetches, BG/OBJ enable changes, and window activation/restart behavior.
 They are emulator compatibility gaps, not accepted fixture exceptions.
 
 The renderer now accounts for visible-output startup, OBJ/window stalls,
@@ -50,7 +51,7 @@ Window stalls follow live WX writes before the horizontal trigger, including
 the extra activation dot at WX=0 with nonzero fine scroll.
 Window disabling drains previously fetched tiles; changing WX does not
 relocate active window pixels, and reactivation advances the window row.
-Clipped-window startup and several WX-change glitches remain unresolved.
+The multiple-WX/window-enable capture still differs by five pixels.
 Window tiles retain their fetched map index and bitplanes across register
 writes, with SCY affecting only background fetches. Window map/tile-select
 captures still expose remaining fetch-stage timing differences.
@@ -62,6 +63,12 @@ phase is inferred from three independent hardware captures, not presented as
 an independently documented rule. Clipped WX comparisons occur during fetch
 startup; repeated comparisons insert a raw-zero FIFO pixel without consuming
 tile data. OBJ size is sampled for each plane, separately from OAM selection.
+DMG object-fetch cancellation retains completed alignment/fetch steps; each
+object retains its own fetch clock, including colocated and left-clipped
+objects. Background-enable mixer reads precede same-dot CPU writes; the CGB
+compatibility path has an additional inferred propagation dot. WX comparison
+has an inferred two-dot propagation delay. Tile runs split at FIFO restart
+events even when no new register write occurs on that output pixel.
 CGB KEY0 compatibility mode is locked after boot; monochrome cartridges no
 longer accidentally use native palette/VRAM banking.
 
@@ -132,7 +139,7 @@ ab1656911841d9fdcbe34aad21dc44f554e84a6eef5a82558dc27c8e9a89250c  halt_op_dupe_d
 ## Reproduction
 
 ```sh
-# All original cases: currently exits nonzero (594 pass / 13 fail / 24 ignore).
+# All original cases: currently exits nonzero (596 pass / 11 fail / 24 ignore).
 cargo test --locked --offline --release --no-default-features --test headless
 
 # Self-contained regressions; no ROMs/BIOS needed.

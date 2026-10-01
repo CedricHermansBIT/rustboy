@@ -2,22 +2,99 @@
 use super::{registers_at, PpuLineSnapshot, PpuRegChange};
 use crate::cpu::CPU;
 
-/// DMG can abort an object fetch until its low-plane/address transaction.
-/// CGB ignores LCDC.1 during fetching (but still checks it when mixing pixels).
-#[cfg(test)]
-pub(super) fn object_fetch_survives(
+pub(super) struct ObjectFetchSchedule {
+    pub pauses: [u16; 160],
+    pub prefetch: [u16; 160],
+    pub fetched: [bool; 40],
+    /// Clock immediately following each fetch, expressed at its first visible
+    /// column so `fetch_object_planes` can account for left clipping.
+    pub first_output: [u16; 40],
+}
+
+pub(super) fn fetch_schedule(cpu: &CPU, snap: PpuLineSnapshot, ly: u8) -> ObjectFetchSchedule {
+    let mut schedule = ObjectFetchSchedule {
+        pauses: [0; 160], prefetch: [0; 160], fetched: [false; 40], first_output: [0; 40],
+    };
+    let changes = &cpu.ppu_reg_log[..cpu.ppu_reg_log_len];
+    let height = if snap.lcdc & 4 != 0 { 16 } else { 8 };
+    let mut sprites = [(0i16, 0usize, 0u8); 10];
+    let mut count = 0;
+    // Mode 2 selects the first ten objects using its latched height. Changing
+    // LCDC.2 in Mode 3 changes their tile fetches, not this selection.
+    for index in 0..40 {
+        let base = 0xFE00 + index * 4;
+        let top = cpu.memory[base] as i16 - 16;
+        if (ly as i16) < top || ly as i16 >= top + height { continue; }
+        let raw_x = cpu.memory[base + 1];
+        sprites[count] = (raw_x as i16 - 8, index, raw_x);
+        count += 1;
+        if count == 10 { break; }
+    }
+    sprites[..count].sort_unstable();
+    let window = snap.lcdc & 0x20 != 0 && ly >= snap.wy && snap.wx <= 166
+        && (cpu.cgb_native_mode() || snap.lcdc & 1 != 0);
+    let window_left = snap.wx as i16 - 7;
+    let mut tiles = [u16::MAX; 10];
+    let mut tile_count = 0;
+    let mut previous_delay = 0;
+    for &(x, index, raw_x) in &sprites[..count] {
+        if x >= 160 { continue; }
+        let position = x.max(0) as usize;
+        let window_delay = if window && (x >= window_left || window_left <= 0) { 6 } else { 0 };
+        let first = cpu.ppu_mode3_start_dot + 11 + (snap.scx & 7) as u16
+            + position as u16 + previous_delay + window_delay;
+        let clipped = 8u8.saturating_sub(raw_x) as u16;
+        let entry = first.saturating_sub(clipped);
+        if !cpu.is_cgb && registers_at(snap, changes, entry).lcdc & 2 == 0 {
+            continue;
+        }
+        if raw_x == 0 {
+            // Fully invisible X=0 objects still stop the startup fetcher.
+            schedule.pauses[position] += 11;
+            previous_delay += 11;
+            schedule.first_output[index] = first + 11;
+            schedule.fetched[index] = true;
+            continue;
+        }
+        let (tile, pixel) = if window && x >= window_left {
+            let wx = (x - window_left).max(0) as u16;
+            (0x100 | (wx / 8), (wx & 7) as u8)
+        } else {
+            let bx = (x + snap.scx as i16).rem_euclid(256) as u16;
+            (bx / 8, (bx & 7) as u8)
+        };
+        let alignment = if tiles[..tile_count].contains(&tile) { 0 } else {
+            tiles[tile_count] = tile;
+            tile_count += 1;
+            (7u8 - pixel).saturating_sub(2) as u16
+        };
+        let length = object_fetch_length(cpu, snap, changes, entry + alignment);
+        let pause = alignment + length;
+        schedule.pauses[position] += pause;
+        if x >= 0 { schedule.prefetch[position] += pause; }
+        previous_delay += pause;
+        schedule.first_output[index] = first + pause;
+        schedule.fetched[index] = length == 6;
+    }
+    schedule
+}
+
+/// The object fetch has cancellation checkpoints after its one-dot first
+/// step, three-dot second step, and one-dot low-address step. Background
+/// alignment time is separate and is retained even when fetching is canceled.
+pub(super) fn object_fetch_length(
     cpu: &CPU,
     snap: PpuLineSnapshot,
     changes: &[PpuRegChange],
-    start_dot: u16,
-    last_cancel_dot: u16,
-) -> bool {
-    if cpu.is_cgb { return true; }
-    if registers_at(snap, changes, start_dot.saturating_sub(1)).lcdc & 2 == 0 {
-        return false;
+    begin_dot: u16,
+) -> u16 {
+    if cpu.is_cgb { return 6; }
+    for elapsed in [0, 1, 4, 5] {
+        if registers_at(snap, changes, begin_dot + elapsed).lcdc & 2 == 0 {
+            return elapsed;
+        }
     }
-    !changes.iter().any(|change| change.addr == 0xFF40 && change.value & 2 == 0
-        && change.dot >= start_dot && change.dot < last_cancel_dot)
+    6
 }
 
 fn plane_address(cpu: &CPU, ly: u8, oam_index: u8, lcdc: u8) -> usize {
@@ -102,11 +179,85 @@ mod tests {
         let snap = PpuLineSnapshot { lcdc: 0x83, ..Default::default() };
         let changes = [
             PpuRegChange { dot: 96, addr: 0xFF40, value: 0x81 },
-            PpuRegChange { dot: 98, addr: 0xFF40, value: 0x83 },
+            PpuRegChange { dot: 100, addr: 0xFF40, value: 0x83 },
         ];
-        assert!(!object_fetch_survives(&cpu, snap, &changes, 94, 99));
-        assert!(object_fetch_survives(&cpu, snap, &changes, 99, 104));
+        assert_eq!(object_fetch_length(&cpu, snap, &changes, 94), 4);
+        assert_eq!(object_fetch_length(&cpu, snap, &changes, 101), 6);
         cpu.is_cgb = true;
-        assert!(object_fetch_survives(&cpu, snap, &changes, 94, 99));
+        assert_eq!(object_fetch_length(&cpu, snap, &changes, 94), 6);
+    }
+
+    #[test]
+    fn canceled_fetch_keeps_only_the_steps_already_completed() {
+        let mut cpu = CPU::new();
+        let snap = PpuLineSnapshot { lcdc: 0x83, ..Default::default() };
+        for (dot, expected) in [(100, 0), (101, 1), (102, 4), (105, 5), (106, 6)] {
+            let changes = [PpuRegChange { dot, addr: 0xFF40, value: 0x81 }];
+            assert_eq!(object_fetch_length(&cpu, snap, &changes, 100), expected);
+            cpu.is_cgb = true;
+            assert_eq!(object_fetch_length(&cpu, snap, &changes, 100), 6);
+            cpu.is_cgb = false;
+        }
+    }
+
+    #[test]
+    fn cancellation_preserves_background_alignment_but_removes_object_delay() {
+        let mut cpu = CPU::new();
+        cpu.ppu_mode3_start_dot = 84;
+        cpu.memory[0xFE00] = 16;
+        cpu.memory[0xFE01] = 16;
+        cpu.ppu_reg_log[0] = PpuRegChange { dot: 108, addr: 0xFF40, value: 0x81 };
+        cpu.ppu_reg_log_len = 1;
+        let snap = PpuLineSnapshot { lcdc: 0x83, ..Default::default() };
+        let schedule = fetch_schedule(&cpu, snap, 0);
+        assert_eq!(schedule.pauses[8], 5);
+        assert_eq!(schedule.prefetch[8], 5);
+        assert!(!schedule.fetched[0]);
+        cpu.is_cgb = true;
+        let schedule = fetch_schedule(&cpu, snap, 0);
+        assert_eq!(schedule.pauses[8], 11);
+        assert!(schedule.fetched[0]);
+    }
+
+    #[test]
+    fn colocated_objects_have_separate_latched_fetch_clocks() {
+        let mut cpu = CPU::new();
+        cpu.ppu_mode3_start_dot = 84;
+        for index in 0..2 {
+            cpu.memory[0xFE00 + index * 4] = 16;
+            cpu.memory[0xFE01 + index * 4] = 16;
+        }
+        let snap = PpuLineSnapshot { lcdc: 0x83, ..Default::default() };
+        let schedule = fetch_schedule(&cpu, snap, 0);
+        assert_eq!(schedule.pauses[8], 17); // Shared 5-dot alignment, two fetches.
+        assert_eq!(schedule.first_output[0], 114);
+        assert_eq!(schedule.first_output[1], 120);
+        assert!(schedule.fetched[0] && schedule.fetched[1]);
+    }
+
+    #[test]
+    fn clipped_fetch_finishes_before_its_first_visible_pixel() {
+        let mut cpu = CPU::new();
+        cpu.ppu_mode3_start_dot = 84;
+        cpu.memory[0xFE00] = 16;
+        cpu.memory[0xFE01] = 2;
+        let snap = PpuLineSnapshot { lcdc: 0x83, ..Default::default() };
+        // The object starts six columns left of the screen. Its fetch starts
+        // at dot 92 and finishes at 98, while visible output starts at 104.
+        // Disabling at visible output affects mixing, not this completed fetch.
+        cpu.ppu_reg_log[0] = PpuRegChange { dot: 104, addr: 0xFF40, value: 0x81 };
+        cpu.ppu_reg_log_len = 1;
+        let schedule = fetch_schedule(&cpu, snap, 0);
+        assert_eq!(schedule.pauses[0], 9);
+        assert_eq!(schedule.prefetch[0], 0);
+        assert_eq!(schedule.first_output[0], 104);
+        assert!(schedule.fetched[0]);
+        // Canceling during the fetch cannot be undone by enabling it again.
+        cpu.ppu_reg_log[0].dot = 93;
+        cpu.ppu_reg_log[1] = PpuRegChange { dot: 99, addr: 0xFF40, value: 0x83 };
+        cpu.ppu_reg_log_len = 2;
+        let schedule = fetch_schedule(&cpu, snap, 0);
+        assert_eq!(schedule.pauses[0], 4);
+        assert!(!schedule.fetched[0]);
     }
 }

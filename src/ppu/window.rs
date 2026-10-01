@@ -68,14 +68,22 @@ pub(super) fn restart_trigger_origin(
     if previous_dot.is_some_and(|previous| output_dot.saturating_sub(previous) < 7) {
         return None;
     }
-    let comparator = registers_at(snapshot, changes, output_dot.saturating_sub(6));
-    if (7..=166).contains(&comparator.wx)
-        && comparator.wx as u32 - 7 == screen_x
+    // WX reaches the comparator two dots after the CPU write; this phase is
+    // inferred from the independent WX-change hardware screenshots.
+    let mut comparator = registers_at(snapshot, changes, output_dot.saturating_sub(6));
+    comparator.wx = registers_at(snapshot, changes, output_dot.saturating_sub(8)).wx;
+    if comparator.wx == 0 && snapshot.scx & 7 != 0 {
+        comparator = registers_at(snapshot, changes, output_dot.saturating_sub(7));
+        comparator.wx = registers_at(snapshot, changes, output_dot.saturating_sub(9)).wx;
+    }
+    let origin = comparator.wx as i32 - 7;
+    if (comparator.wx == 0 || (7..=166).contains(&comparator.wx))
+        && origin.max(0) as u32 == screen_x
         && comparator.lcdc & 0x20 != 0
         && (native_cgb || comparator.lcdc & 1 != 0)
         && ly >= comparator.wy
     {
-        Some(comparator.wx as i32 - 7)
+        Some(origin)
     } else {
         None
     }
@@ -125,5 +133,28 @@ mod tests {
         let changes = [PpuRegChange { dot: 188, addr: 0xFF4B, value: 80 }];
         assert_eq!(restart_trigger_origin(snapshot, &changes, 94, false, 87, 188, Some(181)), Some(87));
         assert_eq!(restart_trigger_origin(snapshot, &changes, 94, false, 87, 188, Some(187)), None);
+        let changes = [PpuRegChange { dot: 188, addr: 0xFF4B, value: 80 }];
+        let snapshot = PpuLineSnapshot { wx: 100, ..snapshot };
+        assert_eq!(restart_trigger_origin(snapshot, &changes, 100, false, 93, 194, Some(187)), Some(93));
+    }
+
+    #[test]
+    fn wx_zero_restart_latches_enable_before_visible_output() {
+        let snapshot = PpuLineSnapshot { lcdc: 0xE1, wx: 144, ..Default::default() };
+        let changes = [
+            PpuRegChange { dot: 84, addr: 0xFF4B, value: 0 },
+            PpuRegChange { dot: 96, addr: 0xFF40, value: 0xC1 },
+        ];
+        assert_eq!(restart_trigger_origin(snapshot, &changes, 0, false, 0, 101, None), Some(-7));
+    }
+
+    #[test]
+    fn delayed_wx_comparison_survives_a_write_one_dot_before_trigger() {
+        let snapshot = PpuLineSnapshot { lcdc: 0xF3, wx: 6, ..Default::default() };
+        let changes = [
+            PpuRegChange { dot: 92, addr: 0xFF4B, value: 101 },
+            PpuRegChange { dot: 188, addr: 0xFF4B, value: 80 },
+        ];
+        assert_eq!(restart_trigger_origin(snapshot, &changes, 101, false, 94, 195, Some(188)), Some(94));
     }
 }

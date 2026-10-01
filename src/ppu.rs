@@ -410,60 +410,42 @@ mod raster_tests {
         assert_eq!(fetch_background_tile(&cpu, snap, &changes, 0, 0, 100), (0xA5, 0x5A, 0));
         assert_eq!(fetch_background_tile(&cpu, snap, &changes, 0, 0, 101), (0xA5, 0x3C, 0));
     }
+
+    #[test]
+    fn background_mixer_samples_enable_before_bus_writes() {
+        for cgb in [false, true] {
+            let mut cpu = crate::cpu::CPU::new();
+            cpu.is_cgb = cgb;
+            cpu.booting = false;
+            cpu.memory[0xFF4C] = 4; // CGB monochrome compatibility mode.
+            cpu.memory[0xFF44] = 0;
+            cpu.memory[0x8000..0x8010].fill(0xFF);
+            cpu.memory[0x9800..0x9C00].fill(0);
+            cpu.memory[0xFE00..0xFEA0].fill(0);
+            cpu.ppu_line_snapshot = PpuLineSnapshot { lcdc: 0x91, bgp: 0xE4, ..Default::default() };
+            cpu.ppu_mode3_start_dot = 84;
+            cpu.ppu_reg_log[0] = PpuRegChange { dot: 99, addr: 0xFF40, value: 0x90 };
+            cpu.ppu_reg_log_len = 1;
+            super::draw_scanline(&mut cpu);
+            let raw = |x: usize| (cpu.frame_buffer[x] >> 24) & 3;
+            assert_eq!(raw(4), 3, "same-dot write must not change the pixel");
+            assert_eq!(raw(5), if cgb { 3 } else { 0 });
+            assert_eq!(raw(6), 0, "disabled BG must also clear OBJ-priority metadata");
+        }
+    }
 }
 
 /// Visible pixel clocks include fetcher pauses; raster register writes must
 /// not be projected onto a uniform one-pixel-per-dot line across those pauses.
 fn object_fetch_pauses(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, ly: u8) -> ([u16; 160], [u16; 160]) {
-    let mut pauses = [0u16; 160];
-    let mut visible_pauses = [0u16; 160];
-    let window = snap.lcdc & 0x20 != 0 && ly >= snap.wy && snap.wx <= 166
-        && (cpu.cgb_native_mode() || snap.lcdc & 1 != 0);
-    let window_left = snap.wx as i16 - 7;
-    if snap.lcdc & 2 != 0 {
-        let height = if snap.lcdc & 4 != 0 { 16 } else { 8 };
-        let mut sprites = [(0i16, 0usize, 0u8); 10];
-        let mut count = 0;
-        for index in 0..40 {
-            let base = 0xFE00 + index * 4;
-            let top = cpu.memory[base] as i16 - 16;
-            if (ly as i16) < top || ly as i16 >= top + height { continue; }
-            let raw_x = cpu.memory[base + 1];
-            sprites[count] = (raw_x as i16 - 8, index, raw_x);
-            count += 1;
-            if count == 10 { break; }
-        }
-        sprites[..count].sort_unstable();
-        let mut tiles = [u16::MAX; 10];
-        let mut tile_count = 0;
-        for &(x, _, raw_x) in &sprites[..count] {
-            if x >= 160 { continue; }
-            let position = x.max(0) as usize;
-            if raw_x == 0 { pauses[position] += 11; continue; }
-            let before = pauses[position];
-            let (tile, pixel) = if window && x >= window_left {
-                let wx = (x - window_left).max(0) as u16;
-                (0x100 | (wx / 8), (wx & 7) as u8)
-            } else {
-                let bx = (x + snap.scx as i16).rem_euclid(256) as u16;
-                (bx / 8, (bx & 7) as u8)
-            };
-            if !tiles[..tile_count].contains(&tile) {
-                tiles[tile_count] = tile;
-                tile_count += 1;
-                pauses[position] += (7u8 - pixel).saturating_sub(2) as u16;
-            }
-            pauses[position] += 6;
-            if x >= 0 { visible_pauses[position] += pauses[position] - before; }
-        }
-    }
-    (pauses, visible_pauses)
+    let schedule = objects::fetch_schedule(cpu, snap, ly);
+    (schedule.pauses, schedule.prefetch)
 }
 
 fn pixel_output_dots(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, ly: u8, first_dot: u16) -> [u16; 160] {
     let (pauses, _) = object_fetch_pauses(cpu, snap, ly);
     let fine = (snap.scx & 7) as u16;
-    let mut dots = [0; 160];
+    let mut dots = [0u16; 160];
     let mut delay = fine;
     let mut window_regs = snap;
     let mut change_index = 0;
@@ -490,24 +472,28 @@ fn pixel_output_dots(cpu: &crate::cpu::CPU, snap: PpuLineSnapshot, ly: u8, first
         // the trigger moves the six-dot fetcher restart to the new position.
         let enabled = window_regs.lcdc & 0x20 != 0 && ly >= window_regs.wy
             && (cpu.cgb_native_mode() || window_regs.lcdc & 1 != 0);
+        // Independent WX-change captures place the comparator two dots
+        // behind the CPU bus write (inferred from the hardware references).
+        let comparison_wx = registers_at(snap, changes, dot.saturating_sub(2)).wx;
         if let Some(origin) = window_origin {
             if (x as i16 - origin) & 7 == 0 {
-                let fetch_dot = if x >= 7 { dots[x - 7] } else { first_dot.saturating_sub(7) };
+                let fetch_dot = if x >= 7 { dots[x - 7] }
+                    else { dots[0].saturating_sub(7).saturating_add(x as u16) };
                 if registers_at(snap, changes, fetch_dot.saturating_sub(1)).lcdc & 0x20 == 0 {
                     window_origin = None;
                 }
             }
         }
-        if window_origin.is_none() && enabled && window_regs.wx <= 166
-            && (window_regs.wx == 0 || window_regs.wx >= 7)
-            && x == (window_regs.wx as i16 - 7).max(0) as usize {
+        if window_origin.is_none() && enabled && comparison_wx <= 166
+            && (comparison_wx == 0 || comparison_wx >= 7)
+            && x == (comparison_wx as i16 - 7).max(0) as usize {
             // At WX=0, nonzero fine scrolling delays window activation by
             // one dot (the Mealybug WX=0 hardware capture exercises this).
-            delay += if window_regs.wx == 0 && fine != 0 { 7 } else { 6 };
-            window_origin = Some(window_regs.wx as i16 - 7);
+            delay += if comparison_wx == 0 && fine != 0 { 7 } else { 6 };
+            window_origin = Some(comparison_wx as i16 - 7);
         }
         if let Some(origin) = window_origin {
-            if window::reactivation_zero_pixel(origin as i32, x as u32, window_regs.wx) {
+            if window::reactivation_zero_pixel(origin as i32, x as u32, comparison_wx) {
                 window_origin = Some(origin + 1);
             }
         }
@@ -552,6 +538,9 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
     let buf_base  = ly as usize * 160;
     let pixel_dots = if log.is_empty() { [0; 160] }
         else { pixel_output_dots(cpu, snap, ly, mode3_dot) };
+    let object_schedule = if log.is_empty() { None } else {
+        Some(objects::fetch_schedule(cpu, snap, ly))
+    };
 
     // In CGB compatibility mode, BGP/OBP select among the colors installed by
     // the real boot ROM. Cartridge writes cannot replace native palettes.
@@ -658,13 +647,22 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
 
         // How many screen-x columns until the next log entry fires?
         let next_log_dot = log.get(log_idx).map(|e| e.dot).unwrap_or(0xFFFF);
-        let next_log_x: u32 = if palette_edge {
+        let mut next_log_x: u32 = if palette_edge {
             screen_x + 1
         } else if next_log_dot == 0xFFFF {
             160
         } else {
             pixel_dots.partition_point(|&dot| dot < next_log_dot) as u32
         };
+        // A FIFO restart can fall inside a cached tile run without another
+        // register write at that pixel. Re-enter the control path at every
+        // output-clock discontinuity rather than drawing across that event.
+        if !log.is_empty() {
+            if let Some(x) = (screen_x as usize + 1..next_log_x as usize)
+                .find(|&x| pixel_dots[x] > pixel_dots[x - 1] + 1) {
+                next_log_x = x as u32;
+            }
+        }
 
         let master_bg = is_cgb || lcdc & 0x01 != 0;
         let win_en    = lcdc & 0x20 != 0 && master_bg && win_line_active;
@@ -674,7 +672,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
         // missed horizontal comparison cannot retroactively start it.
         if let Some(origin) = window_origin {
             let fetch_dot = if screen_x >= 7 { pixel_dots[screen_x as usize - 7] }
-                else { mode3_dot.saturating_sub(7) };
+                else { pixel_dots[0].saturating_sub(7).saturating_add(screen_x as u16) };
             if (screen_x as i32 - origin) & 7 == 0
                 && registers_at(snap, log, fetch_dot.saturating_sub(1)).lcdc & 0x20 == 0 {
                 window_origin = None;
@@ -851,10 +849,17 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
                     let (r, g, b) = get_cgb_color(&cpu.cgb_bg_palettes, cgb_pal, raw);
                     pack_cgb_pixel(r, g, b, raw, bg_prio)
                 } else {
-                    let raw_eff = if master_bg { raw } else { 0 };
+                    // The LCD mixer samples LCDC.0 before a CPU write on
+                    // the same dot, independently of the tile fetcher. CGB
+                    // compatibility-mode captures show one more dot of
+                    // propagation than DMG (an inferred pipeline phase).
+                    let bg_enabled = if log.is_empty() { master_bg } else {
+                        registers_at(snap, log, pixel_dots[xi as usize].saturating_sub(if cpu.is_cgb { 2 } else { 1 })).lcdc & 1 != 0
+                    };
+                    let raw_eff = if bg_enabled { raw } else { 0 };
                     let ci      = apply_dmg_palette(raw_eff, pixel_bgp);
                     let color   = &palettes[PAL_BG as usize][ci as usize];
-                    pack_cgb_pixel(color[0], color[1], color[2], raw, bg_prio)
+                    pack_cgb_pixel(color[0], color[1], color[2], raw_eff, bg_prio)
                 };
                 cpu.frame_buffer[buf_base + xi as usize] = pixel;
             }
@@ -891,6 +896,9 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
         for idx in (0..count).rev() {
             let (oam_idx, sprite_x) = sprites[idx];
             if sprite_x >= 160 { continue; }
+            if object_schedule.as_ref().is_some_and(|schedule| !schedule.fetched[oam_idx as usize]) {
+                continue;
+            }
             let base        = 0xFE00 + (oam_idx as usize) * 4;
             let attributes  = cpu.memory[base + 3];
 
@@ -899,7 +907,7 @@ pub fn draw_scanline(cpu: &mut crate::cpu::CPU) {
             let obj_priority = (attributes & 0x80) == 0;
             let cgb_pal      = attributes & 0x07;
 
-            let first_dot = if log.is_empty() { 0 } else { pixel_dots[sprite_x.max(0) as usize] };
+            let first_dot = object_schedule.as_ref().map_or(0, |schedule| schedule.first_output[oam_idx as usize]);
             let (b1, b2) = objects::fetch_object_planes(cpu, snap, log, ly, oam_idx, first_dot);
 
             for px in 0..8u8 {
