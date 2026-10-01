@@ -104,6 +104,13 @@ pub fn make_rom() -> Vec<u8> {
 }
 
 fn packet(code: &mut Vec<u8>, command: u8, argument: u8) {
+    let mut bytes = [0; 16];
+    bytes[0] = (command << 3) | 1;
+    bytes[1] = argument;
+    packet_bytes(code, &bytes);
+}
+
+pub fn packet_bytes(code: &mut Vec<u8>, bytes: &[u8; 16]) {
     let pulse = |code: &mut Vec<u8>, value| {
         code.extend_from_slice(&[0x3E, value, 0xE0, 0]);
         code.extend_from_slice(&[0; 3]);
@@ -111,10 +118,7 @@ fn packet(code: &mut Vec<u8>, command: u8, argument: u8) {
         code.extend_from_slice(&[0; 13]);
     };
     pulse(code, 0);
-    let mut bytes = [0; 16];
-    bytes[0] = (command << 3) | 1;
-    bytes[1] = argument;
-    for byte in bytes {
+    for &byte in bytes {
         for bit in 0..8 {
             pulse(code, if byte & (1 << bit) == 0 { 0x20 } else { 0x10 });
         }
@@ -122,7 +126,7 @@ fn packet(code: &mut Vec<u8>, command: u8, argument: u8) {
     pulse(code, 0x20);
 }
 
-fn wait_frames(code: &mut Vec<u8>) {
+pub fn wait_frames(code: &mut Vec<u8>) {
     code.extend_from_slice(&[0x06, 6]);
     let start = code.len();
     code.extend_from_slice(&[

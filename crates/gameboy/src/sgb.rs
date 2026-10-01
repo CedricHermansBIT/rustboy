@@ -7,13 +7,19 @@ const PIXELS: usize = 160 * 144;
 mod border;
 #[cfg(test)]
 mod border_tests;
+#[cfg(test)]
+mod palette_tests;
+mod tables;
 const LEGACY_STATE_BYTES: usize = 11 + 16 + 112 + 6 + 32 + 360 + 8 + 256 + PIXELS * 4;
 const MAX_TRANSFERS: usize = 4;
 const TRANSFER_STATE_BYTES: usize = 3 + 4096;
+const BORDER_STATE_BYTES: usize =
+    LEGACY_STATE_BYTES + border::STATE_BYTES + 9 + MAX_TRANSFERS * TRANSFER_STATE_BYTES;
+const SHADE_BYTES: usize = PIXELS / 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Transfer {
-    // 1: low tiles, 2: high tiles, 3: map + palettes.
+    // 1: low tiles, 2: high tiles, 3: map + palettes, 4: PAL_TRN, 5: ATTR_TRN.
     destination: u8,
     remaining: u8,
     frame_started: bool,
@@ -129,7 +135,12 @@ pub struct Sgb {
     /// The last complete, unmasked, colorized LCD frame. Freeze and LCD-off
     /// retain it; it is not dependent on the frontend asking for a frame.
     frame: Vec<u8>,
+    // Freeze holds the LCD image, not its colorization. Palette/attribute
+    // changes must still recolor it, including while the LCD is disabled.
+    shades: Box<[u8; SHADE_BYTES]>,
+    shades_valid: bool,
     border: border::Border,
+    tables: tables::Tables,
     transfers: Vec<Transfer>,
     pub transfer_drops: u64,
     pub commands_received: u64,
@@ -153,7 +164,10 @@ impl Sgb {
             suppress_release: false,
             commands_disabled: false,
             frame: vec![255; PIXELS * 4],
+            shades: Box::new([0; SHADE_BYTES]),
+            shades_valid: true,
             border: border::Border::default(),
+            tables: tables::Tables::default(),
             transfers: Vec::new(),
             transfer_drops: 0,
             commands_received: 0,
@@ -167,6 +181,11 @@ impl Sgb {
 
     pub fn players(&self) -> u8 {
         self.players
+    }
+
+    /// 0: visible, 1: frozen, 2: black, 3: backdrop color.
+    pub fn screen_mask(&self) -> u8 {
+        self.mask
     }
 
     pub fn has_border(&self) -> bool {
@@ -284,20 +303,35 @@ impl Sgb {
             .is_some_and(|transfer| transfer.remaining == 0)
         {
             let transfer = self.transfers.remove(0);
-            self.border.transfer(transfer.destination, &transfer.data);
+            match transfer.destination {
+                1..=3 => self.border.transfer(transfer.destination, &transfer.data),
+                4..=5 => self.tables.transfer(transfer.destination, &transfer.data),
+                _ => unreachable!("validated LCD transfer destination"),
+            }
         }
         if self.mask != 0 {
             return;
         }
-        for (index, (&pixel, out)) in pixels
-            .iter()
-            .take(PIXELS)
-            .zip(self.frame.chunks_exact_mut(4))
-            .enumerate()
-        {
+        for (index, &pixel) in pixels.iter().take(PIXELS).enumerate() {
+            let shift = (index % 4) * 2;
+            self.shades[index / 4] =
+                (self.shades[index / 4] & !(3 << shift)) | ((((pixel >> 27) & 3) as u8) << shift);
+        }
+        self.shades_valid = true;
+        self.recolor_frame();
+    }
+
+    fn recolor_frame(&mut self) {
+        // Old v1/v2 snapshots contain only RGBA, with potentially ambiguous
+        // equal palette colors. Preserve that image until a fresh LCD frame.
+        if !self.shades_valid {
+            return;
+        }
+        for (index, out) in self.frame.chunks_exact_mut(4).enumerate() {
             let palette = self.attributes[(index / 160 / 8) * 20 + index % 160 / 8] as usize;
             // This is the LCD shade *after* BGP/OBP, not raw tile color.
-            out.copy_from_slice(&rgb(self.palettes[palette][((pixel >> 27) & 3) as usize]));
+            let shade = (self.shades[index / 4] >> ((index % 4) * 2)) & 3;
+            out.copy_from_slice(&rgb(self.palettes[palette][shade as usize]));
         }
     }
 
@@ -444,6 +478,22 @@ impl Sgb {
                     }
                 }
             }
+            0x0A => {
+                for palette in 0..4 {
+                    self.palettes[palette] = self.tables.palette(word(data, 1 + palette * 2));
+                }
+                let backdrop = self.palettes[0][0];
+                for palette in &mut self.palettes {
+                    palette[0] = backdrop;
+                }
+                if data[9] & 0x80 != 0 {
+                    self.apply_attribute_file(data[9] & 0x3F);
+                }
+                if data[9] & 0x40 != 0 {
+                    self.mask = 0;
+                }
+            }
+            0x0B => self.request_transfer(4),
             0x0E => self.commands_disabled = data[1] & 4 != 0,
             0x11 => {
                 self.players = if data[1] & 1 == 0 {
@@ -458,9 +508,25 @@ impl Sgb {
             0x17 => self.mask = data[1] & 3,
             0x13 => self.request_transfer(1 + (data[1] & 1)),
             0x14 => self.request_transfer(3),
+            0x15 => self.request_transfer(5),
+            0x16 => {
+                self.apply_attribute_file(data[1] & 0x3F);
+                if data[1] & 0x40 != 0 {
+                    self.mask = 0;
+                }
+            }
             code => {
                 self.unsupported[code as usize] = self.unsupported[code as usize].saturating_add(1)
             }
+        }
+        if matches!(command.code, 0..=7 | 0x0A | 0x16) {
+            self.recolor_frame();
+        }
+    }
+
+    fn apply_attribute_file(&mut self, index: u8) {
+        if let Some(attributes) = self.tables.attributes(index) {
+            self.attributes = attributes;
         }
     }
 
@@ -510,17 +576,21 @@ impl Sgb {
                 out.resize(out.len() + TRANSFER_STATE_BYTES, 0);
             }
         }
+        self.tables.export_state(&mut out);
+        out.push(self.shades_valid as u8);
+        out.extend_from_slice(self.shades.as_ref());
         out
     }
 
     pub(crate) fn import_state(rom: &[u8], data: &[u8], version: u16) -> Result<Self, String> {
         let mut sgb = Self::new(rom);
-        let expected = if version == 1 {
-            LEGACY_STATE_BYTES
-        } else {
-            sgb.export_state().len()
+        let expected = match version {
+            1 => LEGACY_STATE_BYTES,
+            2 => BORDER_STATE_BYTES,
+            3 => sgb.export_state().len(),
+            _ => return Err("Unsupported SGB snapshot version".into()),
         };
-        if !(1..=2).contains(&version) || data.len() != expected {
+        if data.len() != expected {
             return Err("Invalid SGB snapshot length".into());
         }
         let mut input = data;
@@ -575,7 +645,10 @@ impl Sgb {
             for index in 0..MAX_TRANSFERS {
                 let bytes = take(&mut input, TRANSFER_STATE_BYTES);
                 if index < count {
-                    if !(1..=3).contains(&bytes[0]) || !(1..=5).contains(&bytes[1]) || bytes[2] > 1
+                    let max_destination = if version >= 3 { 5 } else { 3 };
+                    if !(1..=max_destination).contains(&bytes[0])
+                        || !(1..=5).contains(&bytes[1])
+                        || bytes[2] > 1
                     {
                         return Err("Invalid SGB pending transfer state".into());
                     }
@@ -591,6 +664,13 @@ impl Sgb {
                     return Err("Unexpected SGB pending transfer data".into());
                 }
             }
+        }
+        if version >= 3 {
+            sgb.tables = tables::Tables::import_state(take(&mut input, tables::STATE_BYTES))?;
+            sgb.shades_valid = boolean(&mut input)?;
+            sgb.shades.copy_from_slice(take(&mut input, SHADE_BYTES));
+        } else {
+            sgb.shades_valid = false;
         }
         if sgb.mask > 3
             || ![1, 2, 4].contains(&sgb.players)
@@ -871,10 +951,10 @@ mod tests {
         sgb.write_joyp(0x30);
         sgb.write_joyp(0x10);
         let bytes = sgb.export_state();
-        assert_eq!(Sgb::import_state(&rom, &bytes, 2).unwrap(), sgb);
-        assert!(Sgb::import_state(&rom, &bytes[..bytes.len() - 1], 2).is_err());
+        assert_eq!(Sgb::import_state(&rom, &bytes, 3).unwrap(), sgb);
+        assert!(Sgb::import_state(&rom, &bytes[..bytes.len() - 1], 3).is_err());
         let mut bad = bytes;
         bad[2] = 3;
-        assert!(Sgb::import_state(&rom, &bad, 2).is_err());
+        assert!(Sgb::import_state(&rom, &bad, 3).is_err());
     }
 }

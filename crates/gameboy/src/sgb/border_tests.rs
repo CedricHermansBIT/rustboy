@@ -14,7 +14,7 @@ fn command(sgb: &mut Sgb, code: u8, argument: u8) {
     super::tests::send(sgb, &packet);
 }
 
-fn signal(data: &[u8; 4096]) -> Vec<u32> {
+pub(super) fn signal(data: &[u8; 4096]) -> Vec<u32> {
     let mut pixels = vec![0; PIXELS];
     for tile in 0..256 {
         for y in 0..8 {
@@ -154,7 +154,12 @@ fn old_snapshots_load_without_borders_and_new_snapshots_preserve_pending_transfe
     frame(&mut sgb, &signal(&[0x52; 4096]));
     command(&mut sgb, 0x14, 0);
     let bytes = sgb.export_state();
-    assert_eq!(Sgb::import_state(&rom, &bytes, 2).unwrap(), sgb);
+    assert_eq!(Sgb::import_state(&rom, &bytes, 3).unwrap(), sgb);
+    let migrated = Sgb::import_state(&rom, &bytes[..BORDER_STATE_BYTES], 2).unwrap();
+    assert_eq!(migrated.border, sgb.border);
+    assert_eq!(migrated.transfers, sgb.transfers);
+    assert_eq!(migrated.frame, sgb.frame);
+    assert!(!migrated.shades_valid);
     let old = Sgb::import_state(&rom, &bytes[..LEGACY_STATE_BYTES], 1).unwrap();
     assert!(!old.has_border());
     assert_eq!(old.transfers_pending(), 0);
@@ -162,12 +167,12 @@ fn old_snapshots_load_without_borders_and_new_snapshots_preserve_pending_transfe
     let queue_offset = LEGACY_STATE_BYTES + border::STATE_BYTES + 8;
     for (offset, value) in [
         (queue_offset, 5),
-        (queue_offset + 1, 4),
+        (queue_offset + 1, 6),
         (queue_offset + 2, 0),
         (queue_offset + 3, 2),
     ] {
         let mut corrupt = bytes.clone();
         corrupt[offset] = value;
-        assert!(Sgb::import_state(&rom, &corrupt, 2).is_err());
+        assert!(Sgb::import_state(&rom, &corrupt, 3).is_err());
     }
 }

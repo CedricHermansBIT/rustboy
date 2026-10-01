@@ -3,6 +3,91 @@
 use crate::{emulator::*, GameBoy, HardwareModel};
 #[path = "../tests/fixtures/border_rom.rs"]
 mod border_rom;
+#[path = "../tests/fixtures/palette_rom.rs"]
+mod palette_rom;
+
+#[test]
+fn cartridge_table_uploads_replace_white_palettes_apply_atf_and_cancel_freeze() {
+    let mut gb = machine(&palette_rom::make_rom());
+    gb.run(70_224 * 40);
+    assert_eq!(gb.cpu().peek(0xC000), 0x66);
+    let sgb = gb.cpu().sgb.as_ref().unwrap();
+    assert_eq!(sgb.commands_received, 5);
+    assert_eq!(sgb.screen_mask(), 0);
+    assert_eq!(sgb.unsupported, [0; 32]);
+    assert_eq!(sgb.transfers_pending(), 0);
+    assert!(!sgb.has_border());
+    let pixels = gb.video_frame().pixels;
+    assert_eq!(&pixels[..4], &[0, 255, 0, 255]); // pal0 shade2 green
+    assert_eq!(&pixels[8 * 4..9 * 4], &[255, 0, 0, 255]); // pal1 sprite shade3 red
+    assert_eq!(
+        &pixels[(8 * 160 + 8) * 4..(8 * 160 + 9) * 4],
+        &[0, 0, 255, 255]
+    );
+    assert_eq!(&pixels[16 * 4..17 * 4], &[255, 0, 0, 255]); // pal256 shade2 red
+    assert_eq!(&pixels[24 * 4..25 * 4], &[255, 0, 255, 255]); // pal511 shade2 magenta
+    let expected = pixels.to_vec();
+    let state = gb.export_state();
+    gb.reset();
+    gb.import_state(&state).unwrap();
+    assert_eq!(gb.video_frame().pixels, expected);
+    assert_eq!(gb.export_state(), state);
+    gb.run(70_224 * 2);
+    assert_eq!(gb.video_frame().pixels, expected);
+}
+
+#[test]
+fn version_two_sgb_envelope_preserves_border_and_pending_transfer_on_migration() {
+    let mut gb = machine(&border_rom::make_rom());
+    gb.run(70_224 * 40);
+    let pixels = gb.video_frame().pixels.to_vec();
+    let mut chr = [0; 16];
+    chr[0] = (0x13 << 3) | 1;
+    write_packet(&mut gb, &chr);
+    let state = gb.export_state();
+    // v3 appends 8146 bytes of tables and 5761 bytes of retained LCD shades.
+    let mut old = state[..state.len() - 4 - 8146 - 5761].to_vec();
+    old[4..6].copy_from_slice(&2u16.to_le_bytes());
+    let checksum = old.iter().fold(0x811c9dc5u32, |h, b| {
+        (h ^ *b as u32).wrapping_mul(0x01000193)
+    });
+    old.extend_from_slice(&checksum.to_le_bytes());
+    gb.reset();
+    gb.import_state(&old).unwrap();
+    assert_eq!(gb.video_frame().pixels, pixels);
+    assert_eq!(gb.cpu().sgb.as_ref().unwrap().transfers_pending(), 1);
+    assert_eq!(&gb.export_state()[..6], b"RBSG\x03\0");
+}
+
+#[test]
+fn restoring_during_palette_table_capture_replays_the_remaining_uploads() {
+    let mut gb = machine(&palette_rom::make_rom());
+    let mut found = false;
+    let mut saw_vblank = false;
+    for _ in 0..200_000 {
+        if gb.cpu().sgb.as_ref().unwrap().transfers_pending() != 0 {
+            let ly = gb.cpu().peek(0xFF44);
+            if ly >= 144 {
+                saw_vblank = true;
+            }
+            if saw_vblank && (61..144).contains(&ly) {
+                found = true;
+                break;
+            }
+        }
+        gb.step();
+    }
+    assert!(found, "must save during the first palette payload frame");
+    let saved = gb.export_state();
+    gb.run(70_224 * 40);
+    let expected = gb.video_frame().pixels.to_vec();
+    assert_eq!(gb.cpu().peek(0xC000), 0x66);
+    gb.reset();
+    gb.import_state(&saved).unwrap();
+    gb.run(70_224 * 40);
+    assert_eq!(gb.video_frame().pixels, expected);
+    assert_eq!(gb.cpu().peek(0xC000), 0x66);
+}
 
 #[test]
 fn cartridge_border_uploads_use_rendered_lcd_and_resize_the_backend_frame() {
@@ -29,7 +114,7 @@ fn cartridge_border_uploads_use_rendered_lcd_and_resize_the_backend_frame() {
     assert_eq!(pixel(56, 48), [255, 0, 0, 255]); // deliberate opaque border overlay
     let expected = frame.pixels.to_vec();
     let saved = gb.export_state();
-    assert_eq!(&saved[..6], b"RBSG\x02\0");
+    assert_eq!(&saved[..6], b"RBSG\x03\0");
     gb.reset();
     assert_eq!(gb.video_frame().geometry.width, 160);
     gb.import_state(&saved).unwrap();
@@ -89,7 +174,7 @@ fn version_one_sgb_envelope_loads_and_migrates_without_a_border() {
     gb.import_state(&old).unwrap();
     assert!(!gb.cpu().sgb.as_ref().unwrap().has_border());
     assert_eq!(gb.video_frame().geometry.width, 160);
-    assert_eq!(&gb.export_state()[..6], b"RBSG\x02\0");
+    assert_eq!(&gb.export_state()[..6], b"RBSG\x03\0");
     assert!(gb.state_id().ends_with("-sgb-hle-v1")); // storage identity remains stable
 }
 
