@@ -1,4 +1,4 @@
-//! Original two-note timing probe against optional, locally supplied firmware.
+//! Original three-note timing probe against optional, locally supplied firmware.
 use rustboy_snes_apu::{apu::Apu, firmware::load_sgb_firmware, sgb_player::Player};
 fn score(apu: &mut Apu) {
     apu.bus.ram.write_wrapping(0x2b00, &[0x20, 0x2b]);

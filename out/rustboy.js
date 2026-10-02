@@ -47,6 +47,10 @@ export function clear_save_data() {
     wasm.clear_save_data();
 }
 
+export function clear_sgb_sound_firmware() {
+    wasm.clear_sgb_sound_firmware();
+}
+
 export function clear_trace() {
     wasm.clear_trace();
 }
@@ -389,6 +393,21 @@ export function set_paused(paused) {
 }
 
 /**
+ * User-provided SNES firmware, distinct from the handheld startup override.
+ * @param {Uint8Array} data
+ * @returns {boolean}
+ */
+export function set_sgb_sound_firmware(data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.set_sgb_sound_firmware(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return ret[0] !== 0;
+}
+
+/**
  * @param {number} speed
  */
 export function set_speed(speed) {
@@ -620,7 +639,7 @@ function __wbg_get_imports() {
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [F64], shim_idx: 45, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [F64], shim_idx: 46, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_5aa949e133d73c3e___convert__closures_____invoke___f64______true_);
             return ret;
         },

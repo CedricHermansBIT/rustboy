@@ -23,12 +23,22 @@ diagnostics pass with the locally supplied games. Browser smoke checks pass
 for DMG and CGB loading, nonblank rendering, pause/resume, and malformed-upload
 handling. Audio queue and boot-ROM loader JavaScript regressions pass.
 
-The latest implementation checks also pass 126 Game Boy unit tests, the shared
-SPC-RAM test, browser AudioWorklet/fallback queue tests, the public-library picker
-check, and all seven browser smoke cases. Five local SGB games pass the optional
+The latest implementation checks also pass 131 Game Boy, 20 SNES-APU and 7 root
+unit tests plus 2 PPU regressions, browser AudioWorklet/fallback queue tests, the
+public-library picker check, and all eight browser smoke cases. Five local SGB
+games pass the optional
 input/game-window/transfer/state-replay checks. Four exact Makon Diamond/Jade/Pearl
 dumps now render with the verified NT-new mapper; these are not full playthroughs.
-SGB sound uploads are retained, but SPC700/DSP playback is not implemented.
+SGB audio now includes our SPC700/DSP plus a default firmware-free resident score
+player and independently synthesized instrument bank. Real Animaniacs scores
+produce enhanced audio with 648 note events and zero score errors in the native
+diagnostic with no clipped samples; browser stereo output, reset and save/restore
+also pass without firmware. Toy Story/Pocahontas scores, Donkey Kong sample uploads and Kirby effect
+requests were additionally exercised; these are not full playthroughs or a
+claim of identical instrument timbres. The independent SPC700 corpus previously
+passed all 256,000 instruction vectors. Resident-player, BRR encoding quality,
+custom-code execution and original synthetic cartridge audio regressions are
+included in the self-contained checks; the browser gate now has eight cases.
 The original ROM totals above remain unchanged; no new exclusions were added.
 This is not a broad manual gameplay or listening test.
 

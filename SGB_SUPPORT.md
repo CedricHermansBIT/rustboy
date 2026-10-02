@@ -1,7 +1,9 @@
-# Super Game Boy: automatic detection, palettes and custom borders
+# Super Game Boy: palettes, custom borders and firmware-free audio
 
 RustBoy has a **high-level SGB adapter**. It is not full
-Super Game Boy hardware emulation and does not run Nintendo SGB/SNES firmware.
+Super Game Boy hardware emulation and does not run the SNES system firmware.
+Its original SPC700/DSP can execute the sound program from optionally supplied
+SGB firmware; an independently authored resident player is the default.
 Automatic mode detects SGB enhancement from header flag `0x03` and old licensee
 code `0x33`, and prefers SGB for enhanced cartridges, including dual-mode CGB
 games. CGB-only cartridges always use CGB. Other cartridges select GB/CGB from
@@ -88,7 +90,7 @@ and user-selected palette overrides are not included.
 
 Battery saves retain the cartridge's existing identity and can be shared across
 handheld/SGB modes. SGB save states use a separate `-sgb-hle-v1` identity and an
-`RBSG` envelope (now version 5); the storage identity remains stable so older
+`RBSG` envelope (now version 6); the storage identity remains stable so older
 SGB autosaves can migrate. Handheld snapshots keep their original `RBST` format. Loading a
 snapshot into the wrong mode is rejected. For SGB snapshots use the backend's
 `Emulator::export_state`, not the low-level CPU-only snapshot API.
@@ -106,25 +108,66 @@ reported as a broken command. Version 4 snapshots retain an in-progress pulse;
 versions 1–3 remain importable. The LCD transfer window remains five eligible
 frames, as documented; firmware per-chunk read timing is still approximated.
 
-The audio milestone now retains `SOUND` effect/pitch/volume/music requests and
+The audio implementation retains `SOUND` effect/pitch/volume/music requests and
 routes `SOU_TRN` through that same LCD pipeline. Its packet lists upload into
 64 KiB of SPC RAM (including wrapping addresses); zero-length packets retain
 the requested jump address. Malformed lists are rejected before any write.
-Version 5 snapshots preserve RAM, requests, upload counters and entry point;
-versions 1–4 remain readable. The portable `rustboy-snes-apu` crate owns the RAM
-building block for reuse by a future SNES backend.
+Version 6 additionally saves CPU/DSP/timer execution, resident score playback,
+effects, fades and rational resampling. Versions 1–5 remain readable, but old
+transport-only saves do not contain an audio execution position.
 
-This is **sound transport, not sound playback**. No SPC700 instructions, DSP,
-Nintendo sound engine or predefined samples are included. SOUND/SOU_TRN remain
-in the unsupported-playback counters, and `sgb()` explicitly reports this limit.
+## Resident audio replacement
+
+Enhanced music and effects now work without loading any SGB firmware. RustBoy
+provides its own high-level resident sound driver (Rust code, not a binary ROM):
+
+- The documented $2B00 score format: song/phrase tables, up to eight tracks,
+  finite/endless phrase repeats, reusable subroutines, durations, velocity/gates,
+  notes, ties, rests and percussion. No title-specific score substitution.
+- Instrument selection, stereo pan/phase, volume/tempo fades, transpose, tuning,
+  vibrato/tremolo, pitch envelopes/slides and echo controls.
+- Independently synthesized tone families and one-shot percussion: bass, guitar,
+  keyboard, strings, brass, flute, kick, hats, snare, tom and other effects.
+  Adaptive BRR scale/filter selection replaces coarse 4-bit waveform encoding;
+  the sine encoding regression requires over 40 dB signal-to-error ratio.
+- Procedural substitutes for all 48 A and 25 B effect IDs, attributes, stops,
+  dummy flags and mute fades. These are approximations, not Nintendo jingles or
+  recordings; voice allocation and effect envelopes differ from the original.
+- Game-uploaded instrument descriptors, BRR directories and samples override
+  the resident substitutes. Uploaded SPC code/entry points switch to our CPU
+  interpreter. Partial patches that depend on original resident machine-code
+  addresses are not generally compatible with the high-level replacement.
+- SNES audio continues when the handheld APU is off. Its 32 kHz stereo output
+  is resampled into the existing handheld output and browser AudioWorklet.
+
+Original SGB1/SGB2 SNES sound firmware is an optional user-supplied override,
+selected under **SGB audio (optional firmware override)** in the ROM picker.
+Validated images stay in that browser's local storage; invalid uploads preserve
+the previous selection. Loading/forgetting firmware restarts an active SGB
+game. This is distinct from the Game Boy boot ROM. Nintendo firmware and sample
+data are not distributed, embedded, or automatically downloaded by RustBoy.
+SGB1 playback has been tested; the loader accepts SGB2/headered image layouts,
+but this is not a claim of validation against every firmware revision.
+
+The design uses the publicly documented interface in the
+[Game Boy Programming Manual, chapter 7](https://files.nekoblog.org/uploads/pdf/39999184-GameBoy-Programming-Manual.pdf)
+and [Pan Docs sound commands](https://gbdev.io/pandocs/SGB_Command_Sound.html).
+The driver, encoder and synthesized bank are our own implementation, not copied
+from another emulator. Replacement instruments are deliberately different;
+universal compatibility and identical audio are not claimed. DSP interpolation
+is currently linear, not hardware Gaussian, and execution is instruction-level,
+not bus-cycle-level. Full SNES hardware emulation is still separate work.
+
+When comparing bank revisions, reload the page and **restart the game**: an
+existing save state deliberately retains the instrument/sample RAM it saved.
 
 ## Not implemented yet
 
 - Built-in Nintendo borders, SNES objects/`OBJ_TRN` and the firmware's border
   fade/menu animations. A game without a custom border keeps a 160×144 viewport.
-- SNES sounds, music and SPC700/DSP execution. Sound command/upload transport
-  is retained, but it produces no SNES samples yet. Normal Game Boy
-  APU audio continues to work.
+- Bit-identical Nintendo instrument/effect reproduction without original sound
+  firmware; Gaussian interpolation, exact DSP sub-sample timing and uncommon
+  SPC TEST-register clock modes. Full-game audio compatibility is not certified.
 - SNES CPU/bus/PPU, `DATA_SND`/`DATA_TRN` patch execution and `JUMP` (including
   Space Invaders' SNES arcade mode).
 - SNES system menus, user-selected palette/border overrides and `PAL_PRI`.
@@ -164,10 +207,23 @@ python3 scripts/build_web.py
 RUSTBOY_NO_BOOT=1 RUSTBOY_SYNTHETIC_SGB=1 node tests/browser_smoke.mjs
 RUSTBOY_NO_BOOT=1 RUSTBOY_SGB_BORDER=1 node tests/browser_smoke.mjs
 RUSTBOY_NO_BOOT=1 RUSTBOY_SGB_PALETTES=1 node tests/browser_smoke.mjs
+RUSTBOY_NO_BOOT=1 RUSTBOY_SGB_AUDIO=1 node tests/browser_smoke.mjs
 python3 scripts/check.py --browser
+RUSTBOY_COMPARE_ASSERT=1 cargo run --release --no-default-features --example sgb_sound_compare -- roms/sgb1.program.rom
+RUSTBOY_VERIFY_SGB_AUDIO=1 cargo run --release --no-default-features --example sgb_audio_inspect -- "roms/Animaniacs (USA) (SGB Enhanced).gb"
 ```
 
-Forty-five SGB unit/integration tests cover the protocol, command semantics,
+The optional sound comparison uses independently authored, identical one-note
+scores with user-supplied firmware and our player. It measures PCM pitch and RMS,
+not just DSP register values, and optionally writes local WAVs to a directory
+passed as its second argument. Seventeen representative resident sources now
+agree in detected pitch within 0.03 semitones; this caught initial one-/two-octave
+errors in our bank. It checks levels within a factor of two, allowing distinct
+replacement envelopes. No reference samples are checked in or embedded.
+The original three-note tempo probe also caught an extra tick at every phrase
+boundary; startup and repeated note onsets now agree within 3 ms in that probe.
+
+SGB unit/integration tests cover the protocol, command semantics,
 controller bus, frame masks, startup, border formats/transfers, state isolation,
 legacy snapshot migration and malformed snapshots.
 Table tests cover the 512-palette table, upper-half palette selection, shared backdrop, first/last

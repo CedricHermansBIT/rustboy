@@ -15,8 +15,11 @@ for the extension boundaries intended for future NES/SNES/SGB support.
 Automatic hardware selection now recognizes **Super Game Boy-enhanced cartridges**,
 including their palettes, attributes and game-provided borders. Explicit GB/CGB/SGB
 overrides are available in the ROM picker. Appearance settings can hide SGB
-decorations without changing emulation. SNES audio/program execution and exact
-SGB timing are not implemented.
+decorations without changing emulation. Enhanced sound uses RustBoy's own
+resident score player and synthesized instruments by default, without Nintendo
+firmware. Uploaded sound programs run on our SPC700/DSP; original SGB sound
+firmware is an optional browser-local override. Replacement timbres/effects and
+exact SGB timing are not hardware-identical.
 See [the SGB milestone and roadmap](SGB_SUPPORT.md).
 
 Debug tools are off and hidden by default. Press the backtick key or **Show debug

@@ -15,6 +15,8 @@ export function clear_breakpoints(): void;
 
 export function clear_save_data(): void;
 
+export function clear_sgb_sound_firmware(): void;
+
 export function clear_trace(): void;
 
 export function export_save_data(): Uint8Array;
@@ -80,6 +82,11 @@ export function set_key_state(key_code: number, pressed: boolean): void;
 
 export function set_paused(paused: boolean): void;
 
+/**
+ * User-provided SNES firmware, distinct from the handheld startup override.
+ */
+export function set_sgb_sound_firmware(data: Uint8Array): boolean;
+
 export function set_speed(speed: number): void;
 
 export function set_vram_view(view: string): void;
@@ -124,8 +131,10 @@ export interface InitOutput {
     readonly set_debug_enabled: (a: number) => void;
     readonly set_key_state: (a: number, b: number) => void;
     readonly set_paused: (a: number) => void;
+    readonly set_sgb_sound_firmware: (a: number, b: number) => [number, number, number];
     readonly set_vram_view: (a: number, b: number) => [number, number];
     readonly trace_len: () => number;
+    readonly clear_sgb_sound_firmware: () => void;
     readonly toggle_trace: () => void;
     readonly get_speed: () => number;
     readonly set_speed: (a: number) => void;
