@@ -26,6 +26,39 @@ thread_local! {
     static DEBUG_ENABLED: Cell<bool> = const { Cell::new(false) };
     static BORDER_VISIBLE: Cell<bool> = const { Cell::new(true) };
     static VRAM_VIEW: Cell<u8> = const { Cell::new(0) };
+    static SGB_SOUND_FIRMWARE: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+}
+
+/// User-provided SNES firmware, distinct from the handheld startup override.
+#[wasm_bindgen]
+pub fn set_sgb_sound_firmware(data:&[u8]) -> Result<bool,JsValue> {
+    GameBoy::validate_sgb_sound_firmware(data).map_err(|error|JsValue::from_str(&error))?;
+    let restarted = with_session_mut(|session| {
+        let mut restarted = false;
+        if let Some(gb) = session.backend.debug_extension_mut().and_then(|value|value.downcast_mut::<GameBoy>()) {
+            if gb.cpu().sgb.is_some() {
+                gb.load_sgb_sound_firmware(data)?;
+                restarted = true;
+            }
+        }
+        if restarted { session.reset(); }
+        Ok(restarted)
+    }).unwrap_or(Ok(false)).map_err(|error:String|JsValue::from_str(&error))?;
+    SGB_SOUND_FIRMWARE.with(|value|*value.borrow_mut()=Some(data.to_vec()));
+    Ok(restarted)
+}
+
+#[wasm_bindgen]
+pub fn clear_sgb_sound_firmware() {
+    SGB_SOUND_FIRMWARE.with(|value|*value.borrow_mut()=None);
+    with_session_mut(|session| {
+        let mut restarted = false;
+        if let Some(gb) = session.backend.debug_extension_mut().and_then(|value|value.downcast_mut::<GameBoy>()) {
+            gb.clear_sgb_sound_firmware();
+            restarted = gb.cpu().sgb.is_some();
+        }
+        if restarted { session.reset(); }
+    });
 }
 
 #[wasm_bindgen]
@@ -134,6 +167,12 @@ pub fn load_rom_data_with_model(rom: &[u8], boot_rom: &[u8], model: &str) -> Res
         },
     )
     .map_err(|error| JsValue::from_str(&error))?;
+    if backend.cpu().sgb.is_some() {
+        SGB_SOUND_FIRMWARE.with(|value| {
+            if let Some(data)=value.borrow().as_ref() { backend.load_sgb_sound_firmware(data)?; }
+            Ok::<(),String>(())
+        }).map_err(|error|JsValue::from_str(&error))?;
+    }
     backend.set_border_visible(BORDER_VISIBLE.with(Cell::get));
     toggleVramCanvas(false);
     save_game();
@@ -256,7 +295,7 @@ pub fn get_sgb_status() -> String {
             .collect::<Vec<_>>()
             .join(", ");
         format!(
-            "SGB HLE: functions {}, players {}, commands {}; unsupported [{}]; border {}, pending transfers {}, dropped transfers {}; screen mask {}; rejected pulses {}; sound uploads {}, rejected {} (SNES playback unavailable)",
+            "SGB HLE: functions {}, players {}, commands {}; unsupported [{}]; border {}, pending transfers {}, dropped transfers {}; screen mask {}; rejected pulses {}; sound uploads {}, rejected {}; SNES audio {}",
             if sgb.enabled() {
                 "enabled"
             } else {
@@ -272,6 +311,7 @@ pub fn get_sgb_status() -> String {
             sgb.rejected_pulses,
             sgb.sound_uploads(),
             sgb.sound_upload_rejections(),
+            if sgb.sound_playback_available() { "active (RustBoy SPC700/DSP)" } else { "unavailable (load SGB SNES firmware)" },
         )
     })
     .unwrap_or_else(|| "No ROM is loaded".into())

@@ -828,6 +828,16 @@
         <button id="upload-btn">📂 Upload ROM (.gb/.gbc)</button>
         <input type="file" id="rom-file-input" accept=".gb,.gbc,.bin" style="display:none" />
       </div>
+      <details id="sgb-audio-settings">
+        <summary>SGB audio firmware</summary>
+        <p class="hint">Optional SGB1/SGB2 SNES firmware enables enhanced music and sound effects.
+          This is a .sfc/program.rom image, not a Game Boy boot ROM. Loading it restarts an active SGB game.
+          Firmware stays in this browser; RustBoy does not distribute it.</p>
+        <button id="sgb-firmware-load" type="button">Load SGB firmware</button>
+        <button id="sgb-firmware-clear" type="button">Forget firmware</button>
+        <input id="sgb-firmware-input" type="file" accept=".sfc,.smc,.rom,.bin" hidden />
+        <p id="sgb-firmware-status" role="status" class="hint">No SGB sound firmware loaded</p>
+      </details>
       <div id="local-hardware">
       <label for="hardware-model">Hardware for next load</label>
       <select id="hardware-model">
@@ -837,7 +847,7 @@
         <option value="sgb">Super Game Boy</option>
       </select>
       <p id="sgb-warning" class="hint">Automatic prefers SGB enhancements when supported. Choose CGB for native CGB colors.
-        SGB supports game palettes and borders; SNES sound and programs are not implemented.</p>
+        SGB supports game palettes and borders, plus enhanced sound with optional SGB firmware. SNES game programs are not implemented.</p>
       </div>
       <p class="hint">Type to search · ←→↑↓ navigate · Enter load · Esc back · Drag & drop .gb/.gbc files</p>
     </div>
@@ -1432,6 +1442,40 @@
         for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
         return out;
       }
+      const SGB_FIRMWARE_KEY = 'rustboy_sgb_sound_firmware';
+      const sgbFirmwareStatus = document.querySelector('#sgb-firmware-status');
+      function restoreSgbFirmware() {
+        try {
+          const saved = localStorage.getItem(SGB_FIRMWARE_KEY);
+          if (saved) {
+            Module._set_sgb_sound_firmware(base64ToBytes(saved));
+            sgbFirmwareStatus.textContent = 'SGB sound firmware loaded (stored in this browser)';
+          }
+        } catch (error) {
+          sgbFirmwareStatus.textContent = `Could not restore SGB firmware: ${error.message || error}`;
+        }
+      }
+      document.querySelector('#sgb-firmware-load').addEventListener('click', () => document.querySelector('#sgb-firmware-input').click());
+      document.querySelector('#sgb-firmware-input').addEventListener('change', async event => {
+        const file = event.target.files[0]; event.target.value = ''; if (!file) return;
+        try {
+          if (!Module?._set_sgb_sound_firmware) throw Error('Emulator is still initializing; try again');
+          if (![262144,262656,524288,524800].includes(file.size)) throw Error('Expected a 256/512 KiB SGB SNES firmware image');
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const restarted = Module._set_sgb_sound_firmware(bytes);
+          clearAudioQueue();
+          sgbFirmwareStatus.textContent = `${file.name}: SGB sound firmware loaded`;
+          try { localStorage.setItem(SGB_FIRMWARE_KEY, bytesToBase64(bytes)); }
+          catch (_) { sgbFirmwareStatus.textContent += ' (session only: browser storage full/unavailable)'; }
+          toast(restarted ? 'SGB firmware loaded; game restarted' : 'SGB firmware ready for enhanced games');
+        } catch (error) { toast(`Could not load SGB firmware: ${error.message || error}`, true); }
+      });
+      document.querySelector('#sgb-firmware-clear').addEventListener('click', () => {
+        try { localStorage.removeItem(SGB_FIRMWARE_KEY); } catch (_) {}
+        Module?._clear_sgb_sound_firmware?.(); clearAudioQueue();
+        sgbFirmwareStatus.textContent = 'No SGB sound firmware loaded';
+        toast('SGB firmware forgotten; an active SGB game restarts without enhanced sound');
+      });
 
       /* ── Audio ── */
       let audioCtx = null, audioNode = null, gainNode = null;
@@ -2366,6 +2410,8 @@
           _get_debug_flags: Rustboy.get_debug_flags,
           _set_border_visible: Rustboy.set_border_visible,
           _set_vram_view: Rustboy.set_vram_view,
+          _set_sgb_sound_firmware: Rustboy.set_sgb_sound_firmware,
+          _clear_sgb_sound_firmware: Rustboy.clear_sgb_sound_firmware,
           _load_rom_data: data => {
             const model = hardware.value;
             if (!Rustboy.load_rom_data_with_model && model !== 'auto') {
@@ -2397,6 +2443,7 @@
           _clear_trace: Rustboy.clear_trace,
           _trace_len: Rustboy.trace_len,
         };
+        restoreSgbFirmware();
         Rustboy.set_border_visible?.(document.querySelector('#show-sgb-border').checked);
         Rustboy.set_debug_enabled?.(debugToolsEnabled);
 

@@ -125,6 +125,18 @@ try {
   await call('DOM.setFileInputFiles', {nodeId, files: [invalidRom]});
   await until("document.body.textContent.includes('ROM is truncated')");
   assert.deepEqual(exceptions, [], 'unhandled browser errors');
+  if (process.env.RUSTBOY_SGB_FIRMWARE) {
+    const firmware = path.resolve(process.env.RUSTBOY_SGB_FIRMWARE);
+    await fs.access(firmware);
+    const {nodeId: firmwareNode} = await call('DOM.querySelector', {nodeId: document.nodeId, selector: '#sgb-firmware-input'});
+    await call('DOM.setFileInputFiles', {nodeId: firmwareNode, files: [firmware]});
+    await until("document.querySelector('#sgb-firmware-status').textContent.includes('firmware loaded')");
+    assert.ok(await evaluate("localStorage.getItem(SGB_FIRMWARE_KEY)?.length > 300000"));
+    const saved = await evaluate("localStorage.getItem(SGB_FIRMWARE_KEY)");
+    await call('DOM.setFileInputFiles', {nodeId: firmwareNode, files: [invalidRom]});
+    await until("document.body.textContent.includes('Expected a 256/512 KiB')");
+    assert.equal(await evaluate("localStorage.getItem(SGB_FIRMWARE_KEY)"), saved, 'invalid firmware cannot replace the previous choice');
+  }
   let gamePath = process.env.RUSTBOY_ROM && path.resolve(process.env.RUSTBOY_ROM);
   const borderTest = !!process.env.RUSTBOY_SGB_BORDER;
   const paletteTest = !!process.env.RUSTBOY_SGB_PALETTES;
@@ -241,6 +253,22 @@ try {
     const waitMs = Number(process.env.RUSTBOY_GAME_WAIT_MS || 6000);
     assert.ok(Number.isFinite(waitMs) && waitMs >= 0 && waitMs <= 60000);
     await new Promise(resolve => setTimeout(resolve, waitMs));
+    if (process.env.RUSTBOY_SGB_FIRMWARE) {
+      assert.ok(await evaluate("Module._get_sgb_status().includes('SNES audio active')"));
+      await call('Input.dispatchKeyEvent', {type: 'keyDown', key: 'Enter', code: 'Enter'});
+      await new Promise(resolve => setTimeout(resolve, 120));
+      await call('Input.dispatchKeyEvent', {type: 'keyUp', key: 'Enter', code: 'Enter'});
+      await until("Module._get_sgb_status().includes('sound uploads 1')", 20000);
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      await evaluate("window.sgbAudioEnergy = 0; window.sgbAudioSamples = 0; window.sgbAudioFinite = true; window.originalAudioQueue = queueAudioSamples; queueAudioSamples = (left,right,rate) => { for (const channel of [left,right]) for (const sample of channel) { window.sgbAudioFinite &&= Number.isFinite(sample); window.sgbAudioEnergy += sample*sample; window.sgbAudioSamples++; } window.originalAudioQueue(left,right,rate); }");
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      assert.ok(await evaluate("window.sgbAudioFinite && window.sgbAudioSamples > 50000 && window.sgbAudioEnergy/window.sgbAudioSamples > 0.000001"), 'Animaniacs music reaches the browser stereo queue');
+      await evaluate("Module._set_paused(true); window.sgbSavedState = Module._export_state(); Module._reset_emulator(); Module._import_state(window.sgbSavedState); window.sgbAudioEnergy = 0; window.sgbAudioSamples = 0; Module._set_paused(false)");
+      assert.ok(await evaluate("Module._get_sgb_status().includes('SNES audio active')"));
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      assert.ok(await evaluate("window.sgbAudioEnergy/window.sgbAudioSamples > 0.000001"), 'enhanced music continues after save/restore');
+      console.log('SGB audio browser: firmware upload/validation, Animaniacs music, reset and save/restore passed');
+    }
     if (paletteTest) {
       await until("window.mem(0xC000) === '0x66'");
       const paletteSamples = "(() => { const c = document.querySelector('#rustboy-canvas'); return [[0,0],[8,0],[8,8],[16,0],[24,0]].map(([x,y]) => Array.from(c.getContext('2d').getImageData(x,y,1,1).data)); })()";
@@ -373,6 +401,15 @@ try {
     await evaluate("document.querySelector('#quick-pause').click()");
     await until("document.querySelector('#quick-pause').textContent.includes('Pause')");
     assert.deepEqual(exceptions, [], 'gameplay browser errors');
+  }
+  if (process.env.RUSTBOY_SGB_FIRMWARE) {
+    await call('Page.reload');
+    await until("typeof Module !== 'undefined' && Module?._set_sgb_sound_firmware && document.querySelector('#sgb-firmware-status').textContent.includes('stored in this browser')", 15000);
+    const {root: newDocument} = await call('DOM.getDocument');
+    const {nodeId: newUpload} = await call('DOM.querySelector', {nodeId: newDocument.nodeId, selector: '#rom-file-input'});
+    await call('DOM.setFileInputFiles', {nodeId: newUpload, files: [gamePath]});
+    await until("Module._get_sgb_status().includes('SNES audio active')", 15000);
+    console.log('SGB firmware browser persistence: page reload and subsequent ROM load passed');
   }
   console.log('Browser smoke: WASM initialization, canvas, upload error handling' + (gamePath ? ', rendering, pause/resume' : '') + (process.env.RUSTBOY_NO_BOOT ? (process.env.RUSTBOY_ROM || process.env.RUSTBOY_HOMEBREW ? ', bundled boot without external firmware' : ', RustBoy wordmark and bundled boot without external firmware') : '') + ' passed');
 } finally {
