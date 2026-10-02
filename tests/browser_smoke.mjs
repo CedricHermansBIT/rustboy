@@ -140,13 +140,14 @@ try {
   let gamePath = process.env.RUSTBOY_ROM && path.resolve(process.env.RUSTBOY_ROM);
   const borderTest = !!process.env.RUSTBOY_SGB_BORDER;
   const paletteTest = !!process.env.RUSTBOY_SGB_PALETTES;
-  assert.ok(!(borderTest && paletteTest), 'select one generated SGB cartridge');
+  const audioTest = !!process.env.RUSTBOY_SGB_AUDIO && !gamePath;
+  assert.ok([borderTest,paletteTest,audioTest].filter(Boolean).length <= 1, 'select one generated SGB cartridge');
   if (process.env.RUSTBOY_HARDWARE) {
     assert.ok(['auto', 'dmg', 'cgb', 'sgb'].includes(process.env.RUSTBOY_HARDWARE));
     await evaluate(`document.querySelector('#hardware-model').value = ${JSON.stringify(process.env.RUSTBOY_HARDWARE)}; document.querySelector('#hardware-model').dispatchEvent(new Event('change'))`);
   }
-  if (borderTest || paletteTest) {
-    const fixture = borderTest ? 'border' : 'palette';
+  if (borderTest || paletteTest || audioTest) {
+    const fixture = borderTest ? 'border' : paletteTest ? 'palette' : 'audio';
     gamePath = path.join(temporary, `sgb-${fixture}.gb`);
     await promisify(execFile)('cargo', ['run', '--locked', '--offline', '--release', '--no-default-features',
       '--example', `sgb_${fixture}_fixture`, '--', gamePath], {cwd: root, timeout: 120000});
@@ -253,21 +254,28 @@ try {
     const waitMs = Number(process.env.RUSTBOY_GAME_WAIT_MS || 6000);
     assert.ok(Number.isFinite(waitMs) && waitMs >= 0 && waitMs <= 60000);
     await new Promise(resolve => setTimeout(resolve, waitMs));
-    if (process.env.RUSTBOY_SGB_FIRMWARE) {
+    if (process.env.RUSTBOY_SGB_FIRMWARE || process.env.RUSTBOY_SGB_AUDIO) {
       assert.ok(await evaluate("Module._get_sgb_status().includes('SNES audio active')"));
+      if (!process.env.RUSTBOY_SGB_FIRMWARE) {
+        assert.equal(await evaluate("localStorage.getItem(SGB_FIRMWARE_KEY)"),null);
+        assert.ok(await evaluate("Module._get_sgb_status().includes('built-in replacement')"));
+      }
       await call('Input.dispatchKeyEvent', {type: 'keyDown', key: 'Enter', code: 'Enter'});
       await new Promise(resolve => setTimeout(resolve, 120));
       await call('Input.dispatchKeyEvent', {type: 'keyUp', key: 'Enter', code: 'Enter'});
       await until("Module._get_sgb_status().includes('sound uploads 1')", 20000);
+      if (!process.env.RUSTBOY_SGB_FIRMWARE) {
+        assert.ok(await evaluate("Module._get_sgb_status().includes('score errors 0')"));
+      }
       await new Promise(resolve => setTimeout(resolve, 1500));
       await evaluate("window.sgbAudioEnergy = 0; window.sgbAudioSamples = 0; window.sgbAudioFinite = true; window.originalAudioQueue = queueAudioSamples; queueAudioSamples = (left,right,rate) => { for (const channel of [left,right]) for (const sample of channel) { window.sgbAudioFinite &&= Number.isFinite(sample); window.sgbAudioEnergy += sample*sample; window.sgbAudioSamples++; } window.originalAudioQueue(left,right,rate); }");
       await new Promise(resolve => setTimeout(resolve, 3000));
-      assert.ok(await evaluate("window.sgbAudioFinite && window.sgbAudioSamples > 50000 && window.sgbAudioEnergy/window.sgbAudioSamples > 0.000001"), 'Animaniacs music reaches the browser stereo queue');
+      assert.ok(await evaluate("window.sgbAudioFinite && window.sgbAudioSamples > 50000 && window.sgbAudioEnergy/window.sgbAudioSamples > 0.000001"), 'SGB music reaches the browser stereo queue');
       await evaluate("Module._set_paused(true); window.sgbSavedState = Module._export_state(); Module._reset_emulator(); Module._import_state(window.sgbSavedState); window.sgbAudioEnergy = 0; window.sgbAudioSamples = 0; Module._set_paused(false)");
       assert.ok(await evaluate("Module._get_sgb_status().includes('SNES audio active')"));
       await new Promise(resolve => setTimeout(resolve, 2000));
       assert.ok(await evaluate("window.sgbAudioEnergy/window.sgbAudioSamples > 0.000001"), 'enhanced music continues after save/restore');
-      console.log('SGB audio browser: firmware upload/validation, Animaniacs music, reset and save/restore passed');
+      console.log(`SGB audio browser: ${process.env.RUSTBOY_SGB_FIRMWARE ? 'firmware override' : 'built-in replacement without firmware'}, ${audioTest ? 'original synthetic score' : 'real-game'} music, reset and save/restore passed`);
     }
     if (paletteTest) {
       await until("window.mem(0xC000) === '0x66'");

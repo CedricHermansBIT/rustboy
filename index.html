@@ -829,14 +829,15 @@
         <input type="file" id="rom-file-input" accept=".gb,.gbc,.bin" style="display:none" />
       </div>
       <details id="sgb-audio-settings">
-        <summary>SGB audio firmware</summary>
-        <p class="hint">Optional SGB1/SGB2 SNES firmware enables enhanced music and sound effects.
+        <summary>SGB audio (optional firmware override)</summary>
+        <p class="hint">RustBoy's built-in replacement plays enhanced music and effects without firmware, using original synthesized instruments.
+          You can optionally supply SGB1/SGB2 SNES firmware for the original sound driver and instruments.
           This is a .sfc/program.rom image, not a Game Boy boot ROM. Loading it restarts an active SGB game.
           Firmware stays in this browser; RustBoy does not distribute it.</p>
         <button id="sgb-firmware-load" type="button">Load SGB firmware</button>
         <button id="sgb-firmware-clear" type="button">Forget firmware</button>
         <input id="sgb-firmware-input" type="file" accept=".sfc,.smc,.rom,.bin" hidden />
-        <p id="sgb-firmware-status" role="status" class="hint">No SGB sound firmware loaded</p>
+        <p id="sgb-firmware-status" role="status" class="hint">Using RustBoy's built-in SGB audio replacement</p>
       </details>
       <div id="local-hardware">
       <label for="hardware-model">Hardware for next load</label>
@@ -847,7 +848,7 @@
         <option value="sgb">Super Game Boy</option>
       </select>
       <p id="sgb-warning" class="hint">Automatic prefers SGB enhancements when supported. Choose CGB for native CGB colors.
-        SGB supports game palettes and borders, plus enhanced sound with optional SGB firmware. SNES game programs are not implemented.</p>
+        SGB supports game palettes, borders and enhanced sound; original SGB sound firmware is an optional override. SNES game programs are not implemented.</p>
       </div>
       <p class="hint">Type to search · ←→↑↓ navigate · Enter load · Esc back · Drag & drop .gb/.gbc files</p>
     </div>
@@ -1473,8 +1474,8 @@
       document.querySelector('#sgb-firmware-clear').addEventListener('click', () => {
         try { localStorage.removeItem(SGB_FIRMWARE_KEY); } catch (_) {}
         Module?._clear_sgb_sound_firmware?.(); clearAudioQueue();
-        sgbFirmwareStatus.textContent = 'No SGB sound firmware loaded';
-        toast('SGB firmware forgotten; an active SGB game restarts without enhanced sound');
+        sgbFirmwareStatus.textContent = "Using RustBoy's built-in SGB audio replacement";
+        toast("SGB firmware forgotten; an active SGB game restarts with RustBoy's built-in audio");
       });
 
       /* ── Audio ── */

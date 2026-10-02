@@ -61,13 +61,15 @@ def main():
         subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT, check=True)
         subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT,
                        env={**os.environ, "RUSTBOY_PUBLIC_LIBRARY": "1", "RUSTBOY_NO_BOOT": "1"}, check=True)
-        for model in ["dmg", "cgb", "sgb", "sgb-border", "sgb-palettes"]:
+        for model in ["dmg", "cgb", "sgb", "sgb-border", "sgb-palettes", "sgb-audio"]:
             environment = {**os.environ, "RUSTBOY_NO_BOOT": "1", "CARGO_TARGET_DIR": args.target_dir}
             environment.pop("RUSTBOY_ROM", None)
             environment.pop("RUSTBOY_SYNTHETIC_CGB", None)
             environment.pop("RUSTBOY_SYNTHETIC_SGB", None)
             environment.pop("RUSTBOY_SGB_BORDER", None)
             environment.pop("RUSTBOY_SGB_PALETTES", None)
+            environment.pop("RUSTBOY_SGB_AUDIO", None)
+            environment.pop("RUSTBOY_SGB_FIRMWARE", None)
             environment.pop("RUSTBOY_HARDWARE", None)
             if model == "cgb":
                 environment["RUSTBOY_SYNTHETIC_CGB"] = "1"
@@ -77,6 +79,8 @@ def main():
                 environment["RUSTBOY_SGB_BORDER"] = "1"
             if model == "sgb-palettes":
                 environment["RUSTBOY_SGB_PALETTES"] = "1"
+            if model == "sgb-audio":
+                environment["RUSTBOY_SGB_AUDIO"] = "1"
             subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT, env=environment, check=True)
 
 

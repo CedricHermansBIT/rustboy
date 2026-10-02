@@ -295,7 +295,7 @@ pub fn get_sgb_status() -> String {
             .collect::<Vec<_>>()
             .join(", ");
         format!(
-            "SGB HLE: functions {}, players {}, commands {}; unsupported [{}]; border {}, pending transfers {}, dropped transfers {}; screen mask {}; rejected pulses {}; sound uploads {}, rejected {}; SNES audio {}",
+            "SGB HLE: functions {}, players {}, commands {}; unsupported [{}]; border {}, pending transfers {}, dropped transfers {}; screen mask {}; rejected pulses {}; sound uploads {}, rejected {}; SNES audio {}; replacement notes {}, score errors {}",
             if sgb.enabled() {
                 "enabled"
             } else {
@@ -311,7 +311,9 @@ pub fn get_sgb_status() -> String {
             sgb.rejected_pulses,
             sgb.sound_uploads(),
             sgb.sound_upload_rejections(),
-            if sgb.sound_playback_available() { "active (RustBoy SPC700/DSP)" } else { "unavailable (load SGB SNES firmware)" },
+            if sgb.sound_uses_replacement() { "active (RustBoy built-in replacement)" } else { "active (RustBoy SPC700/DSP)" },
+            sgb.sound_replacement_statistics().0,
+            sgb.sound_replacement_statistics().1,
         )
     })
     .unwrap_or_else(|| "No ROM is loaded".into())
