@@ -45,6 +45,7 @@ await new Promise((resolve, reject) => {
 });
 const browser = spawn(process.env.RUSTBOY_BROWSER || 'chromium-browser', [
   '--headless=new', '--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu',
+  '--autoplay-policy=no-user-gesture-required',
   '--remote-debugging-port=0', `--user-data-dir=${temporary}/profile`, 'about:blank',
 ], {stdio: ['ignore', 'ignore', 'pipe']});
 let socket;
@@ -113,6 +114,10 @@ try {
     assert.equal(await evaluate("getComputedStyle(document.querySelector('#local-hardware')).display"), 'none');
     assert.deepEqual(libraryRequests, [], 'public picker must not request private libraries');
   }
+  await evaluate('initAudio()');
+  await until('audioWorkletNode !== null');
+  assert.equal(await evaluate('audioWorkletNode.numberOfOutputs'), 1);
+  assert.equal(await evaluate('audioWorkletNode.channelCountMode'), 'max');
   const {root: document} = await call('DOM.getDocument');
   const {nodeId} = await call('DOM.querySelector', {nodeId: document.nodeId, selector: '#rom-file-input'});
   const invalidRom = path.join(temporary, 'truncated.gb');

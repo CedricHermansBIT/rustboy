@@ -1395,6 +1395,7 @@
         catch (e) { toast('Could not delete state', true); }
       }
       function clearAudioQueue() {
+        audioWorkletNode?.port.postMessage({type: 'reset'});
         audioWritePos = audioReadPos = audioSamplesAvailable = 0;
         audioPrimed = false;
         audioResamplePosition = 0;
@@ -1434,6 +1435,7 @@
 
       /* ── Audio ── */
       let audioCtx = null, audioNode = null, gainNode = null;
+      let audioWorkletNode = null;
       let audioVolume = 0.3; // 0.0–1.0, default 30%
       try { const sv = localStorage.getItem('rustboy_volume'); if (sv !== null) audioVolume = parseFloat(sv); } catch(e) {}
       const AUDIO_BUF_SIZE = 32768;
@@ -1455,6 +1457,16 @@
         if (audioSamplesAvailable === AUDIO_BUF_SIZE) audioReadPos = (audioReadPos + 1) % AUDIO_BUF_SIZE;
         else audioSamplesAvailable++;
       }
+      function flushAudioToWorklet() {
+        if (!audioWorkletNode || !audioSamplesAvailable) return;
+        const left = new Float32Array(audioSamplesAvailable), right = new Float32Array(audioSamplesAvailable);
+        for (let i = 0; i < left.length; i++) {
+          const position = (audioReadPos + i) % AUDIO_BUF_SIZE;
+          left[i] = audioLeftBuf[position]; right[i] = audioRightBuf[position];
+        }
+        audioWritePos = audioReadPos = audioSamplesAvailable = 0;
+        audioWorkletNode.port.postMessage({type: 'samples', left, right}, [left.buffer, right.buffer]);
+      }
       function queueAudioSamples(left, right, sampleRate = 44100) {
         if (!audioCtx) return;
         if (!Number.isFinite(sampleRate) || sampleRate <= 0 || left.length !== right.length) {
@@ -1468,6 +1480,7 @@
         const outputRate = audioCtx.sampleRate;
         if (sampleRate === outputRate) {
           for (let i = 0; i < left.length; i++) enqueueAudioSample(left[i], right[i]);
+          flushAudioToWorklet();
           return;
         }
         // Carry fractional phase and the previous sample across backend chunks.
@@ -1487,6 +1500,7 @@
         audioResamplePosition -= left.length;
         audioPreviousLeft = left[left.length - 1];
         audioPreviousRight = right[right.length - 1];
+        flushAudioToWorklet();
       }
       function setVolume(v) {
         audioVolume = Math.max(0, Math.min(1, v));
@@ -1528,6 +1542,26 @@
           audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
           gainNode = audioCtx.createGain();
           gainNode.gain.value = audioVolume;
+          if (audioCtx.audioWorklet && window.AudioWorkletNode) {
+            audioCtx.audioWorklet.addModule('web/audio-worklet.js').then(() => {
+              audioWorkletNode = new window.AudioWorkletNode(audioCtx, 'rustboy-audio', {
+                numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
+              });
+              audioNode = audioWorkletNode;
+              audioNode.connect(gainNode);
+              audioNode.onprocessorerror = () => {
+                audioWorkletNode.port.close(); audioNode.disconnect();
+                audioWorkletNode = null; clearAudioQueue(); initFallbackAudio();
+              };
+              flushAudioToWorklet();
+            }).catch(() => initFallbackAudio());
+          } else initFallbackAudio();
+          gainNode.connect(audioCtx.destination);
+          bindAudioUnlock();
+          audioCtx.resume().catch(() => {});
+        } catch(e) {}
+      }
+      function initFallbackAudio() {
           audioNode = audioCtx.createScriptProcessor(AUDIO_CALLBACK_SIZE, 0, 2);
           audioNode.onaudioprocess = function(e) {
             const L = e.outputBuffer.getChannelData(0), R = e.outputBuffer.getChannelData(1);
@@ -1546,10 +1580,6 @@
             }
           };
           audioNode.connect(gainNode);
-          gainNode.connect(audioCtx.destination);
-          bindAudioUnlock();
-          audioCtx.resume().catch(() => {});
-        } catch(e) {}
       }
 
       /* ── Picker ── */

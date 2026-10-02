@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 const audio = html.slice(html.indexOf('      /* ── Audio ── */'), html.indexOf('      /* ── Picker ── */'));
 assert.ok(audio.includes('function initAudio()'));
-const clear = html.match(/function clearAudioQueue\(\) \{[^}]+\}/)[0];
+const clear = html.slice(html.indexOf('      function clearAudioQueue()'), html.indexOf('      async function refreshStateIndex()'));
 let processor;
 class AudioContext {
   constructor() { this.state = 'running'; this.sampleRate = 44100; }

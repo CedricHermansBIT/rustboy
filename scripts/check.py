@@ -32,7 +32,7 @@ def main():
     if args.offline:
         cargo.append("--offline")
     subprocess.run(cargo + ["--workspace", "--lib", "--test", "ppu_strict"], cwd=ROOT, check=True)
-    for test in ["tests/audio_queue.cjs", "tests/rom_loader.mjs", "tests/library_rom.mjs"]:
+    for test in ["tests/audio_queue.cjs", "tests/audio_worklet.cjs", "tests/rom_loader.mjs", "tests/library_rom.mjs"]:
         subprocess.run([node, test], cwd=ROOT, check=True)
     subprocess.run(["python3", "tests/prepare_pages_test.py"], cwd=ROOT, check=True)
     if args.roms:

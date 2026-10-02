@@ -63,6 +63,13 @@ Open `http://localhost:8000`, then upload or drag-and-drop your own `.gb` or
 `testroms/romlist.json`; uploading works without those lists. No commercial game
 ROMs or Nintendo boot ROMs are committed to this repository. The public deployment downloads
 three licensed homebrew games into its deployment artifact (see below).
+Pages uses a homebrew-only picker and automatic hardware detection; the local
+GB/GBC/test categories and hardware overrides are not shown there. ROM uploads
+remain available. Locally served checkouts retain the full picker.
+
+On HTTPS/localhost, audio playback uses a dedicated AudioWorklet with a bounded
+stereo buffer and short fades on underrun/recovery, so UI work does not run the
+playback callback. Older/insecure contexts retain the buffered fallback.
 
 ## GitHub Pages and free homebrew
 
