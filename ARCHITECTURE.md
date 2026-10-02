@@ -56,7 +56,11 @@ SGB envelope v2 adds custom border data, bounded pending LCD transfers and the
 partially rendered LCD cache. SGB envelope v3 adds transferred palette/attribute
 tables and packed frozen LCD shades, so palette updates recolor a frozen image.
 Version 4 additionally preserves CPU-clocked packet pulse timing.
-Its reader accepts v1–v3 and preserves legacy RGBA frames until a fresh LCD frame
+Version 5 retains SGB sound requests/uploaded SPC RAM, without claiming playback.
+The portable `rustboy-snes-apu` crate currently supplies only the shared 64 KiB
+RAM building block, not a working SPC700/DSP. Its future execution core can be
+composed by SGB and standalone SNES backends without browser dependencies.
+The SGB reader accepts v1–v4 and preserves legacy RGBA frames until a fresh LCD frame
 is captured. Handheld CPU snapshot versions and battery-save bytes are unchanged.
 
 `HostServices` supplies a per-machine clock callback for RTCs and an optional

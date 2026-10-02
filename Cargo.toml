@@ -8,7 +8,7 @@ repository = "https://github.com/CedricHermansBIT/rustboy"
 authors = ["Cedric Hermans"]
 
 [workspace]
-members = ["crates/emulator-api", "crates/gameboy"]
+members = ["crates/emulator-api", "crates/gameboy", "crates/snes-apu"]
 resolver = "2"
 
 [lib]

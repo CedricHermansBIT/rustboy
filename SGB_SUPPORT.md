@@ -88,7 +88,7 @@ and user-selected palette overrides are not included.
 
 Battery saves retain the cartridge's existing identity and can be shared across
 handheld/SGB modes. SGB save states use a separate `-sgb-hle-v1` identity and an
-`RBSG` envelope (now version 4); the storage identity remains stable so older
+`RBSG` envelope (now version 5); the storage identity remains stable so older
 SGB autosaves can migrate. Handheld snapshots keep their original `RBST` format. Loading a
 snapshot into the wrong mode is rejected. For SGB snapshots use the backend's
 `Emulator::export_state`, not the low-level CPU-only snapshot API.
@@ -106,11 +106,24 @@ reported as a broken command. Version 4 snapshots retain an in-progress pulse;
 versions 1–3 remain importable. The LCD transfer window remains five eligible
 frames, as documented; firmware per-chunk read timing is still approximated.
 
+The audio milestone now retains `SOUND` effect/pitch/volume/music requests and
+routes `SOU_TRN` through that same LCD pipeline. Its packet lists upload into
+64 KiB of SPC RAM (including wrapping addresses); zero-length packets retain
+the requested jump address. Malformed lists are rejected before any write.
+Version 5 snapshots preserve RAM, requests, upload counters and entry point;
+versions 1–4 remain readable. The portable `rustboy-snes-apu` crate owns the RAM
+building block for reuse by a future SNES backend.
+
+This is **sound transport, not sound playback**. No SPC700 instructions, DSP,
+Nintendo sound engine or predefined samples are included. SOUND/SOU_TRN remain
+in the unsupported-playback counters, and `sgb()` explicitly reports this limit.
+
 ## Not implemented yet
 
 - Built-in Nintendo borders, SNES objects/`OBJ_TRN` and the firmware's border
   fade/menu animations. A game without a custom border keeps a 160×144 viewport.
-- SNES sounds, music, SPC700/DSP and sound-transfer commands. Normal Game Boy
+- SNES sounds, music and SPC700/DSP execution. Sound command/upload transport
+  is retained, but it produces no SNES samples yet. Normal Game Boy
   APU audio continues to work.
 - SNES CPU/bus/PPU, `DATA_SND`/`DATA_TRN` patch execution and `JUMP` (including
   Space Invaders' SNES arcade mode).
@@ -154,7 +167,7 @@ RUSTBOY_NO_BOOT=1 RUSTBOY_SGB_PALETTES=1 node tests/browser_smoke.mjs
 python3 scripts/check.py --browser
 ```
 
-Forty-two unit/integration tests cover the protocol, command semantics,
+Forty-five SGB unit/integration tests cover the protocol, command semantics,
 controller bus, frame masks, startup, border formats/transfers, state isolation,
 legacy snapshot migration and malformed snapshots.
 Table tests cover the 512-palette table, upper-half palette selection, shared backdrop, first/last

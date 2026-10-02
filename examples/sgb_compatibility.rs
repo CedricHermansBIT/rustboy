@@ -37,10 +37,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(sgb.screen_mask(), 0, "{path}: game still masked");
         assert_eq!(sgb.transfers_pending(), 0, "{path}: stuck transfer");
         assert_eq!(sgb.transfer_drops, 0, "{path}: transfer queue overflow");
+        assert_eq!(
+            sgb.sound_upload_rejections(),
+            0,
+            "{path}: malformed sound upload"
+        );
         assert_eq!(sgb.rejected_pulses, 0, "{path}: malformed packet timing");
         assert!(sgb.commands_received > 0, "{path}: no enhancement commands");
         let commands = sgb.commands_received;
         let border = sgb.has_border();
+        let sound_uploads = sgb.sound_uploads();
         let unsupported: Vec<_> = sgb
             .unsupported
             .iter()
@@ -67,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             expected,
             "{path}: state replay differs"
         );
-        println!("PASS {path}: {} game colors, border={border}, commands={commands}, unsupported=[{}], finite GB audio and state replay", colors.len(), unsupported.join(", "));
+        println!("PASS {path}: {} game colors, border={border}, commands={commands}, sound uploads={sound_uploads} (SNES playback unavailable), unsupported=[{}], finite GB audio and state replay", colors.len(), unsupported.join(", "));
     }
     Ok(())
 }

@@ -160,7 +160,12 @@ name = "rustboy-gameboy"
 version = "0.1.0"
 dependencies = [
  "rustboy-emulator-api",
+ "rustboy-snes-apu",
 ]
+
+[[package]]
+name = "rustboy-snes-apu"
+version = "0.1.0"
 
 [[package]]
 name = "rustversion"

@@ -256,7 +256,7 @@ pub fn get_sgb_status() -> String {
             .collect::<Vec<_>>()
             .join(", ");
         format!(
-            "SGB HLE: functions {}, players {}, commands {}; unsupported [{}]; border {}, pending transfers {}, dropped transfers {}; screen mask {}; rejected pulses {}",
+            "SGB HLE: functions {}, players {}, commands {}; unsupported [{}]; border {}, pending transfers {}, dropped transfers {}; screen mask {}; rejected pulses {}; sound uploads {}, rejected {} (SNES playback unavailable)",
             if sgb.enabled() {
                 "enabled"
             } else {
@@ -270,6 +270,8 @@ pub fn get_sgb_status() -> String {
             sgb.transfer_drops,
             sgb.screen_mask(),
             sgb.rejected_pulses,
+            sgb.sound_uploads(),
+            sgb.sound_upload_rejections(),
         )
     })
     .unwrap_or_else(|| "No ROM is loaded".into())

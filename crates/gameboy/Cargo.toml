@@ -7,3 +7,4 @@ description = "Headless Game Boy and Game Boy Color backend for rustboy"
 
 [dependencies]
 rustboy-emulator-api = { path = "../emulator-api" }
+rustboy-snes-apu = { path = "../snes-apu" }

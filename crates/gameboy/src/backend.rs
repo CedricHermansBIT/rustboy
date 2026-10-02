@@ -278,7 +278,7 @@ impl Emulator for GameBoy {
         };
         let mut out = Vec::new();
         out.extend_from_slice(b"RBSG");
-        out.extend_from_slice(&4u16.to_le_bytes());
+        out.extend_from_slice(&5u16.to_le_bytes());
         out.extend_from_slice(&(cpu.len() as u32).to_le_bytes());
         out.extend_from_slice(&cpu);
         // Pending LCD transfers may be saved in the middle of a scanline.
@@ -302,7 +302,7 @@ impl Emulator for GameBoy {
             return Err("SGB mode requires an SGB save state, not a handheld state".into());
         }
         let version = u16::from_le_bytes(data[4..6].try_into().unwrap());
-        if !(1..=4).contains(&version) {
+        if !(1..=5).contains(&version) {
             return Err("Unsupported SGB save-state version".into());
         }
         let end = data.len() - 4;
