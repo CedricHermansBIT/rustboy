@@ -89,6 +89,14 @@ export function get_boot_rom_license() {
 }
 
 /**
+ * @returns {number}
+ */
+export function get_debug_flags() {
+    const ret = wasm.get_debug_flags();
+    return ret;
+}
+
+/**
  * @returns {string}
  */
 export function get_debug_state() {
@@ -352,6 +360,20 @@ export function save_game() {
 }
 
 /**
+ * @param {boolean} visible
+ */
+export function set_border_visible(visible) {
+    wasm.set_border_visible(visible);
+}
+
+/**
+ * @param {boolean} enabled
+ */
+export function set_debug_enabled(enabled) {
+    wasm.set_debug_enabled(enabled);
+}
+
+/**
  * @param {number} key_code
  * @param {boolean} pressed
  */
@@ -371,6 +393,18 @@ export function set_paused(paused) {
  */
 export function set_speed(speed) {
     wasm.set_speed(speed);
+}
+
+/**
+ * @param {string} view
+ */
+export function set_vram_view(view) {
+    const ptr0 = passStringToWasm0(view, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.set_vram_view(ptr0, len0);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
 }
 
 export function toggle_trace() {
