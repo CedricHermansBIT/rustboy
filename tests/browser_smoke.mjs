@@ -14,12 +14,19 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const site = process.env.RUSTBOY_SITE_DIR ? path.resolve(process.env.RUSTBOY_SITE_DIR) : root;
 const basePath = process.env.RUSTBOY_BASE_PATH || '';
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'rustboy-browser-test-'));
+const libraryRequests = [];
 const contentTypes = {'.wasm': 'application/wasm', '.js': 'text/javascript', '.mjs': 'text/javascript', '.json': 'application/json', '.html': 'text/html'};
 const server = http.createServer(async (request, response) => {
   try {
     const pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
     if (!pathname.startsWith(basePath + '/')) { response.writeHead(404).end(); return; }
     const name = pathname.slice(basePath.length);
+    if (/^\/(roms|testroms)\/romlist\.json$/.test(name)) libraryRequests.push(name);
+    if (process.env.RUSTBOY_PUBLIC_LIBRARY && name === '/homebrew/romlist.json') {
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify([{name: 'demo.gbc', title: 'Free demo', author: 'Test', size: 32768, sha256: '0'.repeat(64)}]));
+      return;
+    }
     // Model the deployed site: no user-supplied firmware is present.
     if (process.env.RUSTBOY_NO_BOOT && /^\/roms\/(dmg|cgb)_boot\.bin$/.test(name)) {
       response.writeHead(404).end(); return;
@@ -27,7 +34,9 @@ const server = http.createServer(async (request, response) => {
     const file = path.resolve(site, '.' + (name === '/' ? '/index.html' : name));
     if (!file.startsWith(site + path.sep)) { response.writeHead(403).end(); return; }
     response.setHeader('Content-Type', contentTypes[path.extname(file)] || 'application/octet-stream');
-    response.end(await fs.readFile(file));
+    const data = await fs.readFile(file);
+    response.end(process.env.RUSTBOY_PUBLIC_LIBRARY && name === '/'
+      ? data.toString().replace('data-library="local"', 'data-library="homebrew"') : data);
   } catch { response.writeHead(404).end(); }
 });
 await new Promise((resolve, reject) => {
@@ -98,6 +107,12 @@ try {
   await until("typeof window.mem === 'function'");
   assert.equal(await evaluate("!!document.querySelector('#rustboy-canvas')"), true);
   assert.equal(await evaluate("document.querySelector('#rustboy-canvas').width"), 160);
+  if (process.env.RUSTBOY_PUBLIC_LIBRARY) {
+    await until("ROMS.length === 1");
+    assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.rom-tab')).filter(el => getComputedStyle(el).display !== 'none').map(el => el.dataset.tab)"), ['homebrew']);
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('#local-hardware')).display"), 'none');
+    assert.deepEqual(libraryRequests, [], 'public picker must not request private libraries');
+  }
   const {root: document} = await call('DOM.getDocument');
   const {nodeId} = await call('DOM.querySelector', {nodeId: document.nodeId, selector: '#rom-file-input'});
   const invalidRom = path.join(temporary, 'truncated.gb');

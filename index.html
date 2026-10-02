@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en-US">
+<html lang="en-US" data-library="local">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -413,6 +413,8 @@
         width: 540px; max-width: 90vw;
       }
       #rom-tabs.hidden { display: none; }
+      .rom-tab.hidden { display: none; }
+      html[data-library="homebrew"] #local-hardware { display: none; }
       .rom-tab {
         flex: 1; padding: 0.45rem 0.8rem;
         background: #1a1a1a; color: #777;
@@ -807,9 +809,9 @@
       <hr id="recent-divider" class="hidden" />
       <div id="rom-tabs" class="hidden">
         <button class="rom-tab" data-tab="homebrew">🌱 Free homebrew</button>
-        <button class="rom-tab active" data-tab="gb">🎮 Game Boy</button>
-        <button class="rom-tab" data-tab="gbc">🌈 Game Boy Color</button>
-        <button class="rom-tab" data-tab="testroms">🧪 Test ROMs</button>
+        <button class="rom-tab hidden" data-tab="gb">🎮 Game Boy</button>
+        <button class="rom-tab hidden" data-tab="gbc">🌈 Game Boy Color</button>
+        <button class="rom-tab hidden" data-tab="testroms">🧪 Test ROMs</button>
       </div>
       <input type="text" id="rom-search" placeholder="🔍 Search games..." autocomplete="off" spellcheck="false" aria-label="Search ROMs" />
       <div id="library-tools">
@@ -826,6 +828,7 @@
         <button id="upload-btn">📂 Upload ROM (.gb/.gbc)</button>
         <input type="file" id="rom-file-input" accept=".gb,.gbc,.bin" style="display:none" />
       </div>
+      <div id="local-hardware">
       <label for="hardware-model">Hardware for next load</label>
       <select id="hardware-model">
         <option value="auto">Automatic (GB/GBC/SGB)</option>
@@ -835,6 +838,7 @@
       </select>
       <p id="sgb-warning" class="hint">Automatic prefers SGB enhancements when supported. Choose CGB for native CGB colors.
         SGB supports game palettes and borders; SNES sound and programs are not implemented.</p>
+      </div>
       <p class="hint">Type to search · ←→↑↓ navigate · Enter load · Esc back · Drag & drop .gb/.gbc files</p>
     </div>
 
@@ -1236,7 +1240,8 @@
           available: false,
         },
       };
-      let activeTab = 'gb';
+      const PUBLIC_LIBRARY = document.documentElement.dataset.library === 'homebrew';
+      let activeTab = PUBLIC_LIBRARY ? 'homebrew' : 'gb';
       let ALL_ROMS = []; // points to current tab's allRoms
       let ROMS = []; // filtered list
       let romLoaded = false;
@@ -1871,6 +1876,7 @@
 
         // Fetch all tabs in parallel (GB + GBC share one manifest)
         await Promise.all(Object.entries(ROM_TABS).map(async ([key, tab]) => {
+          if (PUBLIC_LIBRARY && key !== 'homebrew') return;
           try {
             if (!manifestCache[tab.listPath]) {
               const resp = await fetch(tab.listPath);

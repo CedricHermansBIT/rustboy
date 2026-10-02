@@ -23,6 +23,7 @@ class PackagingTests(unittest.TestCase):
                      "web/library-rom.mjs", "homebrew/licenses/GPL.txt", "roms/private.gb",
                      "roms/cgb_boot.bin", "testroms/private.gb"):
             (self.root / name).write_text("fixture")
+        (self.root / "index.html").write_text('<html data-library="local">fixture</html>')
         self.rom, self.source = b"ROM", b"source archive"
         artifact = lambda name, data: {"name": name, "url": "https://example.org/" + name,
                                      "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
@@ -41,6 +42,8 @@ class PackagingTests(unittest.TestCase):
         self.stage()
         self.assertFalse((self.output / "roms").exists())
         self.assertFalse((self.output / "testroms").exists())
+        self.assertIn('data-library="homebrew"', (self.output / "index.html").read_text())
+        self.assertIn('data-library="local"', (self.root / "index.html").read_text())
         self.assertEqual((self.output / "homebrew/demo.gbc").read_bytes(), self.rom)
         self.assertEqual((self.output / "homebrew/sources/demo.zip").read_bytes(), self.source)
         self.assertTrue((self.output / "homebrew/licenses/GPL.txt").is_file())

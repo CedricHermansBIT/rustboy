@@ -136,9 +136,13 @@ def prepare(destination, root=ROOT, download=fetch_artifact):
         payloads = list(pool.map(download, artifacts))
     for artifact, data in zip(artifacts, payloads):
         verify_artifact(artifact, data)
+    index = (root / "index.html").read_text()
+    marker = 'data-library="local"'
+    if index.count(marker) != 1:
+        raise ValueError("Missing/ambiguous local library marker in index.html")
     destination.mkdir(parents=True, exist_ok=True)
-    for name in ("index.html", "LICENSE"):
-        shutil.copy2(root / name, destination / name)
+    (destination / "index.html").write_text(index.replace(marker, 'data-library="homebrew"', 1))
+    shutil.copy2(root / "LICENSE", destination / "LICENSE")
     for name in ("out", "web"):
         shutil.copytree(root / name, destination / name, ignore=shutil.ignore_patterns("__pycache__"))
     output = destination / "homebrew"

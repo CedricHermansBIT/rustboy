@@ -59,6 +59,8 @@ def main():
         subprocess.run(cargo + ["--test", "headless", "--test", "graphics", "--test", "boot_diagnostics", "--"] + filters, cwd=ROOT, check=True)
     if args.browser:
         subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT, check=True)
+        subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT,
+                       env={**os.environ, "RUSTBOY_PUBLIC_LIBRARY": "1", "RUSTBOY_NO_BOOT": "1"}, check=True)
         for model in ["dmg", "cgb", "sgb", "sgb-border", "sgb-palettes"]:
             environment = {**os.environ, "RUSTBOY_NO_BOOT": "1", "CARGO_TARGET_DIR": args.target_dir}
             environment.pop("RUSTBOY_ROM", None)
