@@ -46,6 +46,9 @@ pub enum MbcKind {
     /// 0x19..=0x1E – MBC5 (up to 64 Mbit ROM, 1 Mbit RAM, optional rumble)
     Mbc5 { ram_enable: bool },
 
+    /// NT/Makon later single carts: MBC5-like until split 8 KiB banking is enabled.
+    NtNew { split: bool, low: u8, high: u8, ram_enable: bool },
+
     /// Catch-all for any unimplemented MBC type.
     Unknown(u8),
 }
@@ -103,6 +106,8 @@ impl Mbc {
             MbcKind::Mbc2 { ram_enable } => (2, ram_enable as u8, 0, 0),
             MbcKind::Mbc3 { ram_enable } => (3, ram_enable as u8, 0, 0),
             MbcKind::Mbc5 { ram_enable } => (5, ram_enable as u8, 0, 0),
+            MbcKind::NtNew { split, low, high, ram_enable } =>
+                (6, low, high, (split as u8) | ((ram_enable as u8) << 1)),
             MbcKind::Unknown(value) => (255, value, 0, 0),
         };
         out.extend_from_slice(&[tag, a, b, c]);
@@ -129,6 +134,10 @@ impl Mbc {
             2 => MbcKind::Mbc2 { ram_enable: header[1] != 0 },
             3 => MbcKind::Mbc3 { ram_enable: header[1] != 0 },
             5 => MbcKind::Mbc5 { ram_enable: header[1] != 0 },
+            6 if header[3] & !3 == 0 => MbcKind::NtNew {
+                low: header[1], high: header[2], split: header[3] & 1 != 0,
+                ram_enable: header[3] & 2 != 0,
+            },
             255 => MbcKind::Unknown(header[1]),
             _ => return Err("invalid cartridge state"),
         };
@@ -161,7 +170,9 @@ impl Mbc {
         let num_ram_banks = if ram_size_bytes == 0 { 0 } else { (ram_size_bytes / 0x2000).max(1) };
         let ram_bank_mask = if num_ram_banks > 0 { num_ram_banks.next_power_of_two() - 1 } else { 0 };
 
-        let kind = match cart_type {
+        let kind = if Self::detect_nt_new(&rom) {
+            MbcKind::NtNew { split: false, low: 2, high: 3, ram_enable: false }
+        } else { match cart_type {
             0x00 | 0x08 | 0x09  => MbcKind::None,
             0x01..=0x03         => MbcKind::Mbc1 {
                 bank2: 0, mode: 0, ram_enable: false,
@@ -171,7 +182,7 @@ impl Mbc {
             0x0F..=0x13         => MbcKind::Mbc3 { ram_enable: false },
             0x19..=0x1E         => MbcKind::Mbc5 { ram_enable: false },
             other               => MbcKind::Unknown(other),
-        };
+        }};
 
         let has_battery = matches!(
             cart_type,
@@ -351,6 +362,14 @@ impl Mbc {
             MbcKind::Mbc5 { ram_enable } => {
                 self.mbc5_read(address, ram_enable)
             }
+            MbcKind::NtNew { split, low, high, ram_enable } => {
+                if split && (0x4000..0x8000).contains(&address) {
+                    let bank = if address < 0x6000 { low } else { high };
+                    let mut base = (bank as usize * 0x2000) & (self.rom.len().next_power_of_two() - 1);
+                    if base < 0x4000 { base += 0x4000; }
+                    self.rom.get(base + (address & 0x1FFF)).copied().unwrap_or(0xFF)
+                } else { self.mbc5_read(address, ram_enable) }
+            }
             MbcKind::Unknown(_) => {
                 // Best-effort: expose ROM, ignore RAM
                 self.rom.get(address).copied().unwrap_or(0xFF)
@@ -377,6 +396,7 @@ impl Mbc {
             MbcKind::Mbc2 { .. }  => self.mbc2_write(address, data),
             MbcKind::Mbc3 { .. }  => self.mbc3_write(address, data),
             MbcKind::Mbc5 { .. }  => self.mbc5_write(address, data),
+            MbcKind::NtNew { .. } => self.nt_new_write(address, data),
             MbcKind::Unknown(_)   => { /* unknown MBC – treat as ROM only */ }
         }
     }
@@ -390,6 +410,37 @@ impl Mbc {
     /// in-game bank number (instead of the usual 5).  We detect it the same
     /// way Gambatte does: look for a valid Nintendo logo at the second slot's
     /// header location (bank 0x10, cartridge offset 0x40104).
+    fn detect_nt_new(rom: &[u8]) -> bool {
+        // Exact known dump, NOT all unlicensed games or every matching title.
+        // SHA-256/provenance and observed activation are in CARTRIDGE_COMPATIBILITY.md.
+        if rom.len() != 512 * 1024 || rom.get(0x147) != Some(&1) { return false; }
+        let fingerprint = rom.iter().fold(0xcbf29ce484222325u64, |h, b|
+            (h ^ *b as u64).wrapping_mul(0x100000001b3));
+        fingerprint == 0x2cf5e0619327cc73
+    }
+
+    fn nt_new_write(&mut self, address: usize, data: u8) {
+        if let MbcKind::NtNew { ref mut split, ref mut low, ref mut high, .. } = self.kind {
+            if address & 0xFF00 == 0x1400 && data == 0x55 {
+                if !*split {
+                    *low = (self.rombank * 2) as u8;
+                    *high = low.wrapping_add(1);
+                }
+                *split = true;
+                return;
+            }
+            if *split && address & 0xFF00 == 0x2000 { *low = data; return; }
+            if *split && address & 0xFF00 == 0x2400 { *high = data; return; }
+        }
+        self.mbc5_write(address, data);
+        if (0x2000..0x4000).contains(&address) {
+            if let MbcKind::NtNew { ref mut low, ref mut high, .. } = self.kind {
+                *low = (self.rombank * 2) as u8;
+                *high = low.wrapping_add(1);
+            }
+        }
+    }
+
     fn detect_mbc1_multicart(rom: &[u8]) -> bool {
         // Must be exactly 64 banks (1 MiB = 8 Mbit).
         if rom.len() < 64 * 0x4000 {
@@ -698,7 +749,7 @@ impl Mbc {
 
     fn mbc5_write(&mut self, address: usize, data: u8) {
         if address < 0x2000 {
-            if let MbcKind::Mbc5 { ref mut ram_enable } = self.kind {
+            if let MbcKind::Mbc5 { ref mut ram_enable } | MbcKind::NtNew { ref mut ram_enable, .. } = self.kind {
                 *ram_enable = (data & 0x0F) == 0x0A;
             }
         } else if address < 0x3000 {
@@ -716,7 +767,7 @@ impl Mbc {
             self.rambank = raw_bank & (self.ram_bank_mask as u8);
         } else if address >= 0xA000 && address < 0xC000 {
             let ram_enable = match self.kind {
-                MbcKind::Mbc5 { ram_enable } => ram_enable,
+                MbcKind::Mbc5 { ram_enable } | MbcKind::NtNew { ram_enable, .. } => ram_enable,
                 _ => return,
             };
             if ram_enable && self.get_ram_size() != 0 {
@@ -844,6 +895,10 @@ impl Mbc {
         self.save_dirty = false;
     }
 }
+
+#[cfg(test)]
+#[path = "mbc/nt_new_tests.rs"]
+mod nt_new_tests;
 
 #[cfg(test)]
 mod tests {

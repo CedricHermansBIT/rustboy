@@ -11,7 +11,7 @@ The local files checked during this investigation are distinct:
 
 | Local filename | Header title | Size | Declared mapper | Result |
 | --- | --- | --- | --- | --- |
-| `Pokemon Diamond (Taiwan) (En) (Unl).gbc` | `POKEMONDIAMOND` | 512 KiB | MBC1, no RAM | White game screen; unresolved |
+| `Pokemon Diamond (Taiwan) (En) (Unl).gbc` | `POKEMONDIAMOND` | 512 KiB | MBC1, no RAM (misleading) | NT-new mapper fix: nonblank, 24-color game screen |
 | `Pocket Monsters Diamond (Taiwan) (En) (Unl).gbc` | `TELEFANG PWBTXJ` | 2 MiB | MBC3 + RAM + RTC | Rendered a nonblank, 12-color screen; not a full playthrough |
 
 The first corresponds to Makon's Pikachu platformer family, not the Telefang
@@ -31,7 +31,7 @@ Pocket Monsters Diamond:
 
 ## White-screen findings
 
-After 1,200 nominal frames with Start/A input, the 512 KiB file still displayed
+Before the mapper fix, after 1,200 nominal frames with Start/A input, the 512 KiB file displayed
 one color. Its CPU continues executing, enters native CGB double speed and
 services interrupts, but game graphics are not uploaded. It also remained white
 with a locally supplied original CGB boot ROM, so this is not simply missing
@@ -48,13 +48,23 @@ or that RustBoy has no relevant bugs.
 documents independent 8 KiB banking for later Makon hardware: writing `55` to
 `1400–14FF` enables split mode; writes at `2000–20FF` and `2400–24FF` select
 the two halves of ROMX. A standard MBC1/MBC5 substitution does not emulate
-that behavior. Whether this particular older-looking dump needs that mapper,
-a different NT variant, or dump-specific handling remains unverified.
-There is deliberately no filename-only mapper override or ROM patch.
+that behavior. Instruction-level tracing of this exact file subsequently showed
+`PC=1770: [1400]=55`, followed by bank writes such as `[2000]=3E`: activation
+and bank numbers matching NT-new hardware. Implementing those two independent
+8 KiB windows restored graphics uploads and a 24-color game screen with Start/A
+input. Synthetic tests cover activation, independent halves, wrapping/remapping,
+ordinary MBC5-style banking and snapshot restoration.
 
-Next compatibility work should identify the actual bank-register accesses,
-validate the hardware/dump variant, then implement that mapper with synthetic
-banking and save-state tests. Do not treat every unlicensed cartridge as NT-new.
+Automatic detection is restricted to this exact 512 KiB dump (the SHA-256 above;
+runtime FNV-1a-64 fingerprint `2cf5e0619327cc73`). A filename or title match does
+not enable it, and the header/ROM bytes are never modified. Other NT variants
+and differently patched Diamond dumps are not claimed supported. Existing states
+saved during the earlier failed MBC1 execution may still restore that old state;
+reset the cartridge rather than resuming such an autosave.
+
+This is a startup/input compatibility check, not a complete game playthrough.
+The dumper reports progression bugs in the original platformer; emulator support
+does not fix the game itself. Do not treat every unlicensed cartridge as NT-new.
 
 ## Reproduce with your own files
 
@@ -66,4 +76,6 @@ The read-only diagnostic reports CPU/banking state, VRAM/palettes, distinct
 frame colors and recent instructions. Optional `RUSTBOY_BOOT_ROM` supplies
 local firmware; `RUSTBOY_MAPPER=19` changes only the diagnostic's in-memory
 header to MBC5. Neither option is a compatibility fix or modifies the file.
+`RUSTBOY_TRACE_CART=1` additionally prints the first 100 cartridge-register
+writes observed over two million instruction steps.
 No commercial cartridges or original firmware are included in Git.

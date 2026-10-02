@@ -24,6 +24,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .transpose()?
             .unwrap_or_default();
         let mut gb = GameBoy::load(&rom, &boot, HardwareModel::Auto)?;
+        if std::env::var_os("RUSTBOY_TRACE_CART").is_some() {
+            let mut writes = 0;
+            for _ in 0..2_000_000 {
+                let cpu = gb.cpu();
+                let pc = cpu.program_counter;
+                let address = match cpu.peek(pc) {
+                    0xEA => Some(u16::from_le_bytes([
+                        cpu.peek(pc.wrapping_add(1)),
+                        cpu.peek(pc.wrapping_add(2)),
+                    ])),
+                    0x77 | 0x22 | 0x32 => {
+                        Some((cpu.get_reg_h() as u16) << 8 | cpu.get_reg_l() as u16)
+                    }
+                    0x02 => Some((cpu.get_reg_b() as u16) << 8 | cpu.get_reg_c() as u16),
+                    0x12 => Some((cpu.get_reg_d() as u16) << 8 | cpu.get_reg_e() as u16),
+                    _ => None,
+                };
+                if let Some(address) = address.filter(|&address| address < 0x8000) {
+                    if !cpu.booting && writes < 100 {
+                        println!(
+                            "cart write PC={pc:04X} [{address:04X}]={:02X}",
+                            cpu.get_reg_a()
+                        );
+                        writes += 1;
+                    }
+                }
+                gb.step();
+            }
+        }
         println!(
             "{path}: {} bytes, header mapper {:02X}, {}",
             rom.len(),
