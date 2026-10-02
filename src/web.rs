@@ -1,5 +1,5 @@
 //! Browser adapter. Console execution and output formats belong to the backend.
-use std::{cell::RefCell, rc::Rc, sync::Mutex};
+use std::{cell::{Cell, RefCell}, rc::Rc, sync::Mutex};
 use wasm_bindgen::{prelude::*, Clamped, JsCast};
 use web_sys::console;
 
@@ -23,6 +23,49 @@ extern "C" {
 thread_local! {
     static SESSION: RefCell<Option<Rc<RefCell<Session>>>> = RefCell::new(None);
     static EMULATION_RUNNING: RefCell<bool> = RefCell::new(false);
+    static DEBUG_ENABLED: Cell<bool> = const { Cell::new(false) };
+    static BORDER_VISIBLE: Cell<bool> = const { Cell::new(true) };
+    static VRAM_VIEW: Cell<u8> = const { Cell::new(0) };
+}
+
+#[wasm_bindgen]
+pub fn set_debug_enabled(enabled: bool) {
+    DEBUG_ENABLED.with(|value| value.set(enabled));
+    if !enabled {
+        with_gb_mut(|cpu| cpu.disable_debug_output());
+        toggleVramCanvas(false);
+        let mut keys = KEYS.lock().unwrap();
+        for key in [76, 78, 86] { keys[key] = false; }
+    }
+}
+
+#[wasm_bindgen]
+pub fn get_debug_flags() -> u8 {
+    let enabled = DEBUG_ENABLED.with(Cell::get) as u8;
+    with_gb(|cpu| enabled | ((cpu.is_console_logging() as u8) << 1)
+        | ((cpu.is_tracing() as u8) << 2) | ((cpu.show_vram as u8) << 3)).unwrap_or(enabled)
+}
+
+#[wasm_bindgen]
+pub fn set_border_visible(visible: bool) {
+    BORDER_VISIBLE.with(|value| value.set(visible));
+    with_session_mut(|session| {
+        if let Some(gb) = session.backend.debug_extension_mut().and_then(|v| v.downcast_mut::<GameBoy>()) {
+            gb.set_border_visible(visible);
+        }
+    });
+}
+
+#[wasm_bindgen]
+pub fn set_vram_view(view: &str) -> Result<(), JsValue> {
+    let view = match view {
+        "gb" => 0,
+        "sgb-tiles" => 1,
+        "sgb-border" => 2,
+        _ => return Err(JsValue::from_str("Unknown VRAM view")),
+    };
+    VRAM_VIEW.with(|value| value.set(view));
+    Ok(())
 }
 
 fn with_session<R>(f: impl FnOnce(&Session) -> R) -> Option<R> {
@@ -91,6 +134,8 @@ pub fn load_rom_data_with_model(rom: &[u8], boot_rom: &[u8], model: &str) -> Res
         },
     )
     .map_err(|error| JsValue::from_str(&error))?;
+    backend.set_border_visible(BORDER_VISIBLE.with(Cell::get));
+    toggleVramCanvas(false);
     save_game();
     let previous_speed = get_speed();
     console::log_1(&format!("Loaded {}: {}", backend.system_name(), backend.title()).into());
@@ -211,7 +256,7 @@ pub fn get_sgb_status() -> String {
             .collect::<Vec<_>>()
             .join(", ");
         format!(
-            "Experimental SGB HLE: functions {}, players {}, commands {}; unsupported [{}]; border {}, pending transfers {}, dropped transfers {}; screen mask {}",
+            "SGB HLE: functions {}, players {}, commands {}; unsupported [{}]; border {}, pending transfers {}, dropped transfers {}; screen mask {}",
             if sgb.enabled() {
                 "enabled"
             } else {
@@ -280,7 +325,7 @@ pub fn peek_regs() -> String {
 }
 #[wasm_bindgen]
 pub fn toggle_trace() {
-    with_gb_mut(|cpu| cpu.toggle_trace());
+    if DEBUG_ENABLED.with(Cell::get) { with_gb_mut(|cpu| cpu.toggle_trace()); }
 }
 #[wasm_bindgen]
 pub fn is_tracing() -> bool {
@@ -324,16 +369,20 @@ fn start_emulation_loop() {
                 .debug_extension()
                 .and_then(|debug| debug.downcast_ref::<GameBoy>())
             {
-                if debug.cpu().show_vram {
-                    let pixels = crate::ppu::debug_vram_rgba(debug.cpu());
+                if DEBUG_ENABLED.with(Cell::get) && debug.cpu().show_vram {
+                    let view = VRAM_VIEW.with(Cell::get);
+                    let (pixels, width, height) = if let Some(sgb) = debug.cpu().sgb.as_ref().filter(|_| view != 0) {
+                        if view == 1 { (sgb.debug_border_tiles(), 384, 128) }
+                        else { (sgb.debug_border_map(), 256, 224) }
+                    } else { (crate::ppu::debug_vram_rgba(debug.cpu()), 128, 192) };
                     draw_frame(
                         &vram_context,
                         VideoFrame {
                             geometry: VideoGeometry {
-                                width: 128,
-                                height: 192,
-                                aspect_width: 2,
-                                aspect_height: 3,
+                                width,
+                                height,
+                                aspect_width: width,
+                                aspect_height: height,
                             },
                             format: PixelFormat::Rgba8888,
                             pixels: &pixels,
@@ -365,7 +414,8 @@ fn check_keys(session: &mut Session) {
     if keys[32] && !previous[32] {
         session.backend.set_paused(!session.backend.paused());
     }
-    if keys[78] && !previous[78] {
+    let debug_enabled = DEBUG_ENABLED.with(Cell::get);
+    if debug_enabled && keys[78] && !previous[78] {
         session.request_step();
     }
     if keys[106] && !previous[106] {
@@ -383,10 +433,10 @@ fn check_keys(session: &mut Session) {
         if keys[67] && !previous[67] {
             cpu.toggle_color_mode();
         }
-        if keys[76] && !previous[76] {
+        if debug_enabled && keys[76] && !previous[76] {
             cpu.toggle_consolelog();
         }
-        if keys[86] && !previous[86] {
+        if debug_enabled && keys[86] && !previous[86] {
             cpu.toggle_showvram();
             toggleVramCanvas(cpu.show_vram);
         }

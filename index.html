@@ -56,7 +56,8 @@
         image-rendering: crisp-edges;
       }
       #rustboy-canvas { height: 100%; }
-      #vram-canvas { display: none; height: 100%; }
+      #vram-canvas { display: none; height: 100%; max-width: 45%; object-fit: contain; }
+      #screen-area.vram-active #rustboy-canvas { max-width: 50%; }
       #screen-area.vram-active #rustboy-canvas { height: 65vh; }
       #screen-area.vram-active #vram-canvas { height: 65vh; }
 
@@ -130,6 +131,7 @@
       .side-panel .key-row kbd.no-rebind { cursor: default; }
       .side-panel .key-row kbd.no-rebind:hover { background: #222; border-color: #444; }
       .side-panel .key-row .desc { color: #999; padding: 0 8px; }
+      .debug-tools.hidden { display: none; }
 
       .reset-bindings {
         display: inline-block; margin-top: 4px;
@@ -698,6 +700,7 @@
               <strong id="touch-scale-value">100%</strong>
             </label>
             <label class="touch-check"><input type="checkbox" id="touch-move-toggle" /> Move buttons</label>
+            <label class="touch-check"><input type="checkbox" id="touch-sgb-border" data-sgb-border checked /> Show SGB decorations</label>
             <div class="touch-settings-actions">
               <button id="touch-color-btn" type="button">Color</button>
               <button id="touch-reset-btn" type="button">Reset ROM</button>
@@ -741,19 +744,27 @@
           <div class="key-row" data-action="pause"><kbd></kbd><span class="desc">Pause / Resume</span></div>
           <div class="key-row" data-action="rom_picker"><kbd></kbd><span class="desc">ROM Picker</span></div>
           <div class="key-row" data-action="color_mode"><kbd></kbd><span class="desc">Color Mode</span></div>
-          <div class="key-row" data-action="vram"><kbd></kbd><span class="desc">VRAM Viewer</span></div>
           <div class="key-row" data-action="reset"><kbd></kbd><span class="desc">Reset</span></div>
+          <div class="key-row" data-action="debug_tools"><kbd></kbd><span class="desc">Debug tools</span></div>
+          <button id="debug-tools-toggle" type="button" aria-pressed="false">Show debug tools</button>
         </div>
         <div class="key-group">
+          <h3>Appearance</h3>
+          <div class="key-row" data-action="hide_panels"><kbd></kbd><span class="desc">Hide Panels</span></div>
+          <label><input id="show-sgb-border" data-sgb-border type="checkbox" checked /> Show SGB decorations</label>
+        </div>
+        <div class="key-group debug-tools hidden">
           <h3>Debug</h3>
+          <div class="key-row" data-action="vram"><kbd></kbd><span class="desc">VRAM Viewer</span></div>
+          <label for="vram-view">Memory view</label>
+          <select id="vram-view"><option value="gb">Game Boy tiles</option><option value="sgb-tiles">SGB border tiles (palettes 4–6)</option><option value="sgb-border">SGB border map</option></select>
           <div class="key-row" data-action="debug_hud"><kbd></kbd><span class="desc">Debug HUD</span></div>
           <div class="key-row" data-action="console_log"><kbd></kbd><span class="desc">Console Log</span></div>
           <div class="key-row" data-action="step"><kbd></kbd><span class="desc">Step (paused)</span></div>
-          <div class="key-row" data-action="hide_panels"><kbd></kbd><span class="desc">Hide Panels</span></div>
           <div class="key-row" data-action="trace_toggle"><kbd></kbd><span class="desc">Trace On/Off</span></div>
           <div class="key-row" data-action="trace_download"><kbd></kbd><span class="desc">Download Trace</span></div>
         </div>
-        <div class="key-group">
+        <div class="key-group debug-tools hidden">
           <h3>Console (F12)</h3>
           <div class="key-row"><kbd class="no-rebind">bp(addr)</kbd><span class="desc">PC break</span></div>
           <div class="key-row"><kbd class="no-rebind">bpr(r,v)</kbd><span class="desc">Reg break</span></div>
@@ -817,13 +828,13 @@
       </div>
       <label for="hardware-model">Hardware for next load</label>
       <select id="hardware-model">
-        <option value="auto">Automatic (GB/GBC)</option>
+        <option value="auto">Automatic (GB/GBC/SGB)</option>
         <option value="dmg">Game Boy</option>
         <option value="cgb">Game Boy Color</option>
-        <option value="sgb">Super Game Boy — experimental</option>
+        <option value="sgb">Super Game Boy</option>
       </select>
-      <p id="sgb-warning" class="hint hidden">Experimental SGB palettes, game-provided borders and controller detection.
-        SNES sound, SNES programs and exact SGB hardware timing are not supported yet.</p>
+      <p id="sgb-warning" class="hint">Automatic prefers SGB enhancements when supported. Choose CGB for native CGB colors.
+        SGB supports game palettes and borders; SNES sound and programs are not implemented.</p>
       <p class="hint">Type to search · ←→↑↓ navigate · Enter load · Esc back · Drag & drop .gb/.gbc files</p>
     </div>
 
@@ -856,7 +867,7 @@
         btn_a: 65, btn_b: 66, start: 13, select: 16,
         pause: 32, rom_picker: -1,
         color_mode: 67, vram: 86, reset: 106,
-        debug_hud: -1, console_log: 76, step: 78,
+        debug_tools: -1, debug_hud: -1, console_log: 76, step: 78,
         speed: 9, hide_panels: -1,
         trace_toggle: -1, trace_download: -1,
       };
@@ -866,7 +877,7 @@
         btn_a: 'KeyK', btn_b: 'KeyJ', start: 'Enter', select: 'ShiftLeft',
         pause: 'Space', rom_picker: 'Escape',
         color_mode: 'F1', vram: 'F2', reset: 'F4',
-        debug_hud: 'F3', console_log: 'F5', step: 'F6',
+        debug_tools: 'Backquote', debug_hud: 'F3', console_log: 'KeyL', step: 'F6',
         speed: 'Tab', hide_panels: 'KeyH',
         trace_toggle: 'F7', trace_download: 'F8',
       };
@@ -896,11 +907,16 @@
       }
 
       let bindings = {};
+      const DEBUG_ACTIONS = new Set(['vram', 'debug_hud', 'console_log', 'step', 'trace_toggle', 'trace_download']);
       function loadBindings() {
         try {
           const s = localStorage.getItem('rustboy_keybindings');
           bindings = s ? { ...DEFAULT_BINDINGS, ...JSON.parse(s) } : { ...DEFAULT_BINDINGS };
         } catch(e) { bindings = { ...DEFAULT_BINDINGS }; }
+        // Migrate the old console-log shortcut and reserve browser refresh.
+        for (const action of Object.keys(bindings)) {
+          if (bindings[action] === 'F5') bindings[action] = DEFAULT_BINDINGS[action];
+        }
       }
       function saveBindings() {
         try { localStorage.setItem('rustboy_keybindings', JSON.stringify(bindings)); } catch(e) {}
@@ -914,6 +930,7 @@
       function buildReverse() {
         const r = {};
         for (const [a, c] of Object.entries(bindings)) r[c] = a;
+        delete r.F5;
         return r;
       }
       let codeToAction = buildReverse();
@@ -942,6 +959,7 @@
         rebindAction = null; rebindKbd = null;
       }
       function finishRebind(code) {
+        if (code === 'F5') { rebindKbd.textContent = 'F5 is browser refresh'; return; }
         const conflict = Object.entries(bindings).find(([a, c]) => c === code && a !== rebindAction);
         if (conflict) {
           // Swap keys
@@ -1535,6 +1553,33 @@
       let pickerOpen = true, selectedIdx = 0, Module = null;
 
       const debugHud = document.getElementById('debug-hud');
+      let debugToolsEnabled = false;
+      function toggleDebugTools() {
+        debugToolsEnabled = !debugToolsEnabled;
+        document.querySelectorAll('.debug-tools').forEach(el => el.classList.toggle('hidden', !debugToolsEnabled));
+        const button = document.querySelector('#debug-tools-toggle');
+        button.textContent = debugToolsEnabled ? 'Hide debug tools' : 'Show debug tools';
+        button.setAttribute('aria-pressed', String(debugToolsEnabled));
+        Module?._set_debug_enabled?.(debugToolsEnabled);
+        if (!debugToolsEnabled) {
+          if (debugVisible) toggleDebug();
+          traceActive = false; traceBadge.classList.add('hidden');
+          clearInterval(traceCountInterval); traceCountInterval = null;
+          toggleVramCanvas(false);
+        }
+      }
+      document.querySelector('#debug-tools-toggle').addEventListener('click', toggleDebugTools);
+      const borderCheckbox = document.querySelector('#show-sgb-border');
+      try { borderCheckbox.checked = localStorage.getItem('rustboy_show_sgb_border') !== 'false'; } catch {}
+      document.querySelectorAll('[data-sgb-border]').forEach(checkbox => {
+        checkbox.checked = borderCheckbox.checked;
+        checkbox.addEventListener('change', () => {
+          document.querySelectorAll('[data-sgb-border]').forEach(other => { other.checked = checkbox.checked; });
+          try { localStorage.setItem('rustboy_show_sgb_border', String(checkbox.checked)); } catch {}
+          Module?._set_border_visible?.(checkbox.checked);
+        });
+      });
+      document.querySelector('#vram-view').addEventListener('change', e => Module?._set_vram_view?.(e.target.value));
       let debugVisible = false, debugInterval = null;
       function toggleDebug() {
         debugVisible = !debugVisible;
@@ -2063,6 +2108,8 @@
        * ═══════════════════════════════════════════════════════════════ */
       function dispatchActionPress(action) {
         if (!action) return;
+        if (action === 'debug_tools') { toggleDebugTools(); return; }
+        if (DEBUG_ACTIONS.has(action) && !debugToolsEnabled) return;
         if (action === 'rom_picker') {
           if (Module && Module._save_game) { try { Module._save_game(); } catch(x) {} }
           saveState('auto', true);
@@ -2211,6 +2258,8 @@
       }
 
       window.addEventListener('keydown', (e) => {
+        if (e.code === 'F5' || (e.ctrlKey || e.metaKey) && e.code === 'KeyR') return;
+        if (e.repeat && !['up','down','left','right','btn_a','btn_b'].includes(codeToAction[e.code])) return;
         // Rebind mode: capture next key
         if (rebindAction) {
           e.preventDefault(); e.stopPropagation();
@@ -2250,11 +2299,13 @@
         // Look up action for this physical key
         const action = codeToAction[e.code];
         if (!action) return;
+        if (DEBUG_ACTIONS.has(action) && !debugToolsEnabled) return;
         e.preventDefault();
         dispatchActionPress(action);
       });
 
       window.addEventListener('keyup', (e) => {
+        if (e.code === 'F5') return;
         if (rebindAction) { e.preventDefault(); return; }
         if (pickerOpen) return;
         const action = codeToAction[e.code];
@@ -2272,12 +2323,13 @@
       import { fetchLibraryRom } from './web/library-rom.mjs';
       init().then(() => {
         const hardware = document.querySelector('#hardware-model');
-        hardware.addEventListener('change', () => {
-          document.querySelector('#sgb-warning').classList.toggle('hidden', hardware.value !== 'sgb');
-        });
         Module = {
           _fetch_library_rom: fetchLibraryRom,
           _set_key_state: Rustboy.set_key_state,
+          _set_debug_enabled: Rustboy.set_debug_enabled,
+          _get_debug_flags: Rustboy.get_debug_flags,
+          _set_border_visible: Rustboy.set_border_visible,
+          _set_vram_view: Rustboy.set_vram_view,
           _load_rom_data: data => {
             const model = hardware.value;
             if (!Rustboy.load_rom_data_with_model && model !== 'auto') {
@@ -2309,6 +2361,8 @@
           _clear_trace: Rustboy.clear_trace,
           _trace_len: Rustboy.trace_len,
         };
+        Rustboy.set_border_visible?.(document.querySelector('#show-sgb-border').checked);
+        Rustboy.set_debug_enabled?.(debugToolsEnabled);
 
         window.bp  = (a) => Rustboy.add_breakpoint_pc(a);
         window.bpr = (r,v) => Rustboy.add_breakpoint_reg(r,v);

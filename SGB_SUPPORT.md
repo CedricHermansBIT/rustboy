@@ -1,14 +1,30 @@
-# Super Game Boy: experimental adapter and custom borders
+# Super Game Boy: automatic detection, palettes and custom borders
 
-RustBoy has an **opt-in, experimental high-level SGB adapter**. It is not full
+RustBoy has a **high-level SGB adapter**. It is not full
 Super Game Boy hardware emulation and does not run Nintendo SGB/SNES firmware.
-Automatic mode still selects ordinary GB/GBC hardware, as before.
+Automatic mode detects SGB enhancement from header flag `0x03` and old licensee
+code `0x33`, and prefers SGB for enhanced cartridges, including dual-mode CGB
+games. CGB-only cartridges always use CGB. Other cartridges select GB/CGB from
+their CGB header flag. Filename extensions do not determine the hardware.
 
-In the ROM picker, select **Hardware for next load → Super Game Boy —
-experimental**, then upload/select a game. A CGB-compatible cartridge runs on
+In the ROM picker, **Hardware for next load** can override detection with
+Game Boy, Game Boy Color or Super Game Boy. In SGB, a CGB-compatible cartridge runs on
 the DMG path; a CGB-only cartridge is rejected without replacing the running
 game. Non-SGB games can still run, with a neutral grayscale fallback palette.
 The choice applies to the next load, not to an already-running cartridge.
+
+**Show SGB decorations**, under Appearance and in the touch-settings menu,
+switches between the full 256×224 border and the 160×144 game image. This is a
+persisted host preference: transfers, palettes, inputs and emulation continue
+unchanged, and restoring a snapshot does not override it. H hides the interface
+panels independently of debug mode.
+
+Debug tools start hidden/off. Press the backtick key or **Show debug tools** to
+reveal them; that does not start instruction logging. F5 remains browser refresh.
+With tools enabled, F2 opens the memory viewer and its dropdown selects GB tiles,
+SGB border tiles (all 256 tiles shown in each of palettes 4–6), or the SGB border
+map. Border tiles belong to separate SNES-side memory, not a larger GB VRAM bank.
+Turning debug tools off also disables logging, tracing, the HUD and the viewer.
 
 SGB colorization is separate from CGB rendering: SGB uses the four-shade Game
 Boy image and applies its own palettes, not a cartridge's native CGB colors.
@@ -130,7 +146,7 @@ RUSTBOY_NO_BOOT=1 RUSTBOY_SGB_PALETTES=1 node tests/browser_smoke.mjs
 python3 scripts/check.py --browser
 ```
 
-Thirty-six unit/integration tests cover the protocol, command semantics,
+Thirty-nine unit/integration tests cover the protocol, command semantics,
 controller bus, frame masks, startup, border formats/transfers, state isolation,
 legacy snapshot migration and malformed snapshots.
 Table tests cover the 512-palette table, upper-half palette selection, shared backdrop, first/last
@@ -144,7 +160,10 @@ selection, bundled boot without external firmware, command-driven canvas colors,
 state restore and preservation of the running game after an incompatible upload.
 Border tests exercise both tile halves and verify the expanded canvas, game
 window transparency/overlay, desktop/portrait fit, reset/restore and switching
-back to a handheld cartridge. To inspect the original synthetic border ROM:
+back to a handheld cartridge. Presentation tests cover automatic hardware
+selection, border hiding without state mutation and both SNES memory views.
+Browser tests also verify opt-in debug tools, F5 refresh behavior and independent
+appearance controls. To inspect the original synthetic border ROM:
 
 ```sh
 cargo run --locked --release --no-default-features --example sgb_border_fixture -- /tmp/rustboy-border-demo.gb

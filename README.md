@@ -12,12 +12,18 @@ The project now separates its frontend, shared emulator interface and Game Boy
 backend into a Cargo workspace. See [the architecture guide](ARCHITECTURE.md)
 for the extension boundaries intended for future NES/SNES/SGB support.
 
-An opt-in **experimental Super Game Boy mode** now implements direct palette
-commands, tile-region colors, screen masks, game-provided borders and controller
-detection. Choose it under **Hardware for next load** in the ROM picker. This is
-not full SGB support: SNES audio/program execution and exact SGB timing are not
-implemented. Direct and transferred palettes/attribute files are supported.
+Automatic hardware selection now recognizes **Super Game Boy-enhanced cartridges**,
+including their palettes, attributes and game-provided borders. Explicit GB/CGB/SGB
+overrides are available in the ROM picker. Appearance settings can hide SGB
+decorations without changing emulation. SNES audio/program execution and exact
+SGB timing are not implemented.
 See [the SGB milestone and roadmap](SGB_SUPPORT.md).
+
+Debug tools are off and hidden by default. Press the backtick key or **Show debug
+tools** to reveal them. With tools enabled, L toggles instruction logging;
+F5 stays browser refresh. H hides interface panels independently of debugging.
+Unlicensed cartridges can require nonstandard banking despite ordinary headers;
+see [the cartridge compatibility notes](CARTRIDGE_COMPATIBILITY.md).
 
 ## Building
 

@@ -50,7 +50,7 @@ Persistence callbacks and browser storage do not enter the backend. Game Boy
 continues to produce the same battery-save/state bytes and identity keys.
 Original state versions 1 and 2 remain supported. New backends must provide
 their own version/ROM/hardware checks and distinct persistence namespaces.
-The experimental SGB adapter wraps CPU state in a separate versioned envelope
+The command-level SGB adapter wraps CPU state in a separate versioned envelope
 and keeps its save-state identity distinct; battery saves stay cartridge-bound.
 SGB envelope v2 adds custom border data, bounded pending LCD transfers and the
 partially rendered LCD cache. SGB envelope v3 adds transferred palette/attribute
@@ -69,6 +69,13 @@ Game Boy's existing console commands remain available through an optional,
 typed debug extension. Only these legacy debug tools and the VRAM visualization
 downcast to Game Boy. Normal execution, game rendering, audio, input and storage
 use the shared trait. Another backend can omit the debug hook entirely.
+
+Browser debug tools are opt-in. Disabling them stops logging/tracing and debug
+views; appearance controls stay available independently. SGB border visibility
+is a host presentation preference, preserved across reset/state import but not
+serialized as console state. Its tile/map debug views read SNES-side border RAM,
+not the handheld PPU's VRAM. Automatic hardware selection uses cartridge header
+flags and prefers SGB enhancements for dual-mode games; explicit overrides win.
 
 This avoids claiming that PC addresses, CPU registers, VRAM viewers or traces
 are interchangeable across systems. A broader debugger protocol should be

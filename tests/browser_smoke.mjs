@@ -78,6 +78,9 @@ try {
   const call = (method, params) => command(method, params, sessionId);
   await call('Runtime.enable');
   await call('Page.enable');
+  // Exercise migration from the previous logging shortcut on a fresh profile.
+  await call('Page.addScriptToEvaluateOnNewDocument', {source:
+    "if (!localStorage.getItem('rustboy_keybindings')) localStorage.setItem('rustboy_keybindings', JSON.stringify({console_log: 'F5'}));"});
   async function evaluate(expression) {
     const result = await call('Runtime.evaluate', {expression, returnByValue: true, awaitPromise: true});
     if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
@@ -115,7 +118,7 @@ try {
     gamePath = path.join(temporary, `sgb-${fixture}.gb`);
     await promisify(execFile)('cargo', ['run', '--locked', '--offline', '--release', '--no-default-features',
       '--example', `sgb_${fixture}_fixture`, '--', gamePath], {cwd: root, timeout: 120000});
-    await evaluate("document.querySelector('#hardware-model').value = 'sgb'; document.querySelector('#hardware-model').dispatchEvent(new Event('change'))");
+    await evaluate("document.querySelector('#hardware-model').value = 'auto'; document.querySelector('#hardware-model').dispatchEvent(new Event('change'))");
   }
   if (!gamePath && process.env.RUSTBOY_NO_BOOT && !process.env.RUSTBOY_HOMEBREW) {
     // Public-domain synthetic program: draw a repeating tile and publish 0x66.
@@ -126,7 +129,7 @@ try {
     if (process.env.RUSTBOY_SYNTHETIC_SGB) {
       rom[0x143] = 0x80; // Dual-mode cart explicitly running on the SGB/DMG path.
       rom[0x146] = 3; rom[0x14B] = 0x33;
-      await evaluate("document.querySelector('#hardware-model').value = 'sgb'; document.querySelector('#hardware-model').dispatchEvent(new Event('change'))");
+      await evaluate("document.querySelector('#hardware-model').value = 'auto'; document.querySelector('#hardware-model').dispatchEvent(new Event('change'))");
       assert.ok(await evaluate("!document.querySelector('#sgb-warning').classList.contains('hidden')"));
     }
     const code = [0xF3, 0xAF, 0xE0, 0x40, 0x3E, 0xE4, 0xE0, 0x47,
@@ -236,6 +239,26 @@ try {
       assert.deepEqual(geometry, [256,224,'8 / 7']);
       const samples = await evaluate("(() => { const ctx = document.querySelector('#rustboy-canvas').getContext('2d'); return [[0,0],[8,0],[48,40],[49,40],[56,48]].map(([x,y]) => Array.from(ctx.getImageData(x,y,1,1).data)); })()");
       assert.deepEqual(samples, [[0,255,0,255],[255,0,0,255],[173,173,173,255],[255,255,255,255],[255,0,0,255]]);
+      assert.equal(await evaluate("document.querySelector('#hardware-model').value"), 'auto');
+      await evaluate("document.querySelector('#show-sgb-border').click()");
+      await until("document.querySelector('#rustboy-canvas').width === 160");
+      assert.equal(await evaluate("document.querySelector('#touch-sgb-border').checked"), false);
+      assert.equal(await evaluate("Module._get_is_cgb()"), false, 'border visibility must not change hardware');
+      assert.deepEqual(await evaluate("Array.from(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(8,8,1,1).data)"), [173,173,173,255]);
+      await evaluate("window.hiddenBorderState = Module._export_state(); Module._import_state(window.hiddenBorderState)");
+      assert.equal(await evaluate("document.querySelector('#rustboy-canvas').width"), 160);
+      await evaluate("document.querySelector('#touch-sgb-border').click()");
+      await until("document.querySelector('#rustboy-canvas').width === 256");
+      assert.equal(await evaluate("document.querySelector('#show-sgb-border').checked"), true);
+      // Border memory lives outside handheld VRAM and has its own debug views.
+      await evaluate("document.querySelector('#debug-tools-toggle').click(); dispatchActionPress('vram'); document.querySelector('#vram-view').value = 'sgb-tiles'; document.querySelector('#vram-view').dispatchEvent(new Event('change'))");
+      await until("document.querySelector('#vram-canvas').width === 384 && document.querySelector('#vram-canvas').height === 128");
+      await evaluate("dispatchActionRelease('vram')");
+      assert.deepEqual(await evaluate("Array.from(document.querySelector('#vram-canvas').getContext('2d').getImageData(128,64,1,1).data)"), [0,255,0,255]);
+      await evaluate("document.querySelector('#vram-view').value = 'sgb-border'; document.querySelector('#vram-view').dispatchEvent(new Event('change'))");
+      await until("document.querySelector('#vram-canvas').width === 256 && document.querySelector('#vram-canvas').height === 224");
+      assert.deepEqual(await evaluate("Array.from(document.querySelector('#vram-canvas').getContext('2d').getImageData(0,0,1,1).data)"), [0,255,0,255]);
+      await evaluate("document.querySelector('#debug-tools-toggle').click()");
       // The wider border must remain fully visible beside the desktop panels,
       // as well as in a portrait touch layout. Canvas object-fit preserves the
       // native ratio when the available CSS box is narrower than the frame.
@@ -272,6 +295,35 @@ try {
       const data = await evaluate("document.querySelector('#rustboy-canvas').toDataURL('image/png').split(',')[1]");
       await fs.writeFile(process.env.RUSTBOY_GAME_SCREENSHOT, Buffer.from(data, 'base64'));
     }
+    // Debugging is opt-in; appearance controls and browser refresh are not.
+    await evaluate("if (pickerOpen) closePicker()");
+    const key = async code => {
+      const accepted = await evaluate(`(() => { const event = new KeyboardEvent('keydown', {code: ${JSON.stringify(code)}, bubbles:true, cancelable:true}); return window.dispatchEvent(event); })()`);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      await evaluate(`window.dispatchEvent(new KeyboardEvent('keyup', {code: ${JSON.stringify(code)}, bubbles:true, cancelable:true}))`);
+      return accepted;
+    };
+    assert.equal(await evaluate("Module._get_debug_flags()"), 0);
+    assert.ok(await evaluate("[...document.querySelectorAll('.debug-tools')].every(el => el.classList.contains('hidden'))"));
+    for (const code of ['F2','F3','F6','F7','KeyL','F5']) assert.equal(await key(code), true, `${code} must not enable debugging by default`);
+    assert.equal(await evaluate("Module._get_debug_flags()"), 0);
+    await key('KeyH');
+    assert.ok(await evaluate("document.querySelector('#panel-right').classList.contains('panels-hidden')"));
+    assert.equal(await evaluate("Module._get_debug_flags()"), 0);
+    await key('KeyH');
+    await key('Backquote');
+    assert.equal(await evaluate("Module._get_debug_flags()"), 1);
+    assert.equal(await key('F5'), true, 'F5 remains browser refresh with debug tools enabled');
+    // Enable expensive output only while paused, then ensure closing debug tools
+    // disables logging/tracing/VRAM together before gameplay resumes.
+    await evaluate("Module._set_paused(true)");
+    await key('KeyL'); await key('F7'); await key('F2'); await key('F3');
+    assert.equal(await evaluate("Module._get_debug_flags()"), 15);
+    await key('Backquote');
+    assert.equal(await evaluate("Module._get_debug_flags()"), 0);
+    assert.ok(await evaluate("document.querySelector('#debug-hud').classList.contains('hidden') && document.querySelector('#vram-canvas').style.display === 'none'"));
+    await evaluate("Module._set_paused(false)");
+    console.log('Interface: opt-in debug tools, refresh-safe F5, independent H, debug shutdown and automatic cartridge model passed');
     if (!process.env.RUSTBOY_ROM && process.env.RUSTBOY_NO_BOOT && !borderTest) {
       assert.equal(await evaluate("window.mem(0xC000)"), '0x66', 'replacement boot must reach the cartridge');
       assert.ok(await evaluate("(async () => (await import('./out/rustboy.js')).get_boot_rom_license().includes('Lior Halphon'))()"));
@@ -287,10 +339,13 @@ try {
         const incompatible = new Uint8Array(32768); incompatible[0x143] = 0xC0;
         const incompatiblePath = path.join(temporary, 'color-only.gbc');
         await fs.writeFile(incompatiblePath, incompatible);
+        // Auto correctly selects CGB for a color-only upload. Rejection is
+        // specifically an explicit SGB/DMG override, not a general limitation.
+        await evaluate("document.querySelector('#hardware-model').value = 'sgb'");
         await call('DOM.setFileInputFiles', {nodeId, files: [incompatiblePath]});
         await until("document.body.textContent.includes('CGB-only cartridge')");
         assert.ok(await evaluate("Module._get_sgb_status().includes('commands 1')"));
-        console.log('SGB browser: explicit model, command-driven colors, state restore, incompatible upload preservation passed');
+        console.log('SGB browser: automatic detection, command-driven colors, state restore, explicit incompatible override preservation passed');
       }
     }
     await evaluate("document.querySelector('#quick-pause').click()");

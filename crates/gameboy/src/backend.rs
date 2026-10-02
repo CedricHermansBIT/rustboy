@@ -9,7 +9,7 @@ pub enum HardwareModel {
     Auto,
     Dmg,
     Cgb,
-    /// Experimental command-level SGB adapter at the GB/SGB2 clock rate.
+    /// Command-level SGB adapter at the GB/SGB2 clock rate.
     /// Game-provided borders and palettes; no SNES CPU or SNES audio.
     Sgb,
 }

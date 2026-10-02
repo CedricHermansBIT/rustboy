@@ -557,6 +557,14 @@ impl CPU {
         self.consolelog = !self.consolelog;
     }
 
+    pub fn disable_debug_output(&mut self) {
+        self.consolelog = false;
+        self.tracing = false;
+        self.show_vram = false;
+    }
+
+    pub fn is_console_logging(&self) -> bool { self.consolelog }
+
     pub fn toggle_trace(&mut self) {
         self.tracing = !self.tracing;
         if self.tracing {
