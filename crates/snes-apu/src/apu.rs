@@ -138,6 +138,7 @@ impl Apu {
     pub fn sample_phase(&self) -> u8 {
         self.bus.clock & 31
     }
+    pub fn timer_targets(&self)->[u8;3] {self.bus.timer_target}
     /// Start an already uploaded program; the original IPL is not needed here.
     pub fn start(&mut self, address: u16) {
         self.cpu.pc = address;

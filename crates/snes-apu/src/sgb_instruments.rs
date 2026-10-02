@@ -151,7 +151,7 @@ fn build_bank(ram: &mut SpcRam) {
                     }
                     15 => {
                         oscillator +=
-                            (105.0 + 85.0 * (-t * 40.0).exp()) * std::f64::consts::TAU / 32000.0;
+                            (186.0 + 140.0 * (-t * 40.0).exp()) * std::f64::consts::TAU / 32000.0;
                         (oscillator.sin() * 0.9 + n * 0.1) * (-t * 25.0).exp()
                     }
                     16 => {
@@ -194,12 +194,21 @@ fn build_bank(ram: &mut SpcRam) {
                 8 => 3600.,
                 9 => 1970.,
                 10 => 2070.,
+                11 => 8500.,
+                12 => 9600.,
+                13 => 12300.,
+                15 => 13350.,
+                16 => 7200.,
                 23 => 1370.,
                 24 => 2790.,
                 25 => 1430.,
                 26 => 1100.,
                 _ => 16000.,
             };
+            // Reference level probes must wait for the firmware's global mute
+            // fade to finish. Calibrating against its first 200 ms incorrectly
+            // made the sustained tone bank about 11 dB too quiet.
+            let amplitude = if tonal { amplitude * 3.5 } else { amplitude };
             pcm.push(
                 (value * attack * amplitude)
                     .round()
@@ -252,21 +261,23 @@ fn build_bank(ram: &mut SpcRam) {
         let multiplier: u16 = match kind {
             0 | 3 | 4 | 8 | 9 => 1024,
             1 => 1023,
-            23 => 1027,
-            2 => 1016,
+            23 => 1022,
+            2 => 1015,
             5 => 1005,
             6 => 1048,
             24 => 524,
-            7 => 1012,
-            10 => 1015,
-            25 => 1023,
+            7 => 1011,
+            10 => 1013,
+            25 => 1022,
             26 => 1017,
             _ => 1960,
         };
         let (adsr1, adsr2) = match id {
+            2 => (0x8f, 0x0f),
+            19 => (0x8f, 0x2c),
             1 | 18 | 35 | 42 => (0x8f, 0x25),
             5 | 8 | 12 | 17 | 43 => (0xcf, 0x46),
-            2 | 20 | 24 | 36 => (0xbf, 0x69),
+            20 | 24 | 36 => (0xbf, 0x69),
             6 | 14 | 25 | 31 | 44 => (0xa9, 0xa0),
             9 | 13 => (0xbf, 0x88),
             28 => (0xaa, 0xa0),

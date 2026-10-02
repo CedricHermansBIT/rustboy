@@ -103,18 +103,52 @@ fn player_and_dsp_snapshot_replay_and_malformed_loops_are_bounded() {
     );
     assert_eq!(player, restored);
     assert_eq!(apu, apu2);
+    // Version 1 ended before startup_ticks was added; completed startup must
+    // resume identically rather than rejecting previously saved scores.
+    let mut legacy = state.clone();
+    legacy[4] = 1;
+    legacy.pop();
+    assert_eq!(
+        Player::import_state(&legacy).unwrap(),
+        Player::import_state(&state).unwrap()
+    );
     assert!(Player::import_state(&state[..state.len() - 1]).is_err());
     let mut trailing = state.clone();
     trailing.push(0);
     assert!(Player::import_state(&trailing).is_err());
     let (mut apu, mut player) = score(&[0xef, 0x50, 0x2b, 2]); // Recursive subroutine.
     player.command(&mut apu, [0, 0, 0, 1]);
-    run(&mut apu, &mut player, 30_000);
+    run(&mut apu, &mut player, 100_000);
     assert!(player.errors() > 0);
     word(&mut apu.bus.ram, 0x2b20, 255);
     word(&mut apu.bus.ram, 0x2b22, 0x2b20);
     player.command(&mut apu, [0, 0, 0, 1]);
     assert!(player.errors() > 1);
+}
+
+#[test]
+fn score_startup_and_phrase_repeats_do_not_add_a_tempo_tick() {
+    let (mut apu, mut player) = score(&[0xe7, 29, 0xe0, 7, 6, 0x7f, 0xa4, 0xa7, 0xab, 0]);
+    player.command(&mut apu, [0, 0, 0, 1]);
+    let mut transitions = Vec::new();
+    let mut previous = 0;
+    for clock in 0..850_000 {
+        player.clock(&mut apu);
+        apu.run(1);
+        apu.pop_sample();
+        let pitch = u16::from_le_bytes([apu.bus.dsp.read(2), apu.bus.dsp.read(3)]);
+        if pitch != previous {
+            transitions.push(clock as f64 / 1024.);
+            previous = pitch;
+        }
+    }
+    // Firmware comparison measured ~85 ms startup and ~106 ms per six-tick
+    // note. Repeating phrases must not introduce an extra ~18 ms silence.
+    assert!(transitions.len() >= 7);
+    assert!((transitions[0] - 85.).abs() < 3.);
+    for pair in transitions.windows(2) {
+        assert!((pair[1] - pair[0] - 106.).abs() < 3., "{pair:?}");
+    }
 }
 
 #[test]
@@ -169,7 +203,7 @@ fn resident_sine_strings_and_flute_keep_their_measured_natural_octaves() {
             apu.run(1);
         }
         let audio = apu.drain_samples();
-        let window = &audio[1500..5596];
+        let window = &audio[3000..7096]; // Skip the resident song initialization.
         let rising = window
             .windows(2)
             .filter(|s| s[0][0] < 0 && s[1][0] >= 0)

@@ -13,7 +13,7 @@ fn score(apu: &mut Apu, instrument: u8, fine: u8) {
     apu.bus.ram.write_wrapping(
         0x2b50,
         &[
-            0xe7, 40, 0xe5, 192, 0xed, 192, 0xe0, instrument, 0xf4, fine, 96, 0x7f, 0xa4, 0,
+            0xe7, 20, 0xe5, 192, 0xed, 192, 0xe0, instrument, 0xf4, fine, 96, 0x7f, 0xa4, 0,
         ],
     );
 }
@@ -111,18 +111,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (45, 40),
         (47, 0),
         (48, 53),
+        (49, 0),
+        (50, 0),
+        (51, 0),
+        (52, 0),
+        (53, 0),
+        (54, 10),
+        (55, 0),
     ] {
         let mut original = load_sgb_firmware(&firmware)?;
-        original.run(262144);
+        // Let the resident driver's global unmute fade settle before comparing
+        // source levels; otherwise transient master gain biases calibration.
+        original.run(1_490_944);
         original.drain_samples();
         score(&mut original, id, fine);
         original.bus.input = [1, 0, 0, 0];
+        if id < 49 {
+            original.run(1_228_800);
+            original.drain_samples();
+        }
         original.run(250_000);
         let reference = original.drain_samples();
         let mut own = Apu::default();
         let mut player = Player::initialize(&mut own);
         score(&mut own, id, fine);
         player.command(&mut own, [0, 0, 0, 1]);
+        if id < 49 {
+            for _ in 0..1_228_800 {
+                player.clock(&mut own);
+                own.run(1);
+            }
+            own.drain_samples();
+        }
         for _ in 0..250_000 {
             player.clock(&mut own);
             own.run(1);
@@ -130,7 +150,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let replacement = own.drain_samples();
         let a = frequency(&reference);
         let b = frequency(&replacement);
-        if check {
+        if check && id < 49 {
             assert!(
                 a > 0. && b > 0. && (12. * (b / a).log2()).abs() < 0.1,
                 "instrument {id}: octave/tuning mismatch ({a} vs {b} Hz)"

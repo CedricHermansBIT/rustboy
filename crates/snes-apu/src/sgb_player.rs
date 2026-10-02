@@ -197,6 +197,7 @@ pub struct Player {
     program_uploaded: bool,
     notes: u32,
     errors: u32,
+    startup_ticks: u8,
 }
 impl Default for Player {
     fn default() -> Self {
@@ -228,6 +229,7 @@ impl Default for Player {
             program_uploaded: false,
             notes: 0,
             errors: 0,
+            startup_ticks: 0,
         }
     }
 }
@@ -251,7 +253,8 @@ crate::state::snapshot!(
     echo_right,
     program_uploaded,
     notes,
-    errors
+    errors,
+    startup_ticks
 );
 
 fn word(ram: &SpcRam, address: u16) -> u16 {
@@ -321,8 +324,7 @@ impl Player {
     }
     pub fn command(&mut self, apu: &mut Apu, request: [u8; 4]) {
         let [a, b, attributes, music] = request;
-        self.mute
-            .to(if attributes & 12 == 12 { 0 } else { 127 }, 8);
+        self.mute.to(if attributes & 12 == 12 { 0 } else { 127 }, 8);
         for (index, code) in [a, b].into_iter().enumerate() {
             let max = if index == 0 { 0x30 } else { 0x19 };
             if code == 0x80 {
@@ -376,6 +378,9 @@ impl Player {
         self.percussion = 0;
         self.phrase_repeat = 0;
         self.tempo_fraction = 0;
+        // A two-note interface probe measures about 60 ms of resident song
+        // initialization beyond the initial tempo tick.
+        self.startup_ticks = 30;
         self.tracks = std::array::from_fn(|_| Track::default());
         self.volume.set(192);
         self.tempo.set(20);
@@ -460,6 +465,10 @@ impl Player {
         if self.paused || self.phrase == 0 {
             return;
         }
+        if self.startup_ticks != 0 {
+            self.startup_ticks -= 1;
+            return;
+        }
         self.tempo_fraction += self.tempo.value.clamp(0, 255) as u16;
         if self.tempo_fraction < 256 {
             return;
@@ -510,9 +519,35 @@ impl Player {
             self.tracks[index] = track;
             if ended {
                 self.next_phrase(apu);
+                self.start_phrase_tracks(apu);
                 break;
             }
         }
+    }
+    fn start_phrase_tracks(&mut self, apu: &mut Apu) {
+        // Do not insert an extra tempo tick at every phrase boundary.
+        for _ in 0..64 {
+            if self.phrase == 0 {
+                return;
+            }
+            let mut advance = false;
+            for index in 0..8 {
+                let mut track = std::mem::take(&mut self.tracks[index]);
+                let ended = track.pc != 0 && self.read_track(apu, index, &mut track);
+                self.update_voice(apu, index, &mut track);
+                self.tracks[index] = track;
+                if ended {
+                    self.next_phrase(apu);
+                    advance = true;
+                    break;
+                }
+            }
+            if !advance {
+                return;
+            }
+        }
+        self.errors = self.errors.saturating_add(1);
+        self.stop(apu);
     }
     fn read_track(&mut self, apu: &mut Apu, index: usize, t: &mut Track) -> bool {
         for _ in 0..128 {
@@ -884,15 +919,24 @@ impl Player {
         }
     }
     pub fn export_state(&self) -> Vec<u8> {
-        let mut out = b"RBRE\x01\0".to_vec();
+        let mut out = b"RBRE\x02\0".to_vec();
         self.encode(&mut out);
         out
     }
     pub fn import_state(data: &[u8]) -> Result<Self, &'static str> {
-        if !data.starts_with(b"RBRE\x01\0") {
+        if data.len() > 4096
+            || !(data.starts_with(b"RBRE\x01\0") || data.starts_with(b"RBRE\x02\0"))
+        {
             return Err("Invalid replacement player state");
         }
-        let mut input = Reader(&data[6..]);
+        let legacy = if data[4] == 1 {
+            let mut bytes = data[6..].to_vec();
+            bytes.push(0);
+            Some(bytes)
+        } else {
+            None
+        };
+        let mut input = Reader(legacy.as_deref().unwrap_or(&data[6..]));
         let state = Self::decode(&mut input)?;
         let valid_fade = |f: &Fade| {
             f.left <= 255
@@ -903,6 +947,7 @@ impl Player {
             || state.clock >= 2048
             || state.tempo_fraction >= 256
             || state.song > 15
+            || state.startup_ticks > 30
             || !(-128..=127).contains(&state.transpose)
             || [
                 &state.tempo,
