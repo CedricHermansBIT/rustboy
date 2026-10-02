@@ -49,3 +49,4 @@ wasm-opt = ["-O3", "--enable-mutable-globals"]
 
 [dev-dependencies]
 png = "0.18.1"
+rustboy-snes-apu = { path = "crates/snes-apu" }

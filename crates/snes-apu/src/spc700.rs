@@ -50,6 +50,7 @@ impl Default for Spc700 {
         }
     }
 }
+crate::state::snapshot!(Spc700, a, x, y, sp, psw, pc, halted);
 
 impl Spc700 {
     fn fetch(&mut self, bus: &mut impl Bus) -> u8 {
@@ -289,7 +290,7 @@ impl Spc700 {
                 14 => bus.write(address, value ^ mask),
                 _ => unreachable!(),
             }
-            return if matches!(row, 0 | 2 | 8) {
+            return if matches!(row, 0 | 2 | 8 | 14) {
                 5
             } else if row == 12 {
                 6

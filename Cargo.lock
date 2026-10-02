@@ -147,6 +147,7 @@ dependencies = [
  "png",
  "rustboy-emulator-api",
  "rustboy-gameboy",
+ "rustboy-snes-apu",
  "wasm-bindgen",
  "web-sys",
 ]

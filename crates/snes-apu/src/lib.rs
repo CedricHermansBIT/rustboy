@@ -2,9 +2,13 @@
 //! The memory and SPC700 interpreter contain no system firmware, sound engine,
 //! samples or platform-specific audio APIs. DSP composition is built separately.
 pub const RAM_BYTES: usize = 65536;
+pub mod apu;
+pub mod dsp;
+pub mod firmware;
 pub mod spc700;
 #[cfg(test)]
 mod spc700_tests;
+mod state;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpcRam(Box<[u8; RAM_BYTES]>);

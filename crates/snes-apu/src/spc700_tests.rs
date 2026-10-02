@@ -84,3 +84,17 @@ fn direct_page_pointer_wrap_and_stack_return() {
     assert_eq!(cpu.pc, 0x205);
     assert_eq!(cpu.sp, 0xef);
 }
+
+#[test]
+fn absolute_bit_inversion_takes_five_clocks_and_preserves_flags() {
+    let mut ram = SpcRam::default();
+    ram.write_wrapping(0x200, &[0xea, 0, 0x61]);
+    let mut cpu = Spc700 {
+        pc: 0x200,
+        psw: 0xa5,
+        ..Default::default()
+    };
+    assert_eq!(cpu.step(&mut ram), 5);
+    assert_eq!(ram.read(0x100), 8);
+    assert_eq!(cpu.psw, 0xa5);
+}
