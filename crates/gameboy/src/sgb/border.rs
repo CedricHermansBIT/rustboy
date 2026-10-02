@@ -66,11 +66,7 @@ impl Border {
                 } else {
                     7 - x % 8
                 };
-                let offset = tile * 32 + row * 2;
-                let color = ((self.tiles[offset] >> bit) & 1)
-                    | (((self.tiles[offset + 1] >> bit) & 1) << 1)
-                    | (((self.tiles[offset + 16] >> bit) & 1) << 2)
-                    | (((self.tiles[offset + 17] >> bit) & 1) << 3);
+                let color = self.color_index(tile, row, bit);
                 if color != 0 {
                     let offset = (y * WIDTH + x) * 4;
                     out[offset..offset + 4]
@@ -78,6 +74,37 @@ impl Border {
                 }
             }
         }
+    }
+
+    fn color_index(&self, tile: usize, row: usize, bit: usize) -> u8 {
+        let offset = tile * 32 + row * 2;
+        ((self.tiles[offset] >> bit) & 1)
+            | (((self.tiles[offset + 1] >> bit) & 1) << 1)
+            | (((self.tiles[offset + 16] >> bit) & 1) << 2)
+            | (((self.tiles[offset + 17] >> bit) & 1) << 3)
+    }
+
+    /// All 256 SNES-side tiles, shown once for each transferred border palette.
+    pub fn debug_tiles(&self, backdrop: u16) -> Vec<u8> {
+        let mut out = vec![0; 384 * 128 * 4];
+        for palette in 0..3 {
+            for tile in 0..256 {
+                for y in 0..8 {
+                    for x in 0..8 {
+                        let color = self.color_index(tile, y, 7 - x) as usize;
+                        let rgb = rgb(if color == 0 {
+                            backdrop
+                        } else {
+                            self.palettes[palette][color]
+                        });
+                        let offset =
+                            ((tile / 16 * 8 + y) * 384 + palette * 128 + tile % 16 * 8 + x) * 4;
+                        out[offset..offset + 4].copy_from_slice(&rgb);
+                    }
+                }
+            }
+        }
+        out
     }
 
     pub fn export_state(&self, out: &mut Vec<u8>) {

@@ -11,6 +11,8 @@ pub mod ppu;
 pub mod sgb;
 #[cfg(test)]
 mod sgb_integration_tests;
+#[cfg(test)]
+mod presentation_tests;
 
 pub use backend::{GameBoy, HardwareModel};
 pub use rustboy_emulator_api as emulator;

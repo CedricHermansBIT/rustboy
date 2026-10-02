@@ -195,6 +195,19 @@ impl Sgb {
         self.transfers.len()
     }
 
+    /// Separate SNES tile memory, not an extension of the Game Boy's VRAM.
+    pub fn debug_border_tiles(&self) -> Vec<u8> {
+        self.border.debug_tiles(self.palettes[0][0])
+    }
+
+    pub fn debug_border_map(&self) -> Vec<u8> {
+        let mut out = rgb(self.palettes[0][0]).repeat(border::WIDTH * border::HEIGHT);
+        if self.has_border() {
+            self.border.overlay(&mut out);
+        }
+        out
+    }
+
     /// Called at LCD line-zero start. A command issued in the middle of a
     /// frame cannot consume that incomplete frame as its transfer payload.
     pub(crate) fn start_frame(&mut self) {
@@ -347,6 +360,10 @@ impl Sgb {
             self.border.overlay(out);
             return;
         }
+        self.copy_game_frame(out);
+    }
+
+    pub fn copy_game_frame(&self, out: &mut [u8]) {
         for y in 0..144 {
             self.copy_game_row(y, &mut out[y * 160 * 4..(y + 1) * 160 * 4]);
         }

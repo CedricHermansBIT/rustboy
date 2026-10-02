@@ -330,7 +330,7 @@ fn sgb_state_roundtrip_preserves_frame_and_partial_command_and_rejects_cross_mod
     assert_eq!(gb.cpu().sgb.as_deref(), Some(&adapter));
     assert_eq!(gb.video_frame().pixels, expected);
     assert_eq!(gb.export_state(), saved);
-    let mut handheld = GameBoy::load(&rom, &[], HardwareModel::Auto).unwrap();
+    let mut handheld = GameBoy::load(&rom, &[], HardwareModel::Cgb).unwrap();
     assert_ne!(gb.state_id(), handheld.state_id());
     assert_eq!(gb.save_key(), handheld.save_key()); // same cartridge battery save
     let old = handheld.export_state();
@@ -382,7 +382,7 @@ fn lcd_off_keeps_the_adapter_frame_and_handheld_state_format_stays_unchanged() {
     let frame = gb.video_frame();
     assert!(frame.enabled);
     assert_eq!(frame.pixels, expected);
-    let handheld = GameBoy::load(&rom(), &[], HardwareModel::Auto).unwrap();
+    let handheld = GameBoy::load(&rom(), &[], HardwareModel::Cgb).unwrap();
     assert_eq!(handheld.export_state(), handheld.cpu().export_state());
     assert_eq!(&handheld.export_state()[..6], b"RBST\x02\0");
 }

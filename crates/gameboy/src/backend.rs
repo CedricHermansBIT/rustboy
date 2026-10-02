@@ -17,6 +17,7 @@ pub enum HardwareModel {
 pub struct GameBoy {
     cpu: Box<CPU>,
     rgba: Vec<u8>,
+    border_visible: bool,
 }
 
 impl GameBoy {
@@ -31,6 +32,17 @@ impl GameBoy {
         host: HostServices,
     ) -> Result<Self, String> {
         crate::cartridge::validate_rom(rom)?;
+        // Prefer cartridge-provided SGB enhancements for dual-mode games.
+        // CGB-only games always need CGB; explicit hardware overrides win.
+        let model = if model == HardwareModel::Auto {
+            if rom[0x143] != 0xC0 && rom[0x146] == 3 && rom[0x14B] == 0x33 {
+                HardwareModel::Sgb
+            } else if rom[0x143] & 0x80 != 0 {
+                HardwareModel::Cgb
+            } else {
+                HardwareModel::Dmg
+            }
+        } else { model };
         let cgb = match model {
             HardwareModel::Auto => rom[0x143] & 0x80 != 0,
             HardwareModel::Dmg | HardwareModel::Sgb => {
@@ -64,6 +76,7 @@ impl GameBoy {
         Ok(Self {
             cpu,
             rgba: vec![0; 160 * 144 * 4],
+            border_visible: true,
         })
     }
 
@@ -73,6 +86,11 @@ impl GameBoy {
     }
     pub fn cpu_mut(&mut self) -> &mut CPU {
         &mut self.cpu
+    }
+
+    /// Host-owned presentation preference, independent of cartridge/state data.
+    pub fn set_border_visible(&mut self, visible: bool) {
+        self.border_visible = visible;
     }
 
     fn advance(&mut self) -> u64 {
@@ -97,7 +115,7 @@ impl GameBoy {
 impl Emulator for GameBoy {
     fn system_name(&self) -> &'static str {
         if self.cpu.sgb.is_some() {
-            "Super Game Boy (experimental HLE)"
+            "Super Game Boy"
         } else if self.cpu.is_cgb {
             "Game Boy Color"
         } else {
@@ -193,11 +211,12 @@ impl Emulator for GameBoy {
         Ok(())
     }
     fn video_frame(&mut self) -> VideoFrame<'_> {
-        let bordered = self.cpu.sgb.as_ref().is_some_and(|sgb| sgb.has_border());
+        let bordered = self.border_visible && self.cpu.sgb.as_ref().is_some_and(|sgb| sgb.has_border());
         let (width, height) = if bordered { (256, 224) } else { (160, 144) };
         self.rgba.resize(width * height * 4, 0);
         if let Some(sgb) = &self.cpu.sgb {
-            sgb.copy_frame(&mut self.rgba);
+            if bordered { sgb.copy_frame(&mut self.rgba); }
+            else { sgb.copy_game_frame(&mut self.rgba); }
         } else {
             for (out, &pixel) in self
                 .rgba

@@ -40,6 +40,14 @@ for (const [model, flag, cgb] of [['sgb', 0x80, false], ['dmg', 0x80, false], ['
     }, model);
 }
 const colorOnly = new Uint8Array(32768); colorOnly[0x143] = 0xC0;
+for (const [flag, license, cgb] of [[0,0x33,false],[0x80,0x33,false],[0xC0,0x33,true],[0x80,0,true]]) {
+  const rom = new Uint8Array(32768); rom[0x143] = flag; rom[0x146] = 3; rom[0x14B] = license;
+  await loadWithBootRom((_, boot) => assert.equal(boot.length, cgb ? 2304 : 256), rom,
+    async name => {
+      assert.equal(name, cgb ? 'roms/cgb_boot.bin' : 'roms/dmg_boot.bin');
+      return {ok: true, arrayBuffer: async () => new ArrayBuffer(cgb ? 2304 : 256)};
+    });
+}
 for (const model of ['sgb', 'dmg', 'unknown']) {
   await assert.rejects(loadWithBootRom(() => assert.fail('invalid model must not load'), colorOnly,
     () => assert.fail('invalid model must not fetch firmware'), model), /hardware/);
