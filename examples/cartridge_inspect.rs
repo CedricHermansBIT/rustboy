@@ -24,6 +24,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .transpose()?
             .unwrap_or_default();
         let mut gb = GameBoy::load(&rom, &boot, HardwareModel::Auto)?;
+        if std::env::var_os("RUSTBOY_NT_NEW").is_some() {
+            println!("Diagnostic NT-new mapper override; ROM file unchanged");
+            gb.cpu_mut().mbc.kind = rustboy_gameboy::mbc::MbcKind::NtNew {
+                split: false,
+                low: 2,
+                high: 3,
+                ram_enable: false,
+            };
+        }
         if std::env::var_os("RUSTBOY_TRACE_CART").is_some() {
             let mut writes = 0;
             for _ in 0..2_000_000 {

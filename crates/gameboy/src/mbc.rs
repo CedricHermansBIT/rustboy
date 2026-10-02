@@ -411,12 +411,17 @@ impl Mbc {
     /// way Gambatte does: look for a valid Nintendo logo at the second slot's
     /// header location (bank 0x10, cartridge offset 0x40104).
     fn detect_nt_new(rom: &[u8]) -> bool {
-        // Exact known dump, NOT all unlicensed games or every matching title.
+        // Exact verified dumps, NOT all unlicensed games or matching titles.
         // SHA-256/provenance and observed activation are in CARTRIDGE_COMPATIBILITY.md.
-        if rom.len() != 512 * 1024 || rom.get(0x147) != Some(&1) { return false; }
+        if rom.len() != 512 * 1024 || !matches!(rom.get(0x147), Some(1 | 0x19)) { return false; }
         let fingerprint = rom.iter().fold(0xcbf29ce484222325u64, |h, b|
             (h ^ *b as u64).wrapping_mul(0x100000001b3));
-        fingerprint == 0x2cf5e0619327cc73
+        matches!(fingerprint,
+            0x2cf5e0619327cc73 | // Diamond English
+            0x0bfbff32a8e5d4c9 | // Diamond Chinese
+            0x69807fc05e4ad5b4 | // Jade Chinese
+            0x1457db13613490b4   // Pearl English
+        )
     }
 
     fn nt_new_write(&mut self, address: usize, data: u8) {
