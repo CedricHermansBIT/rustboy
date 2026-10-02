@@ -88,7 +88,7 @@ and user-selected palette overrides are not included.
 
 Battery saves retain the cartridge's existing identity and can be shared across
 handheld/SGB modes. SGB save states use a separate `-sgb-hle-v1` identity and an
-`RBSG` envelope (now version 3); the storage identity remains stable so older
+`RBSG` envelope (now version 4); the storage identity remains stable so older
 SGB autosaves can migrate. Handheld snapshots keep their original `RBST` format. Loading a
 snapshot into the wrong mode is rejected. For SGB snapshots use the backend's
 `Emulator::export_state`, not the low-level CPU-only snapshot API.
@@ -97,6 +97,14 @@ Run `sgb()` in the browser console to see header gating, active player count,
 received-command count, border presence, screen mask, pending/dropped bulk
 transfers and unsupported command codes/counts. Unsupported commands are
 counted, not reported as implemented.
+
+JOYP packet reception now checks pulse and space widths on the CPU clock. It
+accepts the documented two-M-cycle hardware minimum (licensed software normally
+uses 5/15), dispatches only after a valid stop-bit release, rejects damaged
+packets and resynchronizes on a reset pulse. Ordinary fast joypad polling is not
+reported as a broken command. Version 4 snapshots retain an in-progress pulse;
+versions 1–3 remain importable. The LCD transfer window remains five eligible
+frames, as documented; firmware per-chunk read timing is still approximated.
 
 ## Not implemented yet
 
@@ -107,7 +115,7 @@ counted, not reported as implemented.
 - SNES CPU/bus/PPU, `DATA_SND`/`DATA_TRN` patch execution and `JUMP` (including
   Space Invaders' SNES arcade mode).
 - SNES system menus, user-selected palette/border overrides and `PAL_PRI`.
-- Cycle-accurate ICD2 pulse timing, transfer scheduling and SGB1's faster clock.
+- ICD2 analog/sampling details, firmware chunk-transfer scheduling and SGB1's faster clock.
   This adapter uses the GB/SGB2 base rate of 4,194,304 Hz; it does not claim
   hardware-identical SGB1/SGB2 behavior.
 
@@ -146,7 +154,7 @@ RUSTBOY_NO_BOOT=1 RUSTBOY_SGB_PALETTES=1 node tests/browser_smoke.mjs
 python3 scripts/check.py --browser
 ```
 
-Thirty-nine unit/integration tests cover the protocol, command semantics,
+Forty-two unit/integration tests cover the protocol, command semantics,
 controller bus, frame masks, startup, border formats/transfers, state isolation,
 legacy snapshot migration and malformed snapshots.
 Table tests cover the 512-palette table, upper-half palette selection, shared backdrop, first/last
@@ -178,8 +186,16 @@ nonblank, colorized game window with custom border data loaded. No commercial RO
 graphics are included in the automated fixtures. These checks are not complete
 playthroughs or a complete SGB compatibility suite. For your own local ROM:
 
+The additional optional `sgb_compatibility` checker has passed Kirby's Dream Land
+2, Donkey Kong, Mario's Picross, Pokémon Yellow and Harvest Moon GB (the local
+USA/Europe releases). After 1,200 nominal frames and Start/A input it checks the
+game-only viewport, unmasked display, completed transfers, no queue drops or
+rejected packet pulses, finite normal GB audio and reset/save-state replay.
+It does not count a border as a nonblank game or claim SNES audio support.
+
 ```sh
 cargo run --locked --release --no-default-features --example sgb_inspect -- "path/to/game.gb" 1200
+cargo run --locked --release --no-default-features --example sgb_compatibility -- "path/to/game.gb"
 RUSTBOY_NO_BOOT=1 RUSTBOY_HARDWARE=sgb RUSTBOY_ROM="path/to/game.gb" RUSTBOY_GAME_WAIT_MS=22000 node tests/browser_smoke.mjs
 ```
 

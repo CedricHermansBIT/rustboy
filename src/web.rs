@@ -256,7 +256,7 @@ pub fn get_sgb_status() -> String {
             .collect::<Vec<_>>()
             .join(", ");
         format!(
-            "SGB HLE: functions {}, players {}, commands {}; unsupported [{}]; border {}, pending transfers {}, dropped transfers {}; screen mask {}",
+            "SGB HLE: functions {}, players {}, commands {}; unsupported [{}]; border {}, pending transfers {}, dropped transfers {}; screen mask {}; rejected pulses {}",
             if sgb.enabled() {
                 "enabled"
             } else {
@@ -269,6 +269,7 @@ pub fn get_sgb_status() -> String {
             sgb.transfers_pending(),
             sgb.transfer_drops,
             sgb.screen_mask(),
+            sgb.rejected_pulses,
         )
     })
     .unwrap_or_else(|| "No ROM is loaded".into())

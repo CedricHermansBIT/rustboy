@@ -1507,7 +1507,7 @@ impl CPU {
     }
 
     fn handle_joypad(&mut self, data: u8) {
-        if let Some(sgb) = &mut self.sgb { sgb.write_joyp(data); }
+        if let Some(sgb) = &mut self.sgb { sgb.write_joyp_timed(data); }
         self.memory[0xFF00] = (data & 0x30) | 0xC0;
     }
 
@@ -1908,6 +1908,7 @@ impl CPU {
 
     #[inline(always)]
     pub fn tick_timer_4t(&mut self) {
+        if let Some(sgb) = &mut self.sgb { sgb.tick_joyp(4); }
         self.tima_reloaded_this_cycle = false;
         if self.tima_reload_delay > 0 {
             self.tima_reload_delay -= 1;

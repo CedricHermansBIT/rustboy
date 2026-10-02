@@ -10,12 +10,15 @@ mod border_tests;
 #[cfg(test)]
 mod palette_tests;
 mod tables;
+#[cfg(test)]
+mod timing_tests;
 const LEGACY_STATE_BYTES: usize = 11 + 16 + 112 + 6 + 32 + 360 + 8 + 256 + PIXELS * 4;
 const MAX_TRANSFERS: usize = 4;
 const TRANSFER_STATE_BYTES: usize = 3 + 4096;
 const BORDER_STATE_BYTES: usize =
     LEGACY_STATE_BYTES + border::STATE_BYTES + 9 + MAX_TRANSFERS * TRANSFER_STATE_BYTES;
 const SHADE_BYTES: usize = PIXELS / 4;
+const TIMING_STATE_BYTES: usize = 11;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Transfer {
@@ -122,6 +125,10 @@ impl Receiver {
 pub struct Sgb {
     enabled: bool,
     receiver: Receiver,
+    pulse_lines: u8,
+    pulse_ticks: u8,
+    pulse_armed: bool,
+    pub rejected_pulses: u64,
     palettes: [[u16; 4]; 4],
     attributes: [u8; 20 * 18],
     mask: u8,
@@ -153,6 +160,10 @@ impl Sgb {
         Self {
             enabled: rom.get(0x146) == Some(&3) && rom.get(0x14B) == Some(&0x33),
             receiver: Receiver::default(),
+            pulse_lines: 0x30,
+            pulse_ticks: 8,
+            pulse_armed: true,
+            rejected_pulses: 0,
             // Neutral fallback, not a copy of Nintendo's built-in palettes.
             palettes: [[0x7FFF, 0x56B5, 0x294A, 0]; 4],
             attributes: [0; 360],
@@ -237,14 +248,42 @@ impl Sgb {
 
     pub fn write_joyp(&mut self, data: u8) {
         let lines = data & 0x30;
+        let transferring = self.receiver.receiving || self.receiver.packets != 0 || lines == 0;
+        let command = if self.enabled && !self.commands_disabled { self.receiver.write(lines) } else { None };
+        self.update_joyp(lines, command, transferring);
+    }
+
+    /// CPU-clocked transport. Hardware can receive pulses/spaces of two
+    /// M-cycles; a pulse is accepted on release, never before its width is known.
+    pub(crate) fn tick_joyp(&mut self, ticks: u8) {
+        self.pulse_ticks = self.pulse_ticks.saturating_add(ticks).min(8);
+    }
+
+    pub(crate) fn write_joyp_timed(&mut self, data: u8) {
+        let lines = data & 0x30;
+        let transferring = self.receiver.receiving || self.receiver.packets != 0
+            || self.pulse_lines == 0 || lines == 0;
+        let mut command = None;
+        if self.enabled && !self.commands_disabled && lines != self.pulse_lines {
+            if self.pulse_ticks < 8 || (self.pulse_lines != 0x30 && lines != 0x30) {
+                let packet_active = self.receiver.receiving || self.receiver.packets != 0 || self.pulse_lines == 0;
+                self.receiver.abort();
+                self.pulse_armed = false;
+                // Ordinary rapid button-group polling is not a bad SGB packet.
+                if packet_active { self.rejected_pulses = self.rejected_pulses.saturating_add(1); }
+            } else if lines == 0x30 && self.pulse_armed {
+                command = self.receiver.write(self.pulse_lines);
+                self.receiver.write(0x30);
+            }
+            if lines == 0 { self.pulse_armed = true; }
+            self.pulse_lines = lines;
+            self.pulse_ticks = 0;
+        }
+        self.update_joyp(lines, command, transferring);
+    }
+
+    fn update_joyp(&mut self, lines: u8, command: Option<Command>, transferring: bool) {
         if self.enabled {
-            let transferring = !self.commands_disabled
-                && (self.receiver.receiving || self.receiver.packets != 0 || lines == 0);
-            let command = if self.commands_disabled {
-                None
-            } else {
-                self.receiver.write(lines)
-            };
             if let Some(command) = command {
                 self.execute(&command);
                 self.suppress_release = true;
@@ -596,6 +635,8 @@ impl Sgb {
         self.tables.export_state(&mut out);
         out.push(self.shades_valid as u8);
         out.extend_from_slice(self.shades.as_ref());
+        out.extend_from_slice(&[self.pulse_lines, self.pulse_ticks, self.pulse_armed as u8]);
+        out.extend_from_slice(&self.rejected_pulses.to_le_bytes());
         out
     }
 
@@ -604,7 +645,8 @@ impl Sgb {
         let expected = match version {
             1 => LEGACY_STATE_BYTES,
             2 => BORDER_STATE_BYTES,
-            3 => sgb.export_state().len(),
+            3 => sgb.export_state().len() - TIMING_STATE_BYTES,
+            4 => sgb.export_state().len(),
             _ => return Err("Unsupported SGB snapshot version".into()),
         };
         if data.len() != expected {
@@ -688,6 +730,15 @@ impl Sgb {
             sgb.shades.copy_from_slice(take(&mut input, SHADE_BYTES));
         } else {
             sgb.shades_valid = false;
+        }
+        if version >= 4 {
+            sgb.pulse_lines = byte(&mut input);
+            sgb.pulse_ticks = byte(&mut input);
+            sgb.pulse_armed = boolean(&mut input)?;
+            sgb.rejected_pulses = u64::from_le_bytes(take(&mut input, 8).try_into().unwrap());
+            if sgb.pulse_lines & !0x30 != 0 || sgb.pulse_ticks > 8 {
+                return Err("Invalid SGB pulse timing state".into());
+            }
         }
         if sgb.mask > 3
             || ![1, 2, 4].contains(&sgb.players)
@@ -968,10 +1019,10 @@ mod tests {
         sgb.write_joyp(0x30);
         sgb.write_joyp(0x10);
         let bytes = sgb.export_state();
-        assert_eq!(Sgb::import_state(&rom, &bytes, 3).unwrap(), sgb);
-        assert!(Sgb::import_state(&rom, &bytes[..bytes.len() - 1], 3).is_err());
+        assert_eq!(Sgb::import_state(&rom, &bytes, 4).unwrap(), sgb);
+        assert!(Sgb::import_state(&rom, &bytes[..bytes.len() - 1], 4).is_err());
         let mut bad = bytes;
         bad[2] = 3;
-        assert!(Sgb::import_state(&rom, &bad, 3).is_err());
+        assert!(Sgb::import_state(&rom, &bad, 4).is_err());
     }
 }
