@@ -214,7 +214,12 @@ impl Sgb {
     pub fn sound_upload_rejections(&self) -> u64 { self.sound.rejected }
     pub fn sound_request(&self) -> [u8; 4] { self.sound.request }
     pub fn sound_ram(&self) -> &[u8; 65536] { self.sound.ram.bytes() }
-    pub fn sound_playback_available(&self) -> bool { self.sound.apu.is_some() }
+    pub fn sound_playback_available(&self) -> bool { true }
+    pub fn sound_uses_replacement(&self) -> bool { self.sound.uses_replacement() }
+    pub fn sound_replacement_statistics(&self) -> (u32,u32) { self.sound.replacement_statistics() }
+    pub fn debug_sound_registers(&self) -> Option<[u8;128]> {
+        self.sound.apu.as_ref().map(|apu|std::array::from_fn(|r|apu.bus.dsp.read(r as u8)))
+    }
     pub fn load_sound_firmware(&mut self,data:&[u8]) -> Result<(),String> { self.sound.load_firmware(data) }
     pub(crate) fn tick_sound(&mut self,ticks:u32) { self.sound.tick(ticks); }
     pub(crate) fn sound_sample(&self) -> [f32;2] { self.sound.sample() }

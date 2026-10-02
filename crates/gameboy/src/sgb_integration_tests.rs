@@ -5,6 +5,29 @@ use crate::{emulator::*, GameBoy, HardwareModel};
 mod border_rom;
 #[path = "../tests/fixtures/palette_rom.rs"]
 mod palette_rom;
+#[path = "../tests/fixtures/audio_rom.rs"]
+mod audio_rom;
+
+#[test]
+fn cartridge_music_reaches_stereo_output_without_any_system_firmware() {
+    let mut gb=machine(&audio_rom::make_rom());
+    gb.run(70_224*240);
+    assert_eq!(gb.cpu().peek(0xc000),0x66);
+    let sgb=gb.cpu().sgb.as_ref().unwrap();
+    assert_eq!(sgb.sound_uploads(),1);assert_eq!(sgb.sound_upload_rejections(),0);
+    assert!(sgb.sound_uses_replacement());
+    assert!(sgb.sound_replacement_statistics().0>10);assert_eq!(sgb.sound_replacement_statistics().1,0);
+    assert_eq!(sgb.unsupported,[0;32]);
+    gb.drain_audio();gb.run(70_224*10);
+    let audio=gb.drain_audio();
+    assert!(audio.samples.iter().all(|v|v.is_finite()));
+    assert!(audio.samples.iter().any(|v|v.abs()>0.001));
+    assert!(audio.samples.chunks_exact(2).any(|pair|pair[0]!=pair[1]));
+    let state=gb.export_state();gb.run(70_224*2);gb.drain_audio();
+    let expected=gb.cpu().sgb.as_ref().unwrap().clone();
+    gb.reset();gb.import_state(&state).unwrap();gb.run(70_224*2);gb.drain_audio();
+    assert_eq!(gb.cpu().sgb.as_ref().unwrap(),&expected);
+}
 
 #[test]
 fn cartridge_table_uploads_replace_white_palettes_apply_atf_and_cancel_freeze() {

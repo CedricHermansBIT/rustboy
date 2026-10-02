@@ -16,6 +16,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut music_frames = 0;
     let mut music_samples = 0;
     let mut music_energy = 0.0f64;
+    let mut clipped=0usize;
+    let mut peak=0.0f32;
     let verify = std::env::var("RUSTBOY_VERIFY_SGB_AUDIO").as_deref()==Ok("1");
     for frame in 0..2400 {
         if frame == 900 {
@@ -55,10 +57,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             previous = Some(state);
         }
         let music_requested = sgb.sound_request()[3] != 0;
+        if std::env::var_os("RUSTBOY_AUDIO_REGS").is_some() && [1070,1150,1250].contains(&frame) {
+            if let Some(registers)=sgb.debug_sound_registers() {
+                println!("frame={frame} master={:02x?} voices={:02x?}",[registers[0x0c],registers[0x1c]],(0..8).map(|i|&registers[i*16..i*16+9]).collect::<Vec<_>>());
+            }
+        }
         let audio = gb.drain_audio();
         if music_requested {
             music_frames += 1;
             music_samples += audio.samples.len();
+            clipped+=audio.samples.iter().filter(|v|v.abs()>=0.999).count();
+            peak=audio.samples.iter().fold(peak,|peak,v|peak.max(v.abs()));
             music_energy += audio
                 .samples
                 .iter()
@@ -78,19 +87,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::write(path, gb.cpu().sgb.as_ref().unwrap().sound_ram())?;
     }
     println!(
-        "music-request frames={music_frames} mixed-audio samples={music_samples} RMS={:.6}",
+        "music-request frames={music_frames} mixed-audio samples={music_samples} RMS={:.6} peak={peak:.4} clipped={clipped}",
         (music_energy / music_samples.max(1) as f64).sqrt()
     );
+    let statistics=gb.cpu().sgb.as_ref().unwrap().sound_replacement_statistics();
+    println!("replacement notes={} score errors={}",statistics.0,statistics.1);
     if verify {
         let sgb=gb.cpu().sgb.as_ref().unwrap();
-        assert!(sgb.sound_playback_available(),"Provide RUSTBOY_SGB_FIRMWARE");
+        assert!(sgb.sound_playback_available());
+        if sgb.sound_uses_replacement() {assert!(statistics.0>100);assert_eq!(statistics.1,0);}
         assert!(sgb.sound_uploads()>0);
         assert_eq!(sgb.sound_upload_rejections(),0);
         assert!(music_frames>600 && music_energy/music_samples.max(1) as f64>0.000001,"Expected sustained, non-silent enhanced music");
         assert_eq!(sgb.unsupported[8],0); assert_eq!(sgb.unsupported[9],0);
         gb.reset();
         assert!(gb.cpu().sgb.as_ref().unwrap().sound_playback_available(),"Reset must retain host-supplied firmware");
-        println!("SGB enhanced audio, snapshot replay and firmware retention on reset passed");
+        println!("SGB enhanced audio, snapshot replay and audio availability after reset passed");
     }
     Ok(())
 }

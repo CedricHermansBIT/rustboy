@@ -40,14 +40,16 @@ fn sound_upload_packet_lists_write_wrapping_ram_and_retain_jump_without_executio
 }
 
 #[test]
-fn sound_command_transport_is_retained_but_playback_is_honestly_unsupported() {
+fn sound_commands_use_the_builtin_player_without_external_firmware() {
     let (_, mut sgb) = adapter();
     let mut command = [0; 16];
     command[0] = (8 << 3) | 1;
     command[1..5].copy_from_slice(&[0x17, 0x04, 0xD2, 0x03]);
     super::tests::send(&mut sgb, &command);
     assert_eq!(sgb.sound_request(), [0x17, 0x04, 0xD2, 0x03]);
-    assert_eq!(sgb.unsupported[8], 1);
+    assert_eq!(sgb.unsupported[8], 0);
+    assert!(sgb.sound_uses_replacement());
+    assert!(sgb.sound_playback_available());
 }
 
 #[test]
@@ -68,12 +70,13 @@ fn sou_trn_uses_lcd_pipeline_five_frame_window_and_snapshot_migration() {
     restored.capture_frame(&pixels);
     assert_eq!(restored.sound_uploads(), 1);
     assert_eq!(restored.sound_ram()[..2], [3, 4]);
-    assert_eq!(restored.unsupported[9], 1);
+    assert_eq!(restored.unsupported[9], 0);
     assert_eq!(restored.transfers_pending(), 0);
     let state = restored.export_state();
     assert_eq!(Sgb::import_state(&rom, &state, 6).unwrap(), restored);
     let mut corrupt = state.clone();
-    *corrupt.get_mut(state.len() - sound::AUDIO_STATE_BASE_BYTES - 3).unwrap() = 2;
+    let audio_offset=adapter().1.export_state().len()-sound::AUDIO_STATE_BASE_BYTES;
+    *corrupt.get_mut(audio_offset - 3).unwrap() = 2;
     assert!(Sgb::import_state(&rom, &corrupt, 6).is_err());
     // Old v4 saves have no audio RAM or uploads, but retain pulse timing.
     let mut legacy = adapter().1;
@@ -127,8 +130,11 @@ fn snes_sound_clock_and_resampler_replay_exactly_with_v6_and_v5_still_migrates()
     assert_eq!(restored,sgb);
     let mut legacy=adapter().1; legacy.sound.upload(&payload());
     let bytes=legacy.export_state();
-    let migrated=Sgb::import_state(&rom,&bytes[..bytes.len()-sound::AUDIO_STATE_BASE_BYTES],5).unwrap();
-    assert_eq!(migrated,legacy);
+    let audio_offset=adapter().1.export_state().len()-sound::AUDIO_STATE_BASE_BYTES;
+    let migrated=Sgb::import_state(&rom,&bytes[..audio_offset],5).unwrap();
+    assert_eq!(migrated.sound_ram(),legacy.sound_ram());
+    assert_eq!(migrated.sound_uploads(),legacy.sound_uploads());
+    assert!(migrated.sound_uses_replacement());
     let mut corrupt=sgb.export_state(); corrupt.push(0);
     assert!(Sgb::import_state(&rom,&corrupt,6).is_err());
 }
@@ -145,4 +151,26 @@ fn powered_off_handheld_apu_still_mixes_snes_music_in_stereo() {
     assert!(!samples.is_empty());
     assert!(samples.iter().any(|&v|v!=0.0));
     assert!(samples.chunks_exact(2).all(|pair|pair[0]==pair[1]));
+}
+
+#[test]
+fn replacement_audio_survives_adapter_snapshot_and_custom_code_runs_on_spc700() {
+    let (rom,mut sgb)=adapter();
+    sgb.sound.command([0,4,0,0]);
+    for _ in 0..40000 {sgb.tick_sound(4);}
+    assert_ne!(sgb.sound_sample(),[0.;2]);
+    let mut restored=Sgb::import_state(&rom,&sgb.export_state(),6).unwrap();
+    for _ in 0..5000 {
+        sgb.tick_sound(4);restored.tick_sound(4);
+        assert_eq!(sgb.sound_sample(),restored.sound_sample());
+    }
+    assert_eq!(sgb,restored);
+    let mut upload=[0;4096];
+    // Our own SPC program: MOV A,#$42; MOV $20,A; SLEEP.
+    upload[..13].copy_from_slice(&[5,0,0,4,0xe8,0x42,0xc4,0x20,0xef,0,0,0,4]);
+    restored.sound.upload(&upload);
+    assert!(!restored.sound_uses_replacement());
+    for _ in 0..100 {restored.tick_sound(4);}
+    assert_eq!(restored.sound.apu.as_ref().unwrap().bus.ram.read(0x20),0x42);
+    assert_eq!(restored.sound_upload_rejections(),0);
 }

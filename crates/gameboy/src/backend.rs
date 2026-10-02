@@ -338,8 +338,8 @@ impl Emulator for GameBoy {
         let adapter_start = 10 + cpu_len + cache_len;
         let sgb =
             crate::sgb::Sgb::import_state(&self.cpu.mbc.rom, &data[adapter_start..end], version)?;
-        if self.sgb_firmware.is_some() && !sgb.sound_playback_available() {
-            return Err("This SGB state has no SNES audio state; reset the game to use the supplied sound firmware".into());
+        if self.sgb_firmware.is_some() && sgb.sound_uses_replacement() {
+            return Err("This SGB state uses the built-in sound replacement; reset the game to use the supplied sound firmware".into());
         }
         // Restore into a fresh machine so malformed snapshots cannot partially
         // replace either side of the running adapter/GB session.
