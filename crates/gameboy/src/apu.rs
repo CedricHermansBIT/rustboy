@@ -717,6 +717,11 @@ impl APU {
     }
 
     /// Drain accumulated samples for JS audio output
+    pub(crate) fn pending_samples(&self) -> usize { self.sample_buffer.len() }
+    pub(crate) fn mix_latest_sample(&mut self,stereo:[f32;2]) {
+        let len = self.sample_buffer.len();
+        if len>=2 { for (i,sample) in stereo.iter().enumerate() { self.sample_buffer[len-2+i]=(self.sample_buffer[len-2+i]+sample).clamp(-1.0,1.0); } }
+    }
     pub fn drain_samples(&mut self) -> Vec<f32> {
         std::mem::take(&mut self.sample_buffer)
     }

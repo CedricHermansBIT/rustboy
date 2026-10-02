@@ -140,7 +140,7 @@ fn replacing_a_white_palette_recolors_frozen_lcd_shades_and_attributes() {
     command(&mut sgb, 5, &[1, 1 << 5]); // column 0 -> palette 1 green
     assert_eq!(&sgb.frame[..4], &[0, 255, 0, 255]);
     assert_eq!(&sgb.frame[8 * 4..9 * 4], &[255, 0, 0, 255]);
-    let restored = Sgb::import_state(&rom(), &sgb.export_state(), 5).unwrap();
+    let restored = Sgb::import_state(&rom(), &sgb.export_state(), 6).unwrap();
     assert_eq!(restored, sgb);
 }
 
@@ -153,7 +153,7 @@ fn snapshots_preserve_pending_tables_shades_and_reject_malformed_extensions() {
     frames(&mut sgb, &table_data(), 2);
     command(&mut sgb, 0x15, &[]);
     let state = sgb.export_state();
-    let mut restored = Sgb::import_state(&rom(), &state, 5).unwrap();
+    let mut restored = Sgb::import_state(&rom(), &state, 6).unwrap();
     assert_eq!(restored, sgb);
     frames(&mut restored, &[0x1B; 4096], 5);
     select(&mut restored, 0x80);
@@ -164,9 +164,9 @@ fn snapshots_preserve_pending_tables_shades_and_reject_malformed_extensions() {
     ] {
         let mut bad = state.clone();
         bad[offset] = 0xFF;
-        assert!(Sgb::import_state(&rom(), &bad, 5).is_err());
+        assert!(Sgb::import_state(&rom(), &bad, 6).is_err());
     }
-    assert!(Sgb::import_state(&rom(), &state[..state.len() - 1], 5).is_err());
+    assert!(Sgb::import_state(&rom(), &state[..state.len() - 1], 6).is_err());
 }
 
 #[test]

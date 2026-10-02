@@ -18,6 +18,7 @@ pub struct GameBoy {
     cpu: Box<CPU>,
     rgba: Vec<u8>,
     border_visible: bool,
+    sgb_firmware: Option<Vec<u8>>,
 }
 
 impl GameBoy {
@@ -77,6 +78,7 @@ impl GameBoy {
             cpu,
             rgba: vec![0; 160 * 144 * 4],
             border_visible: true,
+            sgb_firmware: None,
         })
     }
 
@@ -84,6 +86,19 @@ impl GameBoy {
     pub fn cpu(&self) -> &CPU {
         &self.cpu
     }
+    /// Supply SNES-side SGB firmware separately from the handheld boot ROM.
+    /// Configure before running; an already-running cartridge must be reset.
+    pub fn load_sgb_sound_firmware(&mut self,data:&[u8]) -> Result<(),String> {
+        let sgb = self.cpu.sgb.as_mut().ok_or("SNES sound firmware requires SGB mode")?;
+        sgb.load_sound_firmware(data)?;
+        self.sgb_firmware = Some(data.to_vec());
+        Ok(())
+    }
+    pub fn validate_sgb_sound_firmware(data:&[u8]) -> Result<(),String> {
+        let mut sound = crate::sgb::Sgb::new(&[0;0x150]);
+        sound.load_sound_firmware(data)
+    }
+    pub fn clear_sgb_sound_firmware(&mut self) { self.sgb_firmware=None; }
     pub fn cpu_mut(&mut self) -> &mut CPU {
         &mut self.cpu
     }
@@ -171,6 +186,9 @@ impl Emulator for GameBoy {
         self.cpu.reset();
         self.cpu.is_cgb = cgb;
         self.cpu.apu.set_cgb_mode(cgb);
+        if let (Some(sgb),Some(data)) = (&mut self.cpu.sgb,&self.sgb_firmware) {
+            sgb.load_sound_firmware(data).expect("Previously validated SGB firmware");
+        }
     }
     fn set_button(&mut self, port: usize, button: Button, pressed: bool) -> Result<(), String> {
         if port != 0 && self.cpu.sgb.is_none() {
@@ -278,7 +296,7 @@ impl Emulator for GameBoy {
         };
         let mut out = Vec::new();
         out.extend_from_slice(b"RBSG");
-        out.extend_from_slice(&5u16.to_le_bytes());
+        out.extend_from_slice(&6u16.to_le_bytes());
         out.extend_from_slice(&(cpu.len() as u32).to_le_bytes());
         out.extend_from_slice(&cpu);
         // Pending LCD transfers may be saved in the middle of a scanline.
@@ -302,7 +320,7 @@ impl Emulator for GameBoy {
             return Err("SGB mode requires an SGB save state, not a handheld state".into());
         }
         let version = u16::from_le_bytes(data[4..6].try_into().unwrap());
-        if !(1..=5).contains(&version) {
+        if !(1..=6).contains(&version) {
             return Err("Unsupported SGB save-state version".into());
         }
         let end = data.len() - 4;
@@ -320,6 +338,9 @@ impl Emulator for GameBoy {
         let adapter_start = 10 + cpu_len + cache_len;
         let sgb =
             crate::sgb::Sgb::import_state(&self.cpu.mbc.rom, &data[adapter_start..end], version)?;
+        if self.sgb_firmware.is_some() && !sgb.sound_playback_available() {
+            return Err("This SGB state has no SNES audio state; reset the game to use the supplied sound firmware".into());
+        }
         // Restore into a fresh machine so malformed snapshots cannot partially
         // replace either side of the running adapter/GB session.
         let mut candidate =

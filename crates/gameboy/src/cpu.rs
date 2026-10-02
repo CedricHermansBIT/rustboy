@@ -1952,7 +1952,14 @@ impl CPU {
         };
 
         if tick_apu {
+            let previous_samples = self.apu.pending_samples();
             self.apu.tick(4);
+            if let Some(sgb) = &mut self.sgb {
+                sgb.tick_sound(4);
+                if self.apu.pending_samples() != previous_samples {
+                    self.apu.mix_latest_sample(sgb.sound_sample());
+                }
+            }
         }
 
         if self.oam_dma_active || self.oam_dma_delay > 0 {

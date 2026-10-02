@@ -1,4 +1,5 @@
 use super::*;
+use rustboy_snes_apu::apu::Apu;
 
 fn adapter() -> (Vec<u8>, Sgb) {
     let mut rom = vec![0; 32768];
@@ -62,7 +63,7 @@ fn sou_trn_uses_lcd_pipeline_five_frame_window_and_snapshot_migration() {
     }
     assert_eq!(sgb.sound_uploads(), 0);
     let state = sgb.export_state();
-    let mut restored = Sgb::import_state(&rom, &state, 5).unwrap();
+    let mut restored = Sgb::import_state(&rom, &state, 6).unwrap();
     restored.start_frame();
     restored.capture_frame(&pixels);
     assert_eq!(restored.sound_uploads(), 1);
@@ -70,16 +71,78 @@ fn sou_trn_uses_lcd_pipeline_five_frame_window_and_snapshot_migration() {
     assert_eq!(restored.unsupported[9], 1);
     assert_eq!(restored.transfers_pending(), 0);
     let state = restored.export_state();
-    assert_eq!(Sgb::import_state(&rom, &state, 5).unwrap(), restored);
+    assert_eq!(Sgb::import_state(&rom, &state, 6).unwrap(), restored);
     let mut corrupt = state.clone();
-    *corrupt.get_mut(state.len() - 3).unwrap() = 2;
-    assert!(Sgb::import_state(&rom, &corrupt, 5).is_err());
+    *corrupt.get_mut(state.len() - sound::AUDIO_STATE_BASE_BYTES - 3).unwrap() = 2;
+    assert!(Sgb::import_state(&rom, &corrupt, 6).is_err());
     // Old v4 saves have no audio RAM or uploads, but retain pulse timing.
     let mut legacy = adapter().1;
     legacy.tick_joyp(4);
     legacy.write_joyp_timed(0x20);
     let state = legacy.export_state();
-    let old = Sgb::import_state(&rom, &state[..state.len() - sound::STATE_BYTES], 4).unwrap();
+    let old = Sgb::import_state(&rom, &state[..state.len() - sound::STATE_BYTES - sound::AUDIO_STATE_BASE_BYTES], 4).unwrap();
     assert_eq!(old.pulse_lines, legacy.pulse_lines);
     assert_eq!(old.sound, sound::Sound::default());
+}
+
+fn singing_adapter() -> (Vec<u8>,Sgb) {
+    let (rom,mut sgb) = adapter();
+    let mut apu = Apu::default(); apu.cpu.halted=true;
+    apu.bus.ram.write_wrapping(0x100,&[0,2,0,2]);
+    apu.bus.ram.write_wrapping(0x200,&[0xa3,0x12,0x34,0x56,0x78,0x9a,0xbc,0xde,0xf0]);
+    for (address,value) in [(0,127),(1,127),(2,0),(3,16),(4,0),(5,0),(7,127),
+        (0x0c,127),(0x1c,127),(0x5d,1),(0x6c,32),(0x4c,1)] { apu.bus.dsp.write(address,value); }
+    sgb.sound.apu=Some(Box::new(apu));
+    (rom,sgb)
+}
+
+#[test]
+fn sound_ports_use_music_first_order_and_valid_uploads_reach_the_running_processor() {
+    let (_,mut sgb) = singing_adapter();
+    let mut command=[0;16]; command[0]=(8<<3)|1;
+    command[1..5].copy_from_slice(&[0x17,4,0xD2,3]);
+    super::tests::send(&mut sgb,&command);
+    assert_eq!(sgb.sound.apu.as_ref().unwrap().bus.input,[3,0x17,4,0xD2]);
+    assert_eq!(sgb.unsupported[8],0);
+    sgb.sound.upload(&payload());
+    let apu=sgb.sound.apu.as_ref().unwrap();
+    assert_eq!(apu.bus.ram.read(0xfffe),1);
+    assert_eq!(apu.bus.ram.read(0),3);
+    assert_eq!(apu.cpu.pc,0x400);
+    assert!(!apu.cpu.halted);
+}
+
+#[test]
+fn snes_sound_clock_and_resampler_replay_exactly_with_v6_and_v5_still_migrates() {
+    let (rom,mut sgb)=singing_adapter();
+    for _ in 0..501 { sgb.tick_sound(4); }
+    assert_ne!(sgb.sound_sample(),[0.0;2]);
+    let bytes=sgb.export_state();
+    let mut restored=Sgb::import_state(&rom,&bytes,6).unwrap();
+    assert_eq!(restored,sgb);
+    for _ in 0..10000 {
+        sgb.tick_sound(4); restored.tick_sound(4);
+        assert_eq!(restored.sound_sample(),sgb.sound_sample());
+    }
+    assert_eq!(restored,sgb);
+    let mut legacy=adapter().1; legacy.sound.upload(&payload());
+    let bytes=legacy.export_state();
+    let migrated=Sgb::import_state(&rom,&bytes[..bytes.len()-sound::AUDIO_STATE_BASE_BYTES],5).unwrap();
+    assert_eq!(migrated,legacy);
+    let mut corrupt=sgb.export_state(); corrupt.push(0);
+    assert!(Sgb::import_state(&rom,&corrupt,6).is_err());
+}
+
+#[test]
+fn powered_off_handheld_apu_still_mixes_snes_music_in_stereo() {
+    let (_,sgb)=singing_adapter();
+    let mut cpu=crate::cpu::CPU::new();
+    cpu.booting=false; cpu.sgb=Some(Box::new(sgb));
+    cpu.apu.write_register(0xff26,0);
+    cpu.halt=true;
+    for _ in 0..10000 { cpu.execute(); }
+    let samples=cpu.get_audio_buffer();
+    assert!(!samples.is_empty());
+    assert!(samples.iter().any(|&v|v!=0.0));
+    assert!(samples.chunks_exact(2).all(|pair|pair[0]==pair[1]));
 }

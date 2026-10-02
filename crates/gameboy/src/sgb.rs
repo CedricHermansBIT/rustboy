@@ -214,6 +214,10 @@ impl Sgb {
     pub fn sound_upload_rejections(&self) -> u64 { self.sound.rejected }
     pub fn sound_request(&self) -> [u8; 4] { self.sound.request }
     pub fn sound_ram(&self) -> &[u8; 65536] { self.sound.ram.bytes() }
+    pub fn sound_playback_available(&self) -> bool { self.sound.apu.is_some() }
+    pub fn load_sound_firmware(&mut self,data:&[u8]) -> Result<(),String> { self.sound.load_firmware(data) }
+    pub(crate) fn tick_sound(&mut self,ticks:u32) { self.sound.tick(ticks); }
+    pub(crate) fn sound_sample(&self) -> [f32;2] { self.sound.sample() }
 
     /// Separate SNES tile memory, not an extension of the Game Boy's VRAM.
     pub fn debug_border_tiles(&self) -> Vec<u8> {
@@ -545,13 +549,12 @@ impl Sgb {
                 }
             }
             0x08 => {
-                self.sound.request.copy_from_slice(&data[1..5]);
-                // Transport is understood, but not falsely reported as audible.
-                self.unsupported[0x08] = self.unsupported[0x08].saturating_add(1);
+                self.sound.command(data[1..5].try_into().unwrap());
+                if !self.sound_playback_available() { self.unsupported[0x08] = self.unsupported[0x08].saturating_add(1); }
             }
             0x09 => {
                 self.request_transfer(6);
-                self.unsupported[0x09] = self.unsupported[0x09].saturating_add(1);
+                if !self.sound_playback_available() { self.unsupported[0x09] = self.unsupported[0x09].saturating_add(1); }
             }
             0x0A => {
                 for palette in 0..4 {
@@ -657,6 +660,7 @@ impl Sgb {
         out.extend_from_slice(&[self.pulse_lines, self.pulse_ticks, self.pulse_armed as u8]);
         out.extend_from_slice(&self.rejected_pulses.to_le_bytes());
         self.sound.export_state(&mut out);
+        self.sound.export_audio_state(&mut out);
         out
     }
 
@@ -665,12 +669,13 @@ impl Sgb {
         let expected = match version {
             1 => LEGACY_STATE_BYTES,
             2 => BORDER_STATE_BYTES,
-            3 => sgb.export_state().len() - TIMING_STATE_BYTES - sound::STATE_BYTES,
-            4 => sgb.export_state().len() - sound::STATE_BYTES,
-            5 => sgb.export_state().len(),
+            3 => sgb.export_state().len() - TIMING_STATE_BYTES - sound::STATE_BYTES - sound::AUDIO_STATE_BASE_BYTES,
+            4 => sgb.export_state().len() - sound::STATE_BYTES - sound::AUDIO_STATE_BASE_BYTES,
+            5 => sgb.export_state().len() - sound::AUDIO_STATE_BASE_BYTES,
+            6 => sgb.export_state().len(),
             _ => return Err("Unsupported SGB snapshot version".into()),
         };
-        if data.len() != expected {
+        if (version<6 && data.len()!=expected) || (version==6 && data.len()<expected) {
             return Err("Invalid SGB snapshot length".into());
         }
         let mut input = data;
@@ -762,6 +767,7 @@ impl Sgb {
             }
         }
         if version >= 5 { sgb.sound = sound::Sound::import_state(take(&mut input, sound::STATE_BYTES))?; }
+        if version >= 6 { sgb.sound.import_audio_state(input)?; }
         if sgb.mask > 3
             || ![1, 2, 4].contains(&sgb.players)
             || sgb.player >= sgb.players
@@ -1041,10 +1047,10 @@ mod tests {
         sgb.write_joyp(0x30);
         sgb.write_joyp(0x10);
         let bytes = sgb.export_state();
-        assert_eq!(Sgb::import_state(&rom, &bytes, 5).unwrap(), sgb);
-        assert!(Sgb::import_state(&rom, &bytes[..bytes.len() - 1], 5).is_err());
+        assert_eq!(Sgb::import_state(&rom, &bytes, 6).unwrap(), sgb);
+        assert!(Sgb::import_state(&rom, &bytes[..bytes.len() - 1], 6).is_err());
         let mut bad = bytes;
         bad[2] = 3;
-        assert!(Sgb::import_state(&rom, &bad, 5).is_err());
+        assert!(Sgb::import_state(&rom, &bad, 6).is_err());
     }
 }

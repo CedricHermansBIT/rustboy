@@ -9,10 +9,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .ok_or("Usage: sgb_audio_inspect ROM")?;
     let mut gb = GameBoy::load(&std::fs::read(path)?, &[], HardwareModel::Sgb)?;
+    if let Some(path) = std::env::var_os("RUSTBOY_SGB_FIRMWARE") {
+        gb.load_sgb_sound_firmware(&std::fs::read(path)?)?;
+    }
     let mut previous = None;
     let mut music_frames = 0;
     let mut music_samples = 0;
     let mut music_energy = 0.0f64;
+    let verify = std::env::var("RUSTBOY_VERIFY_SGB_AUDIO").as_deref()==Ok("1");
     for frame in 0..2400 {
         if frame == 900 {
             gb.set_button(0, Button::Start, true)?;
@@ -61,6 +65,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|&sample| f64::from(sample).powi(2))
                 .sum::<f64>();
         }
+        if verify && frame==1500 {
+            let saved=gb.export_state();
+            gb.run(70_224*2); gb.drain_audio();
+            let expected=gb.cpu().sgb.as_ref().unwrap().clone();
+            gb.import_state(&saved)?;
+            gb.run(70_224*2); gb.drain_audio();
+            assert_eq!(gb.cpu().sgb.as_ref().unwrap(),&expected,"SNES execution, DSP, LCD state and transfer timing must replay after restore");
+        }
     }
     if let Some(path) = std::env::var_os("RUSTBOY_AUDIO_RAM") {
         std::fs::write(path, gb.cpu().sgb.as_ref().unwrap().sound_ram())?;
@@ -69,5 +81,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "music-request frames={music_frames} mixed-audio samples={music_samples} RMS={:.6}",
         (music_energy / music_samples.max(1) as f64).sqrt()
     );
+    if verify {
+        let sgb=gb.cpu().sgb.as_ref().unwrap();
+        assert!(sgb.sound_playback_available(),"Provide RUSTBOY_SGB_FIRMWARE");
+        assert!(sgb.sound_uploads()>0);
+        assert_eq!(sgb.sound_upload_rejections(),0);
+        assert!(music_frames>600 && music_energy/music_samples.max(1) as f64>0.000001,"Expected sustained, non-silent enhanced music");
+        assert_eq!(sgb.unsupported[8],0); assert_eq!(sgb.unsupported[9],0);
+        gb.reset();
+        assert!(gb.cpu().sgb.as_ref().unwrap().sound_playback_available(),"Reset must retain host-supplied firmware");
+        println!("SGB enhanced audio, snapshot replay and firmware retention on reset passed");
+    }
     Ok(())
 }

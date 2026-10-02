@@ -46,7 +46,7 @@ fn version_two_sgb_envelope_preserves_border_and_pending_transfer_on_migration()
     write_packet(&mut gb, &chr);
     let state = gb.export_state();
     // v3 appends 8146 bytes of tables and 5761 bytes of retained LCD shades.
-    let mut old = state[..state.len() - 4 - 8146 - 5761 - 11 - 65559].to_vec();
+    let mut old = state[..state.len() - 4 - 8146 - 5761 - 11 - 65559 - 16].to_vec();
     old[4..6].copy_from_slice(&2u16.to_le_bytes());
     let checksum = old.iter().fold(0x811c9dc5u32, |h, b| {
         (h ^ *b as u32).wrapping_mul(0x01000193)
@@ -56,7 +56,7 @@ fn version_two_sgb_envelope_preserves_border_and_pending_transfer_on_migration()
     gb.import_state(&old).unwrap();
     assert_eq!(gb.video_frame().pixels, pixels);
     assert_eq!(gb.cpu().sgb.as_ref().unwrap().transfers_pending(), 1);
-    assert_eq!(&gb.export_state()[..6], b"RBSG\x05\0");
+    assert_eq!(&gb.export_state()[..6], b"RBSG\x06\0");
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn cartridge_border_uploads_use_rendered_lcd_and_resize_the_backend_frame() {
     assert_eq!(pixel(56, 48), [255, 0, 0, 255]); // deliberate opaque border overlay
     let expected = frame.pixels.to_vec();
     let saved = gb.export_state();
-    assert_eq!(&saved[..6], b"RBSG\x05\0");
+    assert_eq!(&saved[..6], b"RBSG\x06\0");
     gb.reset();
     assert_eq!(gb.video_frame().geometry.width, 160);
     gb.import_state(&saved).unwrap();
@@ -174,7 +174,7 @@ fn version_one_sgb_envelope_loads_and_migrates_without_a_border() {
     gb.import_state(&old).unwrap();
     assert!(!gb.cpu().sgb.as_ref().unwrap().has_border());
     assert_eq!(gb.video_frame().geometry.width, 160);
-    assert_eq!(&gb.export_state()[..6], b"RBSG\x05\0");
+    assert_eq!(&gb.export_state()[..6], b"RBSG\x06\0");
     assert!(gb.state_id().ends_with("-sgb-hle-v1")); // storage identity remains stable
 }
 
