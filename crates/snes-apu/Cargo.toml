@@ -3,6 +3,6 @@ name = "rustboy-snes-apu"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Portable SNES audio building blocks; SPC700/DSP execution not implemented yet"
+description = "RustBoy SPC700, BRR DSP and independent firmware-free SGB audio player"
 
 [dependencies]

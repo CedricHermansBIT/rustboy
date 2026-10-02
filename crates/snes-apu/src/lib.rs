@@ -1,13 +1,18 @@
 //! Reusable SNES audio components for SGB and future SNES composition.
-//! The memory and SPC700 interpreter contain no system firmware, sound engine,
-//! samples or platform-specific audio APIs. DSP composition is built separately.
+//! Original SPC700/DSP execution and a high-level SGB resident sound replacement.
+//! No Nintendo firmware, sample recordings or platform-specific audio APIs.
 pub const RAM_BYTES: usize = 65536;
 pub mod apu;
+pub mod brr;
 pub mod dsp;
 pub mod firmware;
+pub mod sgb_player;
+mod sgb_instruments;
 pub mod spc700;
 #[cfg(test)]
 mod spc700_tests;
+#[cfg(test)]
+mod sgb_player_tests;
 mod state;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

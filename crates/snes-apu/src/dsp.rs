@@ -81,26 +81,37 @@ pub fn decode_brr(ram: &SpcRam, address: u16, history: &mut [i32; 2]) -> [i16; 1
     for (index, sample) in output.iter_mut().enumerate() {
         let byte = ram.read(address.wrapping_add(1 + index as u16 / 2));
         let nibble = if index & 1 == 0 { byte >> 4 } else { byte & 15 };
-        let signed = ((nibble as i8) << 4) >> 4;
-        let mut value = if shift <= 12 {
-            (i32::from(signed) << shift) >> 1
-        } else if signed < 0 {
-            -2048
-        } else {
-            0
-        };
-        let [p1, p2] = *history;
-        value += match (header >> 2) & 3 {
-            0 => 0,
-            1 => p1 + ((-p1) >> 4),
-            2 => 2 * p1 + ((-3 * p1) >> 5) - p2 + (p2 >> 4),
-            _ => 2 * p1 + ((-13 * p1) >> 6) - p2 + ((3 * p2) >> 4),
-        };
-        let decoded = (value.clamp(-32768, 32767) as i16).wrapping_mul(2);
-        *history = [i32::from(decoded) >> 1, p1];
-        *sample = decoded;
+        *sample = reconstruct_brr(
+            ((nibble as i8) << 4) >> 4,
+            shift,
+            (header >> 2) & 3,
+            history,
+        );
     }
     output
+}
+
+pub(crate) fn brr_prediction(filter: u8, history: [i32; 2]) -> i32 {
+    let [p1, p2] = history;
+    match filter {
+        0 => 0,
+        1 => p1 + ((-p1) >> 4),
+        2 => 2 * p1 + ((-3 * p1) >> 5) - p2 + (p2 >> 4),
+        _ => 2 * p1 + ((-13 * p1) >> 6) - p2 + ((3 * p2) >> 4),
+    }
+}
+pub(crate) fn reconstruct_brr(nibble: i8, shift: u8, filter: u8, history: &mut [i32; 2]) -> i16 {
+    let value = if shift <= 12 {
+        (i32::from(nibble) << shift) >> 1
+    } else if nibble < 0 {
+        -2048
+    } else {
+        0
+    };
+    let decoded =
+        ((value + brr_prediction(filter, *history)).clamp(-32768, 32767) as i16).wrapping_mul(2);
+    *history = [i32::from(decoded) >> 1, history[0]];
+    decoded
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
