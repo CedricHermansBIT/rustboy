@@ -1,6 +1,6 @@
 # Emulator backend architecture
 
-The core implements Game Boy/Game Boy Color, plus an opt-in experimental
+The core implements Game Boy/Game Boy Color, plus an automatically selected
 [high-level SGB adapter](SGB_SUPPORT.md). NES, SNES and full hardware-level
 Super Game Boy remain future backends, not advertised as supported platforms.
 

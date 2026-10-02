@@ -22,6 +22,14 @@ diagnostics, and both DMG/CGB Acid2 reference images. Both optional Pinball
 diagnostics pass with the locally supplied games. Browser smoke checks pass
 for DMG and CGB loading, nonblank rendering, pause/resume, and malformed-upload
 handling. Audio queue and boot-ROM loader JavaScript regressions pass.
+
+The latest implementation checks also pass 126 Game Boy unit tests, the shared
+SPC-RAM test, browser AudioWorklet/fallback queue tests, the public-library picker
+check, and all seven browser smoke cases. Five local SGB games pass the optional
+input/game-window/transfer/state-replay checks. Four exact Makon Diamond/Jade/Pearl
+dumps now render with the verified NT-new mapper; these are not full playthroughs.
+SGB sound uploads are retained, but SPC700/DSP playback is not implemented.
+The original ROM totals above remain unchanged; no new exclusions were added.
 This is not a broad manual gameplay or listening test.
 
 ## Newly enabled graphics checks
