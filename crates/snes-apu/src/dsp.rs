@@ -5,6 +5,12 @@ const PERIODS: [u32; 32] = [
     0, 2048, 1536, 1280, 1024, 768, 640, 512, 384, 320, 256, 192, 160, 128, 96, 80, 64, 48, 40, 32,
     24, 20, 16, 12, 10, 8, 6, 5, 4, 3, 2, 1,
 ];
+// Anomie's hardware measurements: the shared envelope/noise divider counts
+// down through 30720 samples, with /3 and /5 rates offset from the /2 rates.
+const RATE_OFFSETS: [u32; 32] = [
+    0, 0, 1040, 536, 0, 1040, 536, 0, 1040, 536, 0, 1040, 536, 0, 1040, 536, 0, 1040, 536, 0, 1040,
+    536, 0, 1040, 536, 0, 1040, 536, 0, 1040, 0, 0,
+];
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Voice {
@@ -24,6 +30,139 @@ struct Voice {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn divider_offsets_and_wrap_are_shared_by_noise_and_envelopes() {
+        for rate in 1..32u8 {
+            let period = PERIODS[usize::from(rate)];
+            let events: Vec<_> = (1..=30720).filter(|&t| Dsp::due(t, rate)).collect();
+            assert_eq!(events.len() as u32, 30720 / period);
+            assert!(events.windows(2).all(|pair| pair[1] - pair[0] == period));
+        }
+        assert!(!Dsp::due(0, 0));
+        assert!(Dsp::due(1040, 2));
+        assert!(!Dsp::due(1536, 2));
+        assert!(Dsp::due(536, 3));
+        assert!(Dsp::due(30720, 1));
+
+        let mut dsp = Dsp::default();
+        let mut ram = SpcRam::default();
+        dsp.write(0x6c, 0x22); // echo writes disabled, noise rate 2
+        dsp.voices[0] = Voice {
+            active: true,
+            stage: 2,
+            ..Voice::default()
+        };
+        dsp.write(7, 0xc2); // linear GAIN increase, same divider as noise
+        for _ in 0..1039 {
+            dsp.sample(&mut ram);
+        }
+        assert_eq!(dsp.noise, 0x4000);
+        assert_eq!(dsp.voices[0].envelope, 0);
+        dsp.sample(&mut ram);
+        assert_eq!(dsp.noise, 0x2000);
+        assert_eq!(dsp.voices[0].envelope, 32);
+    }
+    #[test]
+    fn adsr_stages_use_unclamped_candidate_even_between_rate_events() {
+        let mut voice = Voice {
+            envelope: 2047,
+            stage: 1,
+            ..Voice::default()
+        };
+        Dsp::envelope(&mut voice, 0x80, 0xe0, 0, 1);
+        assert_eq!(voice.envelope, 2047); // rate 16 not due
+        assert_eq!(voice.stage, 2); // sustain 7 matches candidate upper bits
+
+        voice.envelope = 512;
+        voice.stage = 1;
+        Dsp::envelope(&mut voice, 0xf0, 0x20, 0, 2);
+        assert_eq!(voice.envelope, 510);
+        assert_eq!(voice.stage, 2);
+        voice.envelope = 512;
+        voice.stage = 1;
+        Dsp::envelope(&mut voice, 0xf0, 0, 0, 2);
+        assert_eq!(voice.stage, 1); // 510 is above sustain level 0
+
+        voice.envelope = 2015;
+        voice.stage = 0;
+        Dsp::envelope(&mut voice, 0x80, 0, 0, 2048);
+        assert_eq!(voice.envelope, 2047);
+        assert_eq!(voice.stage, 0); // must exceed maximum, not merely reach it
+        Dsp::envelope(&mut voice, 0x80, 0, 0, 2049);
+        assert_eq!(voice.stage, 1);
+        assert_eq!(voice.envelope, 2047);
+    }
+    #[test]
+    fn gain_modes_clamp_and_zero_exponential_gain_stays_zero() {
+        for (gain, start, expected) in [
+            (0x7f, 0, 2032),
+            (0x9f, 20, 0),
+            (0xbf, 0, 0),
+            (0xbf, 256, 255),
+            (0xdf, 2040, 2047),
+            (0xff, 1500, 1532),
+            (0xff, 1536, 1544),
+        ] {
+            let mut voice = Voice {
+                envelope: start,
+                stage: 2,
+                ..Voice::default()
+            };
+            Dsp::envelope(&mut voice, 0, 0, gain, 1);
+            assert_eq!(voice.envelope, expected, "GAIN {gain:02x}");
+        }
+        let mut voice = Voice {
+            envelope: 16,
+            stage: 3,
+            ..Voice::default()
+        };
+        Dsp::envelope(&mut voice, 0xff, 0xff, 0x7f, 1);
+        assert_eq!(voice.envelope, 8); // release overrides direct GAIN
+    }
+    #[test]
+    fn held_keyoff_silences_retrigger_and_end_blocks_keep_decoding() {
+        let mut dsp = Dsp::default();
+        let mut ram = SpcRam::default();
+        ram.write_wrapping(0x100, &[0, 2, 0, 2]);
+        ram.write_wrapping(
+            0x200,
+            &[0xa1, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77],
+        );
+        dsp.write(0x6c, 32);
+        dsp.write(0x5d, 1);
+        dsp.write(3, 16);
+        dsp.write(7, 127);
+        dsp.write(0x4c, 1);
+        for _ in 0..21 {
+            dsp.sample(&mut ram);
+        }
+        assert_eq!(dsp.voices[0].stage, 3);
+        assert_eq!(dsp.voices[0].envelope, 0);
+        assert!(dsp.voices[0].active);
+        assert_eq!(dsp.read(0x7c) & 1, 1);
+        dsp.write(0x7c, 255);
+        assert_eq!(dsp.read(0x7c), 0);
+        for _ in 0..16 {
+            dsp.sample(&mut ram);
+        }
+        assert_eq!(dsp.read(0x7c) & 1, 1);
+
+        ram.write(0x200, 0xa3);
+        dsp.write(0x5c, 1);
+        dsp.write(0x4c, 1);
+        for _ in 0..10 {
+            dsp.sample(&mut ram);
+        }
+        assert_eq!(dsp.voices[0].envelope, 0);
+        assert_eq!(dsp.voices[0].stage, 3);
+        dsp.write(0x5c, 0);
+        dsp.write(0x4c, 1);
+        for _ in 0..6 {
+            dsp.sample(&mut ram);
+        }
+        assert_eq!(dsp.voices[0].envelope, 2032);
+        assert_eq!(dsp.read(0x7c) & 1, 0);
+    }
     #[test]
     fn brr_signed_nibbles_invalid_ranges_and_address_wrap() {
         let mut ram = SpcRam::default();
@@ -211,53 +350,53 @@ impl Dsp {
         }
     }
     fn due(counter: u32, rate: u8) -> bool {
-        let period = PERIODS[usize::from(rate & 31)];
-        period != 0 && counter % period == 0
+        let rate = usize::from(rate & 31);
+        let period = PERIODS[rate];
+        // Keep the serialized counter as elapsed samples; derive the hardware
+        // countdown phase without changing the snapshot layout.
+        let phase = (30720 - counter % 30720) % 30720;
+        period != 0 && (phase + RATE_OFFSETS[rate]) % period == 0
     }
     fn envelope(voice: &mut Voice, adsr: u8, sustain: u8, gain: u8, counter: u32) {
         if voice.stage == 3 {
             voice.envelope = voice.envelope.saturating_sub(8);
             return;
         }
-        if adsr & 128 != 0 {
+        let envelope = i32::from(voice.envelope);
+        let (candidate, rate, level) = if adsr & 128 != 0 {
             let rate = match voice.stage {
                 0 => (adsr & 15) * 2 + 1,
                 1 => ((adsr >> 4) & 7) * 2 + 16,
                 _ => sustain & 31,
             };
-            if !Self::due(counter, rate) {
-                return;
-            }
-            if voice.stage == 0 {
-                voice.envelope = voice
-                    .envelope
-                    .saturating_add(if rate == 31 { 1024 } else { 32 });
-                if voice.envelope >= 2047 {
-                    voice.envelope = 2047;
-                    voice.stage = 1;
-                }
+            let candidate = if voice.stage == 0 {
+                envelope + if rate == 31 { 1024 } else { 32 }
             } else {
-                voice.envelope = voice
-                    .envelope
-                    .saturating_sub(((voice.envelope.saturating_sub(1)) >> 8) + 1);
-                if voice.stage == 1 && voice.envelope <= (u16::from(sustain >> 5) + 1) * 256 {
-                    voice.stage = 2;
-                }
-            }
-        } else if gain & 128 == 0 {
-            voice.envelope = u16::from(gain) * 16;
-        } else if Self::due(counter, gain & 31) {
-            voice.envelope = match (gain >> 5) & 3 {
-                0 => voice.envelope.saturating_sub(32),
-                1 => voice
-                    .envelope
-                    .saturating_sub(((voice.envelope.saturating_sub(1)) >> 8) + 1),
-                2 => voice.envelope.saturating_add(32).min(2047),
-                _ => voice
-                    .envelope
-                    .saturating_add(if voice.envelope < 1536 { 32 } else { 8 })
-                    .min(2047),
+                envelope - (((envelope - 1) >> 8) + 1)
             };
+            (candidate, rate, sustain >> 5)
+        } else if gain & 128 == 0 {
+            (i32::from(gain) * 16, 31, gain >> 5)
+        } else {
+            let candidate = match (gain >> 5) & 3 {
+                0 => envelope - 32,
+                1 => envelope - (((envelope - 1) >> 8) + 1),
+                2 => envelope + 32,
+                // Exact bent GAIN also consults the preceding pre-clamp
+                // candidate; retaining that history needs a snapshot revision.
+                _ => envelope + if envelope < 1536 { 32 } else { 8 },
+            };
+            (candidate, gain & 31, gain >> 5)
+        };
+        // Stage changes use the candidate every sample, even between divider
+        // events and while GAIN is selected. Equality matters at sustain level 7.
+        if voice.stage == 1 && candidate >> 8 == i32::from(level) {
+            voice.stage = 2;
+        } else if voice.stage == 0 && !(0..=2047).contains(&candidate) {
+            voice.stage = 1;
+        }
+        if Self::due(counter, rate) {
+            voice.envelope = candidate.clamp(0, 2047) as u16;
         }
     }
     fn word(ram: &SpcRam, address: u16) -> u16 {
@@ -271,11 +410,6 @@ impl Dsp {
         voice.index = 0;
         if voice.header & 1 != 0 {
             *ended = true;
-            if voice.header & 2 == 0 {
-                voice.active = false;
-                voice.envelope = 0;
-                return;
-            }
             voice.address = voice.loop_address;
         } else {
             voice.address = voice.address.wrapping_add(9);
@@ -286,7 +420,7 @@ impl Dsp {
     /// One stereo frame at 32 kHz. SPC ports/register accesses are clocked by
     /// the owner; this renderer never consults wall-clock or browser state.
     pub fn sample(&mut self, ram: &mut SpcRam) -> [i16; 2] {
-        self.counter = self.counter.wrapping_add(1);
+        self.counter = (self.counter % 30720 + 1) % 30720;
         if Self::due(self.counter, self.registers[0x6c] & 31) {
             self.noise = (self.noise >> 1) | (((self.noise ^ (self.noise >> 1)) & 1) << 14);
         }
@@ -323,6 +457,16 @@ impl Dsp {
             if !voice.active {
                 previous_output = 0;
                 continue;
+            }
+            // KOFF remains asserted until software clears it. END without
+            // LOOP silences immediately on header load, but BRR keeps running
+            // and following its loop pointer, including ENDX notifications.
+            if self.registers[0x5c] & (1 << i) != 0 {
+                voice.stage = 3;
+            }
+            if voice.header & 3 == 1 {
+                voice.stage = 3;
+                voice.envelope = 0;
             }
             Self::envelope(
                 voice,
