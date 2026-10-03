@@ -155,6 +155,10 @@ With these services, the local FireRed diagnostic reaches and renders its title
 screen at 1,800 frames without a missing-service fault. The image still has
 visible graphics inaccuracies; this is not proof of complete game compatibility.
 Native GBA coverage now has 78 unit tests and seven original program tests.
+The self-contained regression gate passes 256 native checks, its JS/Python
+checks, and eleven browser scenarios, including local GBA selection and Flash
+save programming/persistence/reload. GBA Clippy with warnings denied and the
+root WASM check pass. This does not include the separate local GB ROM suite.
 
 1. Expand ARM/Thumb instruction and exception validation; finish bus arbitration
    and an original BIOS-service replacement
