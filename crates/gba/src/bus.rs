@@ -4,6 +4,7 @@ use crate::peripherals::{Dma, Timer};
 
 pub struct Bus {
     pub(crate) bios: Vec<u8>,
+    pub(crate) replacement_bios: bool,
     pub(crate) rom: Vec<u8>,
     pub ewram: Vec<u8>,
     pub iwram: Vec<u8>,
@@ -11,7 +12,7 @@ pub struct Bus {
     pub vram: Vec<u8>,
     pub oam: Vec<u8>,
     pub(crate) io: Vec<u8>,
-    clocks: u64,
+    pub(crate) clocks: u64,
     pub halted: bool,
     pub(crate) timers: [Timer; 4],
     pub(crate) dma: [Dma; 4],
@@ -24,8 +25,10 @@ impl Bus {
         if bios.as_ref().is_some_and(|data| data.len() != 0x4000) {
             return Err("GBA BIOS must be exactly 16 KiB".into());
         }
+        let replacement_bios = bios.is_none();
         let mut bus = Self {
-            bios: bios.unwrap_or_default(),
+            bios: bios.unwrap_or_else(crate::bios::irq_firmware),
+            replacement_bios,
             rom,
             ewram: vec![0; 0x40000],
             iwram: vec![0; 0x8000],

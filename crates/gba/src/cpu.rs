@@ -97,6 +97,10 @@ pub fn shift(value: u32, kind: u32, amount: u32, immediate: bool, carry: bool) -
     }
 }
 impl Cpu {
+    pub(crate) fn return_swi<B: Memory>(&mut self, bus: &mut B) {
+        let pc = self.r[14];
+        self.write_result(bus, 15, pc, true);
+    }
     pub fn cpsr(&self) -> u32 {
         self.cpsr
     }

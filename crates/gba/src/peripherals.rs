@@ -11,14 +11,14 @@ pub(crate) struct Timer {
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Dma {
-    source: u32,
-    destination: u32,
-    initial_destination: u32,
-    count: u32,
-    remaining: u32,
-    control: u16,
-    active: bool,
-    first: bool,
+    pub(crate) source: u32,
+    pub(crate) destination: u32,
+    pub(crate) initial_destination: u32,
+    pub(crate) count: u32,
+    pub(crate) remaining: u32,
+    pub(crate) control: u16,
+    pub(crate) active: bool,
+    pub(crate) first: bool,
 }
 impl Bus {
     pub(crate) fn peripheral_write(&mut self, offset: usize, old: u8) {
@@ -32,6 +32,9 @@ impl Bus {
                 self.io[offset] = control;
                 let timer = &mut self.timers[n];
                 timer.control = control;
+                if (old ^ control) & 7 != 0 {
+                    timer.phase = 0;
+                }
                 if old & 0x80 == 0 && control & 0x80 != 0 {
                     timer.counter = timer.reload;
                     timer.phase = 0;

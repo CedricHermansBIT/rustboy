@@ -1,12 +1,17 @@
 //! Development-only headless machine. Tile/OBJ rendering, audio,
-//! cartridge saves and BIOS replacement services are not implemented yet.
-use crate::{bus::Bus, cpu::Cpu, FRAME_CYCLES};
+//! cartridge saves and many BIOS services are not implemented yet.
+use crate::{
+    bus::Bus,
+    cpu::{Cpu, Memory},
+    FRAME_CYCLES,
+};
 use rustboy_emulator_api::{PixelFormat, VideoFrame, VideoGeometry};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MissingBiosException {
     pub instruction_address: u32,
     pub vector: u32,
+    pub reason: &'static str,
 }
 
 pub struct GameBoyAdvance {
@@ -16,9 +21,11 @@ pub struct GameBoyAdvance {
     pub frames: u64,
     /// Stop rather than executing zero-filled exception vectors as fake firmware.
     pub fault: Option<MissingBiosException>,
-    pixels: Vec<u8>,
-    line: u16,
-    line_clocks: u16,
+    pub(crate) pixels: Vec<u8>,
+    pub(crate) line: u16,
+    pub(crate) line_clocks: u16,
+    pub(crate) wait_mask: Option<u16>,
+    pub(crate) paused: bool,
 }
 impl GameBoyAdvance {
     pub fn new(rom: Vec<u8>, bios: Option<Vec<u8>>) -> Result<Self, String> {
@@ -43,6 +50,8 @@ impl GameBoyAdvance {
             pixels: vec![255; 240 * 160 * 4],
             line: 0,
             line_clocks: 0,
+            wait_mask: None,
+            paused: false,
         })
     }
     pub fn title(&self) -> String {
@@ -59,6 +68,18 @@ impl GameBoyAdvance {
             self.advance_video(clocks);
             return clocks;
         }
+        if let Some(mask) = self.wait_mask {
+            if self.cpu.cpsr() & 31 != 0x12 {
+                let flags = self.bus.peek16(0x03007ff8);
+                if flags & mask != 0 {
+                    self.bus.write16(0x03007ff8, flags & !mask, false);
+                    self.wait_mask = None;
+                    self.bus.halted = false;
+                } else {
+                    self.bus.halted = true;
+                }
+            }
+        }
         if self.bus.pending_irq() {
             self.bus.halted = false;
         }
@@ -73,15 +94,52 @@ impl GameBoyAdvance {
             return clocks;
         }
         let address = self.cpu.r[15];
+        let thumb = self.cpu.thumb();
         let exceptions = self.cpu.exceptions;
         if !self.bus.irq_enabled() || !self.cpu.irq(&mut self.bus) {
             self.cpu.step(&mut self.bus);
         }
-        if self.cpu.exceptions != exceptions && self.bus.bios.is_empty() {
-            self.fault = Some(MissingBiosException {
-                instruction_address: address,
-                vector: self.cpu.r[15],
-            });
+        if self.cpu.exceptions != exceptions && self.bus.replacement_bios {
+            let vector = self.cpu.r[15];
+            if vector == 8 {
+                let number = if thumb {
+                    self.bus.peek8(address)
+                } else {
+                    self.bus.peek8(address.wrapping_add(2))
+                };
+                match crate::bios::service(number, &mut self.cpu, &mut self.bus) {
+                    Ok(effect) => {
+                        if !matches!(effect, crate::bios::Effect::Reset) {
+                            self.cpu.return_swi(&mut self.bus);
+                        }
+                        match effect {
+                            crate::bios::Effect::Halt => self.bus.halted = true,
+                            crate::bios::Effect::Wait { mask, discard } => {
+                                self.bus.set_io(0x208, 1);
+                                if discard {
+                                    let flags = self.bus.peek16(0x03007ff8);
+                                    self.bus.write16(0x03007ff8, flags & !mask, false);
+                                }
+                                self.wait_mask = Some(mask);
+                            }
+                            _ => {}
+                        }
+                    }
+                    Err(reason) => {
+                        self.fault = Some(MissingBiosException {
+                            instruction_address: address,
+                            vector,
+                            reason,
+                        })
+                    }
+                }
+            } else if vector != 0x18 {
+                self.fault = Some(MissingBiosException {
+                    instruction_address: address,
+                    vector,
+                    reason: "CPU exception has no replacement handler",
+                });
+            }
         }
         let clocks = self.bus.take_cycles();
         self.advance_video(clocks);

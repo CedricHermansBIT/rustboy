@@ -33,8 +33,27 @@ fn main() -> Result<(), Box<dyn Error>> {
         machine.bus.io16(6),
         machine.frames
     );
+    let handler = machine.bus.peek32(0x03007ffc);
+    println!(
+        "IRQ IE={:04X} IF={:04X} IME={} DISPSTAT={:04X} handler={:08X}",
+        machine.bus.io16(0x200),
+        machine.bus.io16(0x202),
+        machine.bus.io16(0x208),
+        machine.bus.io16(4),
+        handler
+    );
+    println!(
+        "handler words: {:08X} {:08X} {:08X}; regs={:08X?}",
+        machine.bus.peek32(handler),
+        machine.bus.peek32(handler.wrapping_add(4)),
+        machine.bus.peek32(handler.wrapping_add(8)),
+        machine.cpu.r
+    );
     if let Some(fault) = machine.fault {
-        println!("Stopped at {:08X}: exception vector {:02X} needs BIOS services (not implemented/bundled yet).",fault.instruction_address,fault.vector);
+        println!(
+            "Stopped at {:08X}: exception vector {:02X}: {}.",
+            fault.instruction_address, fault.vector, fault.reason
+        );
     }
     Ok(())
 }
