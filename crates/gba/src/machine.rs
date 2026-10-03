@@ -1,4 +1,4 @@
-//! Development-only headless machine. Tile/OBJ rendering, DMA, timers, audio,
+//! Development-only headless machine. Tile/OBJ rendering, audio,
 //! cartridge saves and BIOS replacement services are not implemented yet.
 use crate::{bus::Bus, cpu::Cpu, FRAME_CYCLES};
 use rustboy_emulator_api::{PixelFormat, VideoFrame, VideoGeometry};
@@ -54,6 +54,11 @@ impl GameBoyAdvance {
         if self.fault.is_some() {
             return 0;
         }
+        if self.bus.dma_unit() {
+            let clocks = self.bus.take_cycles();
+            self.advance_video(clocks);
+            return clocks;
+        }
         if self.bus.pending_irq() {
             self.bus.halted = false;
         }
@@ -62,7 +67,8 @@ impl GameBoyAdvance {
                 1006 - self.line_clocks
             } else {
                 1232 - self.line_clocks
-            });
+            })
+            .min(self.bus.timer_deadline());
             self.advance_video(clocks);
             return clocks;
         }
@@ -111,6 +117,7 @@ impl GameBoyAdvance {
         while clocks > 0 {
             let boundary = if self.line_clocks < 1006 { 1006 } else { 1232 };
             let advance = clocks.min(u64::from(boundary - self.line_clocks));
+            self.bus.advance_timers(advance);
             self.line_clocks += advance as u16;
             clocks -= advance;
             if self.line_clocks == 1006 {
@@ -121,6 +128,9 @@ impl GameBoyAdvance {
                 self.bus.set_io(4, stat);
                 if stat & 0x10 != 0 {
                     self.bus.request_irq(2);
+                }
+                if self.line < 160 {
+                    self.bus.trigger_dma(2);
                 }
             } else if self.line_clocks == 1232 {
                 self.line_clocks = 0;
@@ -134,6 +144,7 @@ impl GameBoyAdvance {
                 self.bus.set_io(4, stat);
                 if self.line == 160 {
                     self.frames += 1;
+                    self.bus.trigger_dma(1);
                     if stat & 8 != 0 {
                         self.bus.request_irq(1);
                     }
@@ -239,6 +250,37 @@ mod tests {
         assert_eq!(m.cpu.instructions, 0);
         m.bus.request_irq(1);
         m.bus.set_io(0x200, 1);
+        m.step();
+        assert!(!m.bus.halted);
+        assert_eq!(m.cpu.instructions, 1);
+    }
+    #[test]
+    fn dma_stalls_cpu_but_clocks_timers() {
+        let mut m = machine();
+        m.bus.write32(0x04000100, 0x00800000, false);
+        m.bus.write32(0x03000000, 0xdeadbeef, false);
+        m.bus.write32(0x040000d4, 0x03000000, false);
+        m.bus.write32(0x040000d8, 0x02000000, false);
+        m.bus.write32(0x040000dc, 0x84000001, false);
+        m.bus.take_cycles();
+        let clocks = m.step();
+        assert_eq!(clocks, 9);
+        assert_eq!(m.cpu.instructions, 0);
+        assert_eq!(m.bus.peek32(0x02000000), 0xdeadbeef);
+        assert_eq!(m.bus.peek16(0x04000100), 9);
+        m.step();
+        assert_eq!(m.cpu.instructions, 1);
+    }
+    #[test]
+    fn halt_wakes_on_timer_deadline() {
+        let mut m = machine();
+        m.bus.write32(0x04000100, 0x00c0fffd, false);
+        m.bus.set_io(0x200, 8);
+        m.bus.halted = true;
+        assert_eq!(m.step(), 3);
+        assert_eq!(m.cpu.instructions, 0);
+        assert_eq!(m.bus.io16(0x202) & 8, 8);
+        m.bus.take_cycles();
         m.step();
         assert!(!m.bus.halted);
         assert_eq!(m.cpu.instructions, 1);

@@ -3,6 +3,7 @@
 pub mod bus;
 pub mod cpu;
 pub mod machine;
+mod peripherals;
 pub use machine::GameBoyAdvance;
 
 pub const CLOCK_HZ: u64 = 16_777_216;

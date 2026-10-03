@@ -1,5 +1,6 @@
 //! GBA address decoding and instruction-granular wait states. No BIOS is bundled.
 use crate::cpu::Memory;
+use crate::peripherals::{Dma, Timer};
 
 pub struct Bus {
     pub(crate) bios: Vec<u8>,
@@ -12,6 +13,8 @@ pub struct Bus {
     pub(crate) io: Vec<u8>,
     clocks: u64,
     pub halted: bool,
+    pub(crate) timers: [Timer; 4],
+    pub(crate) dma: [Dma; 4],
 }
 impl Bus {
     pub fn new(rom: Vec<u8>, bios: Option<Vec<u8>>) -> Result<Self, String> {
@@ -32,6 +35,8 @@ impl Bus {
             io: vec![0; 0x400],
             clocks: 0,
             halted: false,
+            timers: [Timer::default(); 4],
+            dma: [Dma::default(); 4],
         };
         bus.set_io(0x130, 0x3ff);
         bus.set_io(0, 0x80);
@@ -73,7 +78,16 @@ impl Bus {
             0 if address < 0x4000 => self.bios.get(index).copied().unwrap_or(0),
             2 => self.ewram[index & 0x3ffff],
             3 => self.iwram[index & 0x7fff],
-            4 if index & 0xffffff < 0x400 => self.io[index & 0x3ff],
+            4 if index & 0xffffff < 0x400 => {
+                let offset = index & 0x3ff;
+                if (0x100..0x110).contains(&offset) && offset & 3 < 2 {
+                    (self.timers[(offset - 0x100) / 4].counter >> ((offset & 1) * 8)) as u8
+                } else if (0xb0..0xe0).contains(&offset) && (offset - 0xb0) % 12 < 10 {
+                    0
+                } else {
+                    self.io[offset]
+                }
+            }
             5 => self.palette[index & 0x3ff],
             6 => self.vram[Self::vram_index(address)],
             7 => self.oam[index & 0x3ff],
@@ -132,6 +146,7 @@ impl Bus {
             3 => self.iwram[index & 0x7fff] = value,
             4 if index & 0xffffff < 0x400 => {
                 let offset = index & 0x3ff;
+                let old = self.io[offset];
                 match offset {
                     0x202 | 0x203 => self.io[offset] &= !value,
                     6 | 7 | 0x130 | 0x131 => {}
@@ -139,6 +154,7 @@ impl Bus {
                     0x301 => self.halted = true,
                     _ => self.io[offset] = value,
                 }
+                self.peripheral_write(offset, old);
             }
             5 => self.palette[index & 0x3ff] = value,
             6 => self.vram[Self::vram_index(address)] = value,

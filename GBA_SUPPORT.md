@@ -51,8 +51,19 @@ backend-only milestone.
 
 ## Remaining milestones
 
-1. Expand ARM/Thumb instruction and exception validation; implement timers,
-   four DMA channels, bus ownership, and an original BIOS-service replacement
+### Timer/DMA milestone
+
+Four timers now implement reload/start semantics, all prescalers, overflow IRQs,
+and cascades, using batched arithmetic. HALT skips to the next timer/video event.
+All four DMA channels latch addresses/count on enable, arbitrate by priority,
+stall CPU execution per transfer unit, and implement immediate/VBlank/visible
+HBlank starts, transfer widths, address modes, repeat/reload and completion IRQs.
+Video and timers continue during DMA. Ten new tests cover these interactions.
+DMA startup phases, exact CPU register-write timing, cartridge DRQ/video capture,
+and Direct Sound FIFO requests still need work; this is not cycle-exact DMA yet.
+
+1. Expand ARM/Thumb instruction and exception validation; finish bus arbitration
+   and an original BIOS-service replacement
    for boot-ROM-free deployments. Use local FireRed as a compatibility probe,
    never as a distributed fixture or the sole correctness oracle.
 2. Complete PPU modes 0–5: tile and affine backgrounds, OBJ/OAM, priorities,
