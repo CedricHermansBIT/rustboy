@@ -181,6 +181,9 @@ The native diagnostic accepts `GBA_START_AT=1800` for a five-frame Start press.
 With this input the local FireRed probe reaches its controls introduction at
 2,400 frames, without a missing-service fault. Full gameplay, audio quality,
 cartridge/peripheral coverage and renderer accuracy still need validation.
+The rebuilt browser bundle passes all eleven browser regression scenarios;
+the self-contained gate now passes 260 native checks plus JS/Python checks.
+GBA Clippy with warnings denied and the root WASM check also pass.
 
 1. Expand ARM/Thumb instruction and exception validation; finish bus arbitration
    and an original BIOS-service replacement

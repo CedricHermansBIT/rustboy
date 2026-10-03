@@ -15,6 +15,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         machine.title()
     );
     let start = Instant::now();
+    let start_at = std::env::var("GBA_START_AT")
+        .ok()
+        .map(|v| v.parse::<u64>())
+        .transpose()?;
+    let trace_irq = std::env::var_os("GBA_TRACE_IRQ").is_some();
     let watch = std::env::var("GBA_TRACE_MEMORY")
         .ok()
         .map(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16))
@@ -31,12 +36,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             ))
         })
         .transpose()?;
-    if std::env::var_os("GBA_TRACE_IRQ").is_some() || trace_range.is_some() || watch.is_some() {
+    if trace_irq || trace_range.is_some() || watch.is_some() || start_at.is_some() {
         let mut traced = false;
         let mut remaining = 0u32;
         let mut window_lines = 128;
         let mut watch_lines = 128;
         while machine.clocks < FRAME_CYCLES * frames && machine.fault.is_none() {
+            if let Some(frame) = start_at {
+                let pressed = (frame.saturating_mul(FRAME_CYCLES)
+                    ..frame.saturating_add(5).saturating_mul(FRAME_CYCLES))
+                    .contains(&machine.clocks);
+                machine.bus.set_keys(if pressed { 1 << 3 } else { 0 });
+            }
             let old_pc = machine.cpu.r[15];
             let old_value = watch.map(|addr| machine.bus.peek16(addr));
             let old_exceptions = machine.cpu.exceptions;
@@ -63,7 +74,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     watch_lines -= 1;
                 }
             }
-            if std::env::var_os("GBA_TRACE_IRQ").is_some()
+            if trace_irq
                 && trace_range.is_none()
                 && !traced
                 && old_exceptions != machine.cpu.exceptions
