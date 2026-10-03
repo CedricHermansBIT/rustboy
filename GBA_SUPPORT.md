@@ -13,7 +13,7 @@ commercial game, or Nintendo firmware is included.
 - RAM/ROM/video memory address decoding and mirrors; video byte-write quirks;
   instruction-granular ROM WAITCNT and RAM bus costs; interrupt registers.
 - Scanline/HBlank/VBlank event scheduling and interrupt requests, HALT event
-  skipping, and initial bitmap modes 3/4/5 (identity coordinates only).
+  skipping, and bitmap modes 3/4/5 (expanded by the graphics milestone below).
 - Optional user-supplied 16 KiB BIOS; development direct entry into cartridge
   code without BIOS, using our own replacement services and IRQ shim. Unsupported
   services and exceptions stop execution explicitly.
@@ -23,8 +23,9 @@ commercial game, or Nintendo firmware is included.
 This is not yet pipeline/bus-cycle accurate. Branch refill accesses charge wait
 states but do not cache a real pipeline. ROM prefetch, BIOS read protection,
 open bus and bus arbitration remain unimplemented. Reserved/unpredictable
-instructions are not a complete hardware oracle. Bitmap output does not yet
-implement affine transforms, sprites, windows or blending. No audio is emitted.
+instructions are not a complete hardware oracle. Scanline graphics and Direct
+Sound are now functional baselines, not claims of raster/PWM accuracy or complete
+game compatibility. PSG channels remain unimplemented.
 
 ## Run locally
 
@@ -64,7 +65,8 @@ stall CPU execution per transfer unit, and implement immediate/VBlank/visible
 HBlank starts, transfer widths, address modes, repeat/reload and completion IRQs.
 Video and timers continue during DMA. Ten new tests cover these interactions.
 DMA startup phases, exact CPU register-write timing, cartridge DRQ/video capture,
-and Direct Sound FIFO requests still need work; this is not cycle-exact DMA yet.
+and precise Direct Sound request-edge timing still need work; this is not
+cycle-exact DMA yet.
 
 ### Replacement BIOS and browser upload milestone
 
@@ -76,9 +78,11 @@ separate. Service timing, reset register defaults and compression edge-case
 quirks are not claimed hardware-identical. Unimplemented services stop clearly.
 
 FireRed now runs a bounded 600-frame diagnostic without an unsupported service,
-but remains in a game-side interrupt polling loop around `080008BEh`; this needs
-investigation. This is **not evidence of a playable game**, and tile/OBJ graphics,
-audio and cartridge saves remain missing.
+and is sampled in a game-side interrupt polling loop around `080008BEh`.
+Instruction tracing confirms IRQ delivery and execution of its VBlank callback;
+sampling that loop alone does not prove the game is stuck. Its display control
+still has no backgrounds enabled at the end of this probe. This is **not evidence
+of a playable game**; full startup compatibility and cartridge saves need work.
 
 The shared frontend adapter includes pause/reset/input and checked version-1
 snapshots: CPU/banks, timers/DMA, RAM/I/O, scheduler and rendered frame. Corrupt,
@@ -91,14 +95,37 @@ The regression gate passes 217 native checks plus JS/Python checks; the existing
 nine browser scenarios and the new 32 MiB GBA upload scenario pass. The GBA
 scenario also switches back to the original GB backend to check coexistence.
 
+### Scanline graphics and Direct Sound milestone
+
+The original compositor now supports text/affine backgrounds, affine bitmap
+sampling, regular/affine/double-size sprites, OBJ mapping and priorities,
+palettes, transparency, regular/OBJ windows, mosaic, alpha blending and
+brightness. It uses stack buffers, not per-line heap allocation. Twenty-one
+original graphics tests cover these features. Internal affine reference latches,
+mid-scanline effects, OBJ fetch budgets and window/mosaic hardware edge cases
+remain accuracy work.
+
+Direct Sound A/B now implement bounded signed-byte FIFOs, timer selection,
+stereo routing/gain, clipping and bias/resolution quantization. DMA1/2 sound mode
+uses four-word refills and fixed destinations; the scheduler samples at 32,768 Hz
+and returns stereo audio through the shared backend API. PSG, precise FIFO
+request/underflow behavior and variable-rate PWM filtering remain incomplete.
+Version-2 snapshots preserve FIFO contents, held samples, output phase and
+queued audio; version-1 snapshots remain readable. Native GBA coverage now has
+68 unit tests and six original program tests, including timer/DMA PCM output
+through the frontend API and replay across state restoration.
+
+The native inspector supports bounded traces via `GBA_TRACE_IRQ=1` or
+`GBA_TRACE_PC=080008b0..080008d0`; normal execution keeps tracing disabled.
+
 1. Expand ARM/Thumb instruction and exception validation; finish bus arbitration
    and an original BIOS-service replacement
    for boot-ROM-free deployments. Use local FireRed as a compatibility probe,
    never as a distributed fixture or the sole correctness oracle.
-2. Complete PPU modes 0–5: tile and affine backgrounds, OBJ/OAM, priorities,
-   windows, mosaic and color effects, affine bitmap sampling and timing quirks.
-3. Implement the GBA PSG and Direct Sound FIFOs, timer-driven PCM and audio DMA;
-   expose correctly clocked stereo samples through the shared frontend API.
+2. Validate and refine PPU modes 0–5, especially affine reference latches,
+   raster effects, OBJ budgets and window/mosaic timing quirks.
+3. Implement the GBA PSG and refine Direct Sound request/PWM timing; validate
+   audio end to end in games and browser playback.
 4. Cartridge SRAM/Flash/EEPROM, save detection and persistence, validated state
    snapshots, keypad IRQ, serial/link devices and cartridge peripherals.
 5. Complete browser GBA shoulder buttons, settings, battery-save support and

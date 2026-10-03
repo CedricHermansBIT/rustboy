@@ -8,6 +8,46 @@ fn put_words(machine: &mut GameBoyAdvance, address: u32, words: &[u32]) {
     }
     machine.bus.take_cycles();
 }
+
+#[test]
+fn timer_dma_sound_reaches_frontend_and_replays_after_restore() {
+    use rustboy_emulator_api::Emulator;
+    let mut rom = vec![0; 192];
+    rom[..4].copy_from_slice(&0xeafffffeu32.to_le_bytes());
+    let mut m = GameBoyAdvance::new(rom, None).unwrap();
+    // Original PCM fixture: alternating positive/negative levels, timer0 at
+    // output rate, repeating sound DMA1. No external music or firmware.
+    for n in 0..1024 {
+        m.bus.write32(0x02000000 + n * 4, 0xc040c040, false);
+    }
+    m.bus.write16(0x04000084, 0x80, false);
+    m.bus.write16(0x04000082, 0x0304, false);
+    m.bus.write32(0x040000bc, 0x02000000, false);
+    m.bus.write32(0x040000c0, 0x040000a0, false);
+    m.bus.write32(0x040000c4, 0xb2000001, false);
+    m.bus.write32(0x04000100, 0x0080fe00, false);
+    m.bus.take_cycles();
+    m.run(4096);
+    let saved = m.export_state();
+    let sound = m.drain_audio();
+    assert_eq!((sound.sample_rate, sound.channels), (32768, 2));
+    assert_eq!(sound.samples.len(), (m.clocks / 512) as usize * 2);
+    assert!(sound.samples.contains(&0.5));
+    assert!(sound.samples.contains(&-0.5));
+    assert!(sound
+        .samples
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .all(|s| s[0] == s[1]));
+    assert!(m.drain_audio().samples.is_empty());
+    m.run(4096);
+    let expected = m.drain_audio().samples;
+    m.import_state(&saved).unwrap();
+    m.drain_audio();
+    m.run(4096);
+    assert_eq!(m.drain_audio().samples, expected);
+}
 fn install_irq_handler(machine: &mut GameBoyAdvance) {
     // Independent handler: set BIOS flags, acknowledge VBlank, return via BX LR.
     put_words(
