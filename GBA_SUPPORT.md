@@ -65,7 +65,10 @@ Derived timer caches are reconstructed on BIOS reset and snapshot restore;
 regression tests compare cached scheduling and wide reads against canonical state.
 
 Browser execution runs in small clock-budget chunks with a 12-ms host allowance
-per animation callback. If the host cannot sustain fast-forward, missed wall time
+at normal speed, increasing with fast-forward to a bounded 32-ms allowance.
+This deliberately trades presentation refresh for throughput at higher speeds;
+a fixed 12-ms allowance at every speed previously suppressed fast-forward on
+busy hosts. If the host cannot sustain fast-forward, missed wall time
 is dropped instead of accumulating an expanding catch-up job. Hardware events,
 instruction timing and instruction overshoot remain intact. The selected speed
 is a target, not a promise of 4x/8x on every device. Rendering still occurs each
@@ -77,10 +80,13 @@ To measure a local GBA cartridge in Chromium without copying it into the site:
 RUSTBOY_GBA_PROFILE="path/to/game.gba" RUSTBOY_NO_BOOT=1 node tests/browser_smoke.mjs
 ```
 
-The optional profile reports achieved startup throughput and animation callback
-latencies at a requested 8x. It is not a benchmark of completed gameplay.
+The optional profile restores the same initial state for requested 1x, 4x and
+8x, reporting achieved startup throughput and animation callback latencies.
+It is not a benchmark of completed gameplay. The synthetic upload browser gate
+also checks that 4x advances more emulated time per second than 1x, rather than
+only checking the speed badge or callback liveness.
 
-Local measurement (2026-10-03): the same 1,800-frame FireRed startup probe with
+Initial optimization measurement (2026-10-03): the same 1,800-frame FireRed startup probe with
 `perf record -g -e cpu-clock:u` took 14.261 s before and 11.626 s after these
 changes. Both executed 505,612,801 clocks / 159,868,346 instructions and reached
 the same final CPU/display state. In rebuilt Chromium WASM, the optional short
@@ -89,6 +95,13 @@ callbacks. These host/workload-specific measurements do not guarantee gameplay
 throughput. All 272 self-contained native checks and eleven browser scenarios
 pass, including responsive 8x synthetic GBA playback; GBA Clippy and WASM checks
 also pass. The separate local GB ROM suite was not rerun in this milestone.
+
+After correcting the fixed browser work ceiling, paired FireRed startup probes
+from the same initial state measured 1.01x at normal speed, 1.83x at requested
+4x and 1.75x at requested 8x on this host. The synthetic cartridge measured
+1.09x / 4.02x at requested 1x / 4x. Fast-forward now increases the allowed host
+work rather than sharing the normal-speed ceiling; actual FireRed throughput
+remains host/workload limited. The self-contained native gate now has 273 checks.
 
 ### Timer/DMA milestone
 

@@ -23,6 +23,14 @@ impl Session {
         self.tick_bounded(timestamp_ms, f64::INFINITY, || 0.0)
     }
 
+    /// Fast-forward may spend more host time per presentation, trading display
+    /// refresh for emulated throughput. A fixed allowance for every speed can
+    /// make fast-forward indistinguishable from normal speed on a busy host.
+    pub fn tick_browser(&mut self, timestamp_ms: f64, now: impl FnMut() -> f64) -> RunResult {
+        let allowance = (12.0 * f64::from(self.speed)).min(32.0);
+        self.tick_bounded(timestamp_ms, allowance, now)
+    }
+
     /// Run small hardware-clock chunks, yielding when the host time allowance is
     /// spent. The injected monotonic clock keeps this policy platform-independent
     /// and testable. Requested fast-forward is limited by actual host capacity.
@@ -235,6 +243,24 @@ mod tests {
             }
             assert!((1000 * speed as u64..1000 * speed as u64 + 7).contains(&ticks));
         }
+    }
+
+    #[test]
+    fn browser_fast_forward_increases_work_instead_of_reusing_normal_speed_ceiling() {
+        let mut counts = Vec::new();
+        for speed in [1, 2, 4, 8] {
+            let mut session = session();
+            session.set_speed(speed);
+            session.tick(0.0);
+            let mut elapsed = -4.0;
+            let result = session.tick_browser(100.0, || {
+                elapsed += 4.0;
+                elapsed
+            });
+            assert!(elapsed <= 32.0, "browser still yields under load");
+            counts.push(result.ticks);
+        }
+        assert_eq!(counts, [21, 42, 56, 56]);
     }
 
     #[test]

@@ -201,15 +201,33 @@ try {
     await call('DOM.setFileInputFiles',{nodeId,files:[gbaPath]});
     await until("Module._export_save_data()[0x1234]===0x5a");
     assert.ok(await evaluate("Module._get_save_key()===gbaSaveKey && localStorage.getItem(gbaSaveKey)===gbaPersisted"));
-    await evaluate("Module._set_speed(8); Module._set_paused(false); window.gbaFastFrames=0; requestAnimationFrame(function heartbeat() { if (++window.gbaFastFrames < 60) requestAnimationFrame(heartbeat); });");
-    await until("window.gbaFastFrames===60", 15000);
-    assert.equal(await evaluate("Module._get_speed()"), 8);
-    await evaluate("Module._set_speed(1); Module._set_paused(true)");
+    const speedChecks = await evaluate(`(async () => {
+      Module._set_paused(true);
+      const baseline = Module._export_state();
+      const readings = [];
+      for (const requested of [1, 4]) {
+        Module._import_state(baseline); Module._set_speed(requested);
+        const before = Number(new DataView(baseline.buffer, baseline.byteOffset).getBigUint64(301, true));
+        const start = performance.now(); Module._set_paused(false);
+        await new Promise(resolve => {
+          let frames=0; requestAnimationFrame(function sample() {
+            if (++frames < 60) requestAnimationFrame(sample); else resolve();
+          });
+        });
+        Module._set_paused(true); const elapsed = performance.now()-start;
+        const state = Module._export_state();
+        const after = Number(new DataView(state.buffer, state.byteOffset).getBigUint64(301, true));
+        readings.push((after-before)/16777216/(elapsed/1000));
+      }
+      Module._set_speed(1); return readings;
+    })()`);
+    assert.ok(speedChecks[1] > speedChecks[0] * 1.2,
+      `fast-forward must advance more emulated time, not just change the badge: ${speedChecks}`);
     const oversized=path.join(temporary,'oversized.gba');const file=await fs.open(oversized,'w');await file.truncate(gba.length+1);await file.close();
     await call('DOM.setFileInputFiles',{nodeId,files:[oversized]});
     await until("document.body.textContent.includes('Could not read ROM: ROM size must')");
     assert.equal(await evaluate("Module._get_state_id()===gbaUploadedId"),true);
-    console.log('GBA browser: 32 MiB upload, real WASM bitmap, Flash persistence, checked states, responsive 8x callbacks and oversized-load preservation passed');
+    console.log('GBA browser: 32 MiB upload, real WASM bitmap, Flash persistence, checked states, measured fast-forward and oversized-load preservation passed', speedChecks);
   }
   // Explicit opt-in only. Never copies the supplied game into public assets.
   if (process.env.RUSTBOY_GBA_PROFILE) {
@@ -229,8 +247,12 @@ try {
         if (bytes[4] !== 5) throw new Error('Update profile snapshot offsets');
         return Number(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(301, true));
       };
-      Module._set_speed(8);
-      const before = clocks(); const start = performance.now();
+      Module._set_paused(true);
+      const baseline = Module._export_state();
+      const results = [];
+      for (const requested of [1, 4, 8]) {
+      Module._import_state(baseline); Module._set_speed(requested);
+      const before = clocks(); const start = performance.now(); Module._set_paused(false);
       const delays = []; let previous = start;
       await new Promise(resolve => requestAnimationFrame(function sample() {
         const now = performance.now(); delays.push(now-previous); previous=now;
@@ -240,14 +262,18 @@ try {
       Module._set_paused(true);
       const speed = (clocks()-before)/16777216/(elapsed/1000);
       delays.sort((a,b) => a-b);
-      const result = {requestedSpeed: 8, achievedSpeed: speed,
+      const result = {requestedSpeed: requested, achievedSpeed: speed,
         medianCallbackMs: delays[60], p95CallbackMs: delays[114],
         maxCallbackMs: delays[119], status: wasm.get_backend_status()};
+      results.push(result);
+      }
       Module._set_speed(1);
-      return result;
+      return results;
     })()`);
-    assert.ok(!metrics.status.includes('stopped'), metrics.status);
-    assert.ok(metrics.achievedSpeed > 0, 'GBA continues executing at fast-forward');
+    for (const metric of metrics) {
+      assert.ok(!metric.status.includes('stopped'), metric.status);
+      assert.ok(metric.achievedSpeed > 0, 'GBA continues executing');
+    }
     console.log('Local GBA fast-forward profile:', JSON.stringify(metrics));
   }
   if (process.env.RUSTBOY_SGB_FIRMWARE) {

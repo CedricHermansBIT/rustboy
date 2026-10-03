@@ -515,7 +515,7 @@ fn start_emulation_loop() {
         let current = SESSION.with(|slot| slot.borrow().clone());
         if let Some(current) = current {
             let mut session = current.borrow_mut();
-            session.tick_bounded(timestamp, 12.0, || performance.now());
+            session.tick_browser(timestamp, || performance.now());
             check_keys(&mut session);
             draw_frame(&context, session.backend.video_frame());
             if let Some(debug) = session
