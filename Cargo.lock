@@ -147,6 +147,7 @@ dependencies = [
  "png",
  "rustboy-emulator-api",
  "rustboy-gameboy",
+ "rustboy-gba",
  "rustboy-snes-apu",
  "wasm-bindgen",
  "web-sys",
@@ -162,6 +163,13 @@ version = "0.1.0"
 dependencies = [
  "rustboy-emulator-api",
  "rustboy-snes-apu",
+]
+
+[[package]]
+name = "rustboy-gba"
+version = "0.1.0"
+dependencies = [
+ "rustboy-emulator-api",
 ]
 
 [[package]]

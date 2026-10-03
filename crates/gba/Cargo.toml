@@ -1,0 +1,9 @@
+[package]
+name = "rustboy-gba"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Independently authored headless Game Boy Advance hardware for RustBoy"
+
+[dependencies]
+rustboy-emulator-api = { path = "../emulator-api" }

@@ -8,7 +8,7 @@ repository = "https://github.com/CedricHermansBIT/rustboy"
 authors = ["Cedric Hermans"]
 
 [workspace]
-members = ["crates/emulator-api", "crates/gameboy", "crates/snes-apu"]
+members = ["crates/emulator-api", "crates/gameboy", "crates/snes-apu", "crates/gba"]
 resolver = "2"
 
 [lib]
@@ -21,6 +21,7 @@ web = ["wasm-bindgen", "js-sys", "web-sys", "console_error_panic_hook"]
 [dependencies]
 rustboy-emulator-api = { path = "crates/emulator-api" }
 rustboy-gameboy = { path = "crates/gameboy" }
+rustboy-gba = { path = "crates/gba" }
 wasm-bindgen = { version = "0.2.92", optional = true }
 js-sys = { version = "0.3.69", optional = true }
 lazy_static = "1.5.0"

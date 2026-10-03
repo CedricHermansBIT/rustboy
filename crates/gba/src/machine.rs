@@ -1,0 +1,246 @@
+//! Development-only headless machine. Tile/OBJ rendering, DMA, timers, audio,
+//! cartridge saves and BIOS replacement services are not implemented yet.
+use crate::{bus::Bus, cpu::Cpu, FRAME_CYCLES};
+use rustboy_emulator_api::{PixelFormat, VideoFrame, VideoGeometry};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissingBiosException {
+    pub instruction_address: u32,
+    pub vector: u32,
+}
+
+pub struct GameBoyAdvance {
+    pub cpu: Cpu,
+    pub bus: Bus,
+    pub clocks: u64,
+    pub frames: u64,
+    /// Stop rather than executing zero-filled exception vectors as fake firmware.
+    pub fault: Option<MissingBiosException>,
+    pixels: Vec<u8>,
+    line: u16,
+    line_clocks: u16,
+}
+impl GameBoyAdvance {
+    pub fn new(rom: Vec<u8>, bios: Option<Vec<u8>>) -> Result<Self, String> {
+        let boot = bios.is_some();
+        let bus = Bus::new(rom, bios)?;
+        let mut cpu = Cpu::default();
+        if !boot {
+            cpu.set_cpsr(0xd2).unwrap();
+            cpu.r[13] = 0x03007fa0;
+            cpu.set_cpsr(0xd3).unwrap();
+            cpu.r[13] = 0x03007fe0;
+            cpu.set_cpsr(0x1f).unwrap();
+            cpu.r[13] = 0x03007f00;
+            cpu.r[15] = 0x08000000;
+        }
+        Ok(Self {
+            cpu,
+            bus,
+            clocks: 0,
+            frames: 0,
+            fault: None,
+            pixels: vec![255; 240 * 160 * 4],
+            line: 0,
+            line_clocks: 0,
+        })
+    }
+    pub fn title(&self) -> String {
+        String::from_utf8_lossy(&self.bus.rom[0xa0..0xac])
+            .trim_end_matches('\0')
+            .to_owned()
+    }
+    pub fn step(&mut self) -> u64 {
+        if self.fault.is_some() {
+            return 0;
+        }
+        if self.bus.pending_irq() {
+            self.bus.halted = false;
+        }
+        if self.bus.halted {
+            let clocks = u64::from(if self.line_clocks < 1006 {
+                1006 - self.line_clocks
+            } else {
+                1232 - self.line_clocks
+            });
+            self.advance_video(clocks);
+            return clocks;
+        }
+        let address = self.cpu.r[15];
+        let exceptions = self.cpu.exceptions;
+        if !self.bus.irq_enabled() || !self.cpu.irq(&mut self.bus) {
+            self.cpu.step(&mut self.bus);
+        }
+        if self.cpu.exceptions != exceptions && self.bus.bios.is_empty() {
+            self.fault = Some(MissingBiosException {
+                instruction_address: address,
+                vector: self.cpu.r[15],
+            });
+        }
+        let clocks = self.bus.take_cycles();
+        self.advance_video(clocks);
+        clocks
+    }
+    /// CPU clock budget, including whole-instruction overshoot. No host sleep,
+    /// rendering callback or allocation in the execution loop.
+    pub fn run(&mut self, budget: u64) -> u64 {
+        let start = self.clocks;
+        while self.clocks.wrapping_sub(start) < budget && self.fault.is_none() {
+            self.step();
+        }
+        self.clocks.wrapping_sub(start)
+    }
+    pub fn run_frame(&mut self) -> u64 {
+        self.run(FRAME_CYCLES)
+    }
+    pub fn video_frame(&self) -> VideoFrame<'_> {
+        VideoFrame {
+            geometry: VideoGeometry {
+                width: 240,
+                height: 160,
+                aspect_width: 3,
+                aspect_height: 2,
+            },
+            format: PixelFormat::Rgba8888,
+            pixels: &self.pixels,
+            enabled: true,
+        }
+    }
+    fn advance_video(&mut self, mut clocks: u64) {
+        self.clocks = self.clocks.wrapping_add(clocks);
+        while clocks > 0 {
+            let boundary = if self.line_clocks < 1006 { 1006 } else { 1232 };
+            let advance = clocks.min(u64::from(boundary - self.line_clocks));
+            self.line_clocks += advance as u16;
+            clocks -= advance;
+            if self.line_clocks == 1006 {
+                if self.line < 160 {
+                    self.render_line();
+                }
+                let stat = self.bus.io16(4) | 2;
+                self.bus.set_io(4, stat);
+                if stat & 0x10 != 0 {
+                    self.bus.request_irq(2);
+                }
+            } else if self.line_clocks == 1232 {
+                self.line_clocks = 0;
+                self.line = (self.line + 1) % 228;
+                self.bus.set_io(6, self.line);
+                let old = self.bus.io16(4);
+                let matched = self.line == old >> 8;
+                let stat = (old & !7)
+                    | u16::from((160..227).contains(&self.line))
+                    | (u16::from(matched) << 2);
+                self.bus.set_io(4, stat);
+                if self.line == 160 {
+                    self.frames += 1;
+                    if stat & 8 != 0 {
+                        self.bus.request_irq(1);
+                    }
+                }
+                if matched && old & 4 == 0 && stat & 0x20 != 0 {
+                    self.bus.request_irq(4);
+                }
+            }
+        }
+    }
+    fn render_line(&mut self) {
+        let control = self.bus.io16(0);
+        let mode = control & 7;
+        let y = usize::from(self.line);
+        let page = if control & 16 != 0 { 0xa000 } else { 0 };
+        for x in 0..240 {
+            let color = if control & 128 != 0 {
+                0x7fff
+            } else if control & 0x400 == 0 {
+                self.bus.peek16(0x05000000)
+            } else {
+                match mode {
+                    3 => self.bus.peek16(0x06000000 + ((y * 240 + x) * 2) as u32),
+                    4 => self
+                        .bus
+                        .peek16(0x05000000 + u32::from(self.bus.vram[page + y * 240 + x]) * 2),
+                    5 if x < 160 && y < 128 => self
+                        .bus
+                        .peek16(0x06000000 + (page + (y * 160 + x) * 2) as u32),
+                    _ => self.bus.peek16(0x05000000),
+                }
+            };
+            let pixel = (y * 240 + x) * 4;
+            for channel in 0..3 {
+                let value = ((color >> (channel * 5)) & 31) as u8;
+                self.pixels[pixel + channel] = (value << 3) | (value >> 2);
+            }
+            self.pixels[pixel + 3] = 255;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cpu::Memory;
+    fn machine() -> GameBoyAdvance {
+        let mut rom = vec![0; 192];
+        rom[..4].copy_from_slice(&0xeafffffeu32.to_le_bytes());
+        GameBoyAdvance::new(rom, None).unwrap()
+    }
+    #[test]
+    fn direct_boot_and_frame_budget() {
+        let mut m = machine();
+        assert_eq!(m.cpu.r[15], 0x08000000);
+        assert_eq!(m.cpu.r[13], 0x03007f00);
+        let elapsed = m.run_frame();
+        assert!((FRAME_CYCLES..FRAME_CYCLES + 32).contains(&elapsed));
+        assert_eq!(m.frames, 1);
+        assert_eq!(m.cpu.exceptions, 0);
+    }
+    #[test]
+    fn video_deadlines_and_interrupts() {
+        let mut m = machine();
+        m.bus.set_io(4, 0x0138);
+        m.advance_video(1005);
+        assert_eq!(m.bus.io16(4) & 2, 0);
+        m.advance_video(1);
+        assert_eq!(m.bus.io16(4) & 2, 2);
+        assert_eq!(m.bus.io16(0x202), 2);
+        m.advance_video(226);
+        assert_eq!(m.bus.io16(6), 1);
+        assert_eq!(m.bus.io16(4) & 7, 4);
+        assert_eq!(m.bus.io16(0x202), 6);
+        m.advance_video(159 * 1232);
+        assert_eq!(m.frames, 1);
+        assert_eq!(m.bus.io16(4) & 1, 1);
+        m.advance_video(67 * 1232);
+        assert_eq!(m.bus.io16(4) & 1, 0);
+    }
+    #[test]
+    fn bitmap_modes_and_page_selection() {
+        let mut m = machine();
+        m.bus.write16(0x04000000, 0x403, false);
+        m.bus.write16(0x06000000, 0x001f, false);
+        m.render_line();
+        assert_eq!(&m.pixels[..4], &[255, 0, 0, 255]);
+        m.bus.write16(0x04000000, 0x414, false);
+        m.bus.vram[0xa000] = 1;
+        m.bus.write16(0x05000002, 0x3e0, false);
+        m.render_line();
+        assert_eq!(&m.pixels[..4], &[0, 255, 0, 255]);
+        m.bus.write16(0x04000000, 0x415, false);
+        m.bus.write16(0x0600a000, 0x7c00, false);
+        m.render_line();
+        assert_eq!(&m.pixels[..4], &[0, 0, 255, 255]);
+    }
+    #[test]
+    fn halted_cpu_skips_to_video_event() {
+        let mut m = machine();
+        m.bus.halted = true;
+        assert_eq!(m.step(), 1006);
+        assert_eq!(m.cpu.instructions, 0);
+        m.bus.request_irq(1);
+        m.bus.set_io(0x200, 1);
+        m.step();
+        assert!(!m.bus.halted);
+        assert_eq!(m.cpu.instructions, 1);
+    }
+}
