@@ -134,6 +134,8 @@ pub struct Sgb {
     pub rejected_pulses: u64,
     sound: sound::Sound,
     palettes: [[u16; 4]; 4],
+    user_palette: Option<[[u16; 4]; 4]>,
+    palette_priority: bool,
     attributes: [u8; 20 * 18],
     mask: u8,
     players: u8,
@@ -171,6 +173,8 @@ impl Sgb {
             sound: sound::Sound::default(),
             // Neutral fallback, not a copy of Nintendo's built-in palettes.
             palettes: [[0x7FFF, 0x56B5, 0x294A, 0]; 4],
+            user_palette: None,
+            palette_priority: false,
             attributes: [0; 360],
             mask: 0,
             players: 1,
@@ -204,6 +208,32 @@ impl Sgb {
         self.mask
     }
 
+    /// Override LCD colors with original host-provided RGB555 palettes.
+    /// Color zero is shared by all four palettes, as on the SGB.
+    pub fn set_user_palette(&mut self, mut palettes: [[u16; 4]; 4]) -> Result<(), String> {
+        if palettes.iter().flatten().any(|&color| color > 0x7FFF) {
+            return Err("SGB user palette colors must be RGB555".into());
+        }
+        let backdrop = palettes[0][0];
+        for palette in &mut palettes {
+            palette[0] = backdrop;
+        }
+        self.user_palette = Some(palettes);
+        self.recolor_frame();
+        Ok(())
+    }
+
+    pub fn clear_user_palette(&mut self) {
+        self.user_palette = None;
+        self.recolor_frame();
+    }
+
+    pub fn user_palette_active(&self) -> bool { self.user_palette.is_some() }
+    pub fn palette_priority(&self) -> bool { self.palette_priority }
+    pub fn visible_palettes(&self) -> [[u16; 4]; 4] {
+        self.user_palette.unwrap_or(self.palettes)
+    }
+
     pub fn has_border(&self) -> bool {
         self.border.active
     }
@@ -226,11 +256,11 @@ impl Sgb {
 
     /// Separate SNES tile memory, not an extension of the Game Boy's VRAM.
     pub fn debug_border_tiles(&self) -> Vec<u8> {
-        self.border.debug_tiles(self.palettes[0][0])
+        self.border.debug_tiles(self.visible_palettes()[0][0])
     }
 
     pub fn debug_border_map(&self) -> Vec<u8> {
-        let mut out = rgb(self.palettes[0][0]).repeat(border::WIDTH * border::HEIGHT);
+        let mut out = rgb(self.visible_palettes()[0][0]).repeat(border::WIDTH * border::HEIGHT);
         if self.has_border() {
             self.border.overlay(&mut out);
         }
@@ -398,18 +428,19 @@ impl Sgb {
         if !self.shades_valid {
             return;
         }
+        let palettes = self.visible_palettes();
         for (index, out) in self.frame.chunks_exact_mut(4).enumerate() {
             let palette = self.attributes[(index / 160 / 8) * 20 + index % 160 / 8] as usize;
             // This is the LCD shade *after* BGP/OBP, not raw tile color.
             let shade = (self.shades[index / 4] >> ((index % 4) * 2)) & 3;
-            out.copy_from_slice(&rgb(self.palettes[palette][shade as usize]));
+            out.copy_from_slice(&rgb(palettes[palette][shade as usize]));
         }
     }
 
     pub fn copy_frame(&self, out: &mut [u8]) {
         if self.border.active {
             for pixel in out.chunks_exact_mut(4) {
-                pixel.copy_from_slice(&rgb(self.palettes[0][0]));
+                pixel.copy_from_slice(&rgb(self.visible_palettes()[0][0]));
             }
             for y in 0..144 {
                 let offset = ((y + 40) * border::WIDTH + 48) * 4;
@@ -433,7 +464,7 @@ impl Sgb {
                 let color = rgb(if self.mask == 2 {
                     0
                 } else {
-                    self.palettes[0][0]
+                    self.visible_palettes()[0][0]
                 });
                 for pixel in out.chunks_exact_mut(4) {
                     pixel.copy_from_slice(&color);
@@ -446,6 +477,9 @@ impl Sgb {
     fn execute(&mut self, command: &Command) {
         let data = &command.bytes;
         self.commands_received = self.commands_received.saturating_add(1);
+        if self.palette_priority && matches!(command.code, 0..=3 | 0x0A) {
+            self.user_palette = None;
+        }
         match command.code {
             0..=3 => {
                 let (first, second) = [(0, 1), (2, 3), (0, 3), (1, 2)][command.code as usize];
@@ -577,6 +611,7 @@ impl Sgb {
                 }
             }
             0x0B => self.request_transfer(4),
+            0x19 => self.palette_priority = data[1] & 1 != 0,
             0x0E => self.commands_disabled = data[1] & 4 != 0,
             0x11 => {
                 self.players = if data[1] & 1 == 0 {
@@ -666,21 +701,28 @@ impl Sgb {
         out.extend_from_slice(&self.rejected_pulses.to_le_bytes());
         self.sound.export_state(&mut out);
         self.sound.export_audio_state(&mut out);
+        out.extend_from_slice(&[self.palette_priority as u8, self.user_palette.is_some() as u8]);
+        for color in self.user_palette.unwrap_or([[0; 4]; 4]).iter().flatten() {
+            out.extend_from_slice(&color.to_le_bytes());
+        }
         out
     }
 
     pub(crate) fn import_state(rom: &[u8], data: &[u8], version: u16) -> Result<Self, String> {
         let mut sgb = Self::new(rom);
+        const PALETTE_STATE_BYTES: usize = 34;
+        let v6_length = sgb.export_state().len() - PALETTE_STATE_BYTES;
         let expected = match version {
             1 => LEGACY_STATE_BYTES,
             2 => BORDER_STATE_BYTES,
-            3 => sgb.export_state().len() - TIMING_STATE_BYTES - sound::STATE_BYTES - sound::AUDIO_STATE_BASE_BYTES,
-            4 => sgb.export_state().len() - sound::STATE_BYTES - sound::AUDIO_STATE_BASE_BYTES,
-            5 => sgb.export_state().len() - sound::AUDIO_STATE_BASE_BYTES,
-            6 => sgb.export_state().len(),
+            3 => v6_length - TIMING_STATE_BYTES - sound::STATE_BYTES - sound::AUDIO_STATE_BASE_BYTES,
+            4 => v6_length - sound::STATE_BYTES - sound::AUDIO_STATE_BASE_BYTES,
+            5 => v6_length - sound::AUDIO_STATE_BASE_BYTES,
+            6 => v6_length,
+            7 => v6_length + PALETTE_STATE_BYTES,
             _ => return Err("Unsupported SGB snapshot version".into()),
         };
-        if (version<6 && data.len()!=expected) || (version==6 && data.len()<expected) {
+        if (version<6 && data.len()!=expected) || (version>=6 && data.len()<expected) {
             return Err("Invalid SGB snapshot length".into());
         }
         let mut input = data;
@@ -772,7 +814,24 @@ impl Sgb {
             }
         }
         if version >= 5 { sgb.sound = sound::Sound::import_state(take(&mut input, sound::STATE_BYTES))?; }
-        if version >= 6 { sgb.sound.import_audio_state(input)?; }
+        if version >= 7 {
+            let (audio, palette_state) = input.split_at(input.len() - PALETTE_STATE_BYTES);
+            sgb.sound.import_audio_state(audio)?;
+            input = palette_state;
+            sgb.palette_priority = boolean(&mut input)?;
+            let active = boolean(&mut input)?;
+            let mut palettes = [[0; 4]; 4];
+            for color in palettes.iter_mut().flatten() {
+                *color = u16::from_le_bytes(take(&mut input, 2).try_into().unwrap());
+            }
+            if palettes.iter().flatten().any(|&color| color > 0x7FFF)
+                || (active && palettes.iter().any(|palette| palette[0] != palettes[0][0]))
+                || (!active && palettes != [[0; 4]; 4])
+            {
+                return Err("Invalid SGB user palette state".into());
+            }
+            sgb.user_palette = active.then_some(palettes);
+        } else if version >= 6 { sgb.sound.import_audio_state(input)?; }
         if sgb.mask > 3
             || ![1, 2, 4].contains(&sgb.players)
             || sgb.player >= sgb.players
@@ -1052,10 +1111,10 @@ mod tests {
         sgb.write_joyp(0x30);
         sgb.write_joyp(0x10);
         let bytes = sgb.export_state();
-        assert_eq!(Sgb::import_state(&rom, &bytes, 6).unwrap(), sgb);
-        assert!(Sgb::import_state(&rom, &bytes[..bytes.len() - 1], 6).is_err());
+        assert_eq!(Sgb::import_state(&rom, &bytes, 7).unwrap(), sgb);
+        assert!(Sgb::import_state(&rom, &bytes[..bytes.len() - 1], 7).is_err());
         let mut bad = bytes;
         bad[2] = 3;
-        assert!(Sgb::import_state(&rom, &bad, 6).is_err());
+        assert!(Sgb::import_state(&rom, &bad, 7).is_err());
     }
 }

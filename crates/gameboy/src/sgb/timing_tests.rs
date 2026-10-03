@@ -56,14 +56,14 @@ fn stop_bit_is_not_dispatched_until_release_and_its_width_survives_snapshots() {
     sgb.tick_joyp(4);
     assert_eq!(sgb.commands_received, 0);
     let state = sgb.export_state();
-    let mut restored = Sgb::import_state(&rom, &state, 6).unwrap();
+    let mut restored = Sgb::import_state(&rom, &state, 7).unwrap();
     restored.tick_joyp(4);
     restored.write_joyp_timed(0x30);
     assert_eq!(restored.commands_received, 1);
     sgb.write_joyp_timed(0x30); // Releasing at only one M-cycle must reject.
     assert_eq!(sgb.commands_received, 0);
     assert_eq!(sgb.rejected_pulses, 1);
-    let mut old = Sgb::import_state(&rom, &state[..state.len() - TIMING_STATE_BYTES - sound::STATE_BYTES - sound::AUDIO_STATE_BASE_BYTES], 3).unwrap();
+    let mut old = Sgb::import_state(&rom, &state[..state.len() - TIMING_STATE_BYTES - sound::STATE_BYTES - sound::AUDIO_STATE_BASE_BYTES - 34], 3).unwrap();
     assert_eq!(old.receiver.bits, 128); // Receiver held 128 bits before the stop.
                                         // A v3 snapshot can resume via its untimed debug transport.
     old.write_joyp(0x20);

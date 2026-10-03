@@ -47,6 +47,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let commands = sgb.commands_received;
         let border = sgb.has_border();
         let sound_uploads = sgb.sound_uploads();
+        let (notes, score_errors) = sgb.sound_replacement_statistics();
+        assert_eq!(score_errors, 0, "{path}: replacement score decoding errors");
+        let sound_mode = if sgb.sound_uses_replacement() { "resident replacement" } else { "SPC program" };
         let unsupported: Vec<_> = sgb
             .unsupported
             .iter()
@@ -65,6 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let saved = gb.export_state();
         gb.run(70_224 * 2);
         let expected = gb.video_frame().pixels.to_vec();
+        let expected_sgb = gb.cpu().sgb.as_ref().unwrap().clone();
         gb.reset();
         gb.import_state(&saved)?;
         gb.run(70_224 * 2);
@@ -73,7 +77,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             expected,
             "{path}: state replay differs"
         );
-        println!("PASS {path}: {} game colors, border={border}, commands={commands}, sound uploads={sound_uploads} (SNES playback unavailable), unsupported=[{}], finite GB audio and state replay", colors.len(), unsupported.join(", "));
+        assert_eq!(gb.cpu().sgb.as_ref().unwrap(), &expected_sgb, "{path}: adapter/audio state replay differs");
+        println!("PASS {path}: {} game colors, border={border}, commands={commands}, sound uploads={sound_uploads}, audio={sound_mode}, notes={notes}, score errors={score_errors}, unsupported=[{}], finite mixed audio and adapter state replay", colors.len(), unsupported.join(", "));
     }
     Ok(())
 }

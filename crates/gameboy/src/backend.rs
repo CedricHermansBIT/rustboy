@@ -10,7 +10,7 @@ pub enum HardwareModel {
     Dmg,
     Cgb,
     /// Command-level SGB adapter at the GB/SGB2 clock rate.
-    /// Game-provided borders and palettes; no SNES CPU or SNES audio.
+    /// Game-provided borders, palettes and SPC audio; no SNES CPU/PPU.
     Sgb,
 }
 
@@ -106,6 +106,17 @@ impl GameBoy {
     /// Host-owned presentation preference, independent of cartridge/state data.
     pub fn set_border_visible(&mut self, visible: bool) {
         self.border_visible = visible;
+    }
+
+    /// Apply an original host-selected SGB palette. PAL_PRI can allow later
+    /// cartridge palette commands to take control again; never reapply per frame.
+    pub fn set_sgb_user_palette(&mut self, colors: [[u16; 4]; 4]) -> Result<(), String> {
+        self.cpu.sgb.as_mut().ok_or("No SGB cartridge is loaded")?.set_user_palette(colors)
+    }
+
+    pub fn clear_sgb_user_palette(&mut self) -> Result<(), String> {
+        self.cpu.sgb.as_mut().ok_or("No SGB cartridge is loaded")?.clear_user_palette();
+        Ok(())
     }
 
     fn advance(&mut self) -> u64 {
@@ -296,7 +307,7 @@ impl Emulator for GameBoy {
         };
         let mut out = Vec::new();
         out.extend_from_slice(b"RBSG");
-        out.extend_from_slice(&6u16.to_le_bytes());
+        out.extend_from_slice(&7u16.to_le_bytes());
         out.extend_from_slice(&(cpu.len() as u32).to_le_bytes());
         out.extend_from_slice(&cpu);
         // Pending LCD transfers may be saved in the middle of a scanline.
@@ -320,7 +331,7 @@ impl Emulator for GameBoy {
             return Err("SGB mode requires an SGB save state, not a handheld state".into());
         }
         let version = u16::from_le_bytes(data[4..6].try_into().unwrap());
-        if !(1..=6).contains(&version) {
+        if !(1..=7).contains(&version) {
             return Err("Unsupported SGB save-state version".into());
         }
         let end = data.len() - 4;

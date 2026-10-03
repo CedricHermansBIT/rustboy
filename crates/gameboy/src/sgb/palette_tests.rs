@@ -140,7 +140,7 @@ fn replacing_a_white_palette_recolors_frozen_lcd_shades_and_attributes() {
     command(&mut sgb, 5, &[1, 1 << 5]); // column 0 -> palette 1 green
     assert_eq!(&sgb.frame[..4], &[0, 255, 0, 255]);
     assert_eq!(&sgb.frame[8 * 4..9 * 4], &[255, 0, 0, 255]);
-    let restored = Sgb::import_state(&rom(), &sgb.export_state(), 6).unwrap();
+    let restored = Sgb::import_state(&rom(), &sgb.export_state(), 7).unwrap();
     assert_eq!(restored, sgb);
 }
 
@@ -153,7 +153,7 @@ fn snapshots_preserve_pending_tables_shades_and_reject_malformed_extensions() {
     frames(&mut sgb, &table_data(), 2);
     command(&mut sgb, 0x15, &[]);
     let state = sgb.export_state();
-    let mut restored = Sgb::import_state(&rom(), &state, 6).unwrap();
+    let mut restored = Sgb::import_state(&rom(), &state, 7).unwrap();
     assert_eq!(restored, sgb);
     frames(&mut restored, &[0x1B; 4096], 5);
     select(&mut restored, 0x80);
@@ -164,9 +164,9 @@ fn snapshots_preserve_pending_tables_shades_and_reject_malformed_extensions() {
     ] {
         let mut bad = state.clone();
         bad[offset] = 0xFF;
-        assert!(Sgb::import_state(&rom(), &bad, 6).is_err());
+        assert!(Sgb::import_state(&rom(), &bad, 7).is_err());
     }
-    assert!(Sgb::import_state(&rom(), &state[..state.len() - 1], 6).is_err());
+    assert!(Sgb::import_state(&rom(), &state[..state.len() - 1], 7).is_err());
 }
 
 #[test]
@@ -186,4 +186,128 @@ fn legacy_rgba_frames_remain_intact_until_a_new_unmasked_lcd_frame() {
         assert_eq!(&restored.frame[..4], &[0, 0, 0, 255]);
         assert!(restored.shades_valid);
     }
+}
+
+fn user_colors() -> [[u16; 4]; 4] {
+    [[0x7C00, 0x3E0, 31, 0]; 4]
+}
+
+#[test]
+fn user_override_preserves_game_colors_and_validates_atomically() {
+    let mut sgb = Sgb::new(&rom());
+    let game = sgb.palettes;
+    let mut user = user_colors();
+    user[1][0] = 31;
+    sgb.set_user_palette(user).unwrap();
+    assert_eq!(sgb.visible_palettes(), user_colors());
+    assert_eq!(sgb.palettes, game);
+    assert!(sgb.user_palette_active());
+    let before = sgb.clone();
+    user[3][3] = 0x8000;
+    assert!(sgb.set_user_palette(user).is_err());
+    assert_eq!(sgb, before);
+    command(&mut sgb, 0, &[0; 14]);
+    assert_eq!(sgb.visible_palettes(), user_colors());
+    sgb.clear_user_palette();
+    assert!(!sgb.user_palette_active());
+    assert_eq!(sgb.visible_palettes()[0], [0; 4]);
+    assert_eq!(sgb.visible_palettes()[2][1], game[2][1]);
+}
+
+#[test]
+fn pal_pri_only_cancels_override_on_subsequent_visible_palette_commands() {
+    for code in [0, 1, 2, 3, 0x0A] {
+        let mut sgb = Sgb::new(&rom());
+        sgb.set_user_palette(user_colors()).unwrap();
+        command(&mut sgb, 0x19, &[0xFE]); // only bit zero controls priority
+        assert!(!sgb.palette_priority());
+        command(&mut sgb, code, &[0; 14]);
+        assert!(sgb.user_palette_active());
+        command(&mut sgb, 0x19, &[0xFF]);
+        assert!(sgb.palette_priority());
+        assert!(sgb.user_palette_active());
+        command(&mut sgb, 0x0B, &[]);
+        frames(&mut sgb, &table_data(), 5);
+        assert!(sgb.user_palette_active());
+        command(&mut sgb, 0x16, &[0]);
+        command(&mut sgb, 0x17, &[1]);
+        assert!(sgb.user_palette_active());
+        command(&mut sgb, code, &[0; 14]);
+        assert!(!sgb.user_palette_active());
+        assert_eq!(sgb.unsupported[0x19], 0);
+        assert!(sgb.palette_priority());
+        sgb.set_user_palette(user_colors()).unwrap();
+        command(&mut sgb, 0x19, &[0]);
+        command(&mut sgb, code, &[0; 14]);
+        assert!(sgb.user_palette_active());
+    }
+}
+
+#[test]
+fn user_colors_recolor_frozen_shades_and_obey_black_and_backdrop_masks() {
+    let mut sgb = Sgb::new(&rom());
+    sgb.capture_frame(&vec![1 << 27; PIXELS]);
+    let original = sgb.frame.clone();
+    command(&mut sgb, 0x17, &[1]);
+    sgb.lcd_off();
+    sgb.set_user_palette(user_colors()).unwrap();
+    assert_eq!(&sgb.frame[..4], &[0, 255, 0, 255]);
+    sgb.capture_frame(&vec![2 << 27; PIXELS]);
+    assert_eq!(&sgb.frame[..4], &[0, 255, 0, 255]);
+    let mut out = vec![0; PIXELS * 4];
+    command(&mut sgb, 0x17, &[2]);
+    sgb.copy_game_frame(&mut out);
+    assert_eq!(&out[..4], &[0, 0, 0, 255]);
+    command(&mut sgb, 0x17, &[3]);
+    sgb.copy_game_frame(&mut out);
+    assert_eq!(&out[..4], &[0, 0, 255, 255]);
+    sgb.clear_user_palette();
+    assert_eq!(sgb.frame, original);
+    sgb.copy_game_frame(&mut out);
+    assert_eq!(&out[..4], &rgb(sgb.palettes[0][0]));
+}
+
+#[test]
+fn palette_snapshot_extension_roundtrips_and_rejects_bad_flags_colors_and_lengths() {
+    let mut sgb = Sgb::new(&rom());
+    sgb.set_user_palette(user_colors()).unwrap();
+    command(&mut sgb, 0x19, &[1]);
+    let state = sgb.export_state();
+    assert_eq!(Sgb::import_state(&rom(), &state, 7).unwrap(), sgb);
+    let offset = state.len() - 34;
+    for (index, value) in [(0, 2), (1, 2), (3, 0x80), (11, 0)] {
+        let mut bad = state.clone();
+        bad[offset + index] = value;
+        assert!(Sgb::import_state(&rom(), &bad, 7).is_err());
+    }
+    let mut bad = state.clone();
+    bad[offset + 1] = 0; // inactive palette storage must be empty
+    assert!(Sgb::import_state(&rom(), &bad, 7).is_err());
+    let mut bad = state.clone();
+    bad.push(0);
+    assert!(Sgb::import_state(&rom(), &bad, 7).is_err());
+    for length in [0, 33, state.len() - 1] {
+        assert!(Sgb::import_state(&rom(), &state[..length], 7).is_err());
+    }
+    let legacy = Sgb::import_state(&rom(), &state[..offset], 6).unwrap();
+    assert!(!legacy.palette_priority());
+    assert!(!legacy.user_palette_active());
+    assert_eq!(legacy.visible_palettes(), sgb.palettes);
+}
+
+#[test]
+fn user_palette_keeps_attribute_mapping_and_disabled_commands_cannot_change_priority() {
+    let mut sgb = Sgb::new(&rom());
+    let mut colors = user_colors();
+    colors[1][1] = 31;
+    sgb.set_user_palette(colors).unwrap();
+    sgb.capture_frame(&vec![1 << 27; PIXELS]);
+    command(&mut sgb, 0x17, &[1]);
+    command(&mut sgb, 5, &[1, 1 << 5]); // column zero uses user palette one
+    assert_eq!(&sgb.frame[..4], &[255, 0, 0, 255]);
+    assert_eq!(&sgb.frame[8 * 4..9 * 4], &[0, 255, 0, 255]);
+    command(&mut sgb, 0x0E, &[4]);
+    command(&mut sgb, 0x19, &[1]);
+    assert!(!sgb.palette_priority());
+    assert!(sgb.user_palette_active());
 }

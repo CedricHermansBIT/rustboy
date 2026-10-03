@@ -9,6 +9,41 @@ mod palette_rom;
 mod audio_rom;
 
 #[test]
+fn user_palette_backend_api_preserves_game_priority_and_v6_snapshot_migration() {
+    let mut gb = machine(&palette_rom::make_rom());
+    gb.run(70_224 * 120);
+    let game_colors = gb.cpu().sgb.as_ref().unwrap().visible_palettes();
+    let chosen = [[0x7fff, 0x4210, 0x2108, 0]; 4];
+    gb.set_sgb_user_palette(chosen).unwrap();
+    assert_eq!(gb.cpu().sgb.as_ref().unwrap().visible_palettes(), chosen);
+    let saved = gb.export_state();
+    assert_eq!(&saved[..6], b"RBSG\x07\0");
+    gb.clear_sgb_user_palette().unwrap();
+    assert_eq!(gb.cpu().sgb.as_ref().unwrap().visible_palettes(), game_colors);
+    gb.import_state(&saved).unwrap();
+    assert!(gb.cpu().sgb.as_ref().unwrap().user_palette_active());
+    let mut priority = [0; 16];
+    priority[0] = (0x19 << 3) | 1;
+    priority[1] = 1;
+    write_packet(&mut gb, &priority);
+    assert!(gb.cpu().sgb.as_ref().unwrap().user_palette_active());
+    let mut palette = [0; 16];
+    palette[0] = 1; // PAL01, one packet: subsequent command restores game priority.
+    write_packet(&mut gb, &palette);
+    assert!(!gb.cpu().sgb.as_ref().unwrap().user_palette_active());
+    // Version 6 has the same variable audio body, without the v7 palette tail.
+    let mut legacy = saved[..saved.len() - 4 - 34].to_vec();
+    legacy[4..6].copy_from_slice(&6u16.to_le_bytes());
+    let checksum = legacy.iter().fold(0x811c9dc5u32, |h, b| {
+        (h ^ *b as u32).wrapping_mul(0x01000193)
+    });
+    legacy.extend_from_slice(&checksum.to_le_bytes());
+    gb.import_state(&legacy).unwrap();
+    assert!(!gb.cpu().sgb.as_ref().unwrap().user_palette_active());
+    assert_eq!(gb.cpu().sgb.as_ref().unwrap().visible_palettes(), game_colors);
+}
+
+#[test]
 fn cartridge_music_reaches_stereo_output_without_any_system_firmware() {
     let mut gb=machine(&audio_rom::make_rom());
     gb.run(70_224*240);
@@ -69,7 +104,7 @@ fn version_two_sgb_envelope_preserves_border_and_pending_transfer_on_migration()
     write_packet(&mut gb, &chr);
     let state = gb.export_state();
     // v3 appends 8146 bytes of tables and 5761 bytes of retained LCD shades.
-    let mut old = state[..state.len() - 4 - 8146 - 5761 - 11 - 65559 - 16].to_vec();
+    let mut old = state[..state.len() - 4 - 8146 - 5761 - 11 - 65559 - 16 - 34].to_vec();
     old[4..6].copy_from_slice(&2u16.to_le_bytes());
     let checksum = old.iter().fold(0x811c9dc5u32, |h, b| {
         (h ^ *b as u32).wrapping_mul(0x01000193)
@@ -79,7 +114,7 @@ fn version_two_sgb_envelope_preserves_border_and_pending_transfer_on_migration()
     gb.import_state(&old).unwrap();
     assert_eq!(gb.video_frame().pixels, pixels);
     assert_eq!(gb.cpu().sgb.as_ref().unwrap().transfers_pending(), 1);
-    assert_eq!(&gb.export_state()[..6], b"RBSG\x06\0");
+    assert_eq!(&gb.export_state()[..6], b"RBSG\x07\0");
 }
 
 #[test]
@@ -137,7 +172,7 @@ fn cartridge_border_uploads_use_rendered_lcd_and_resize_the_backend_frame() {
     assert_eq!(pixel(56, 48), [255, 0, 0, 255]); // deliberate opaque border overlay
     let expected = frame.pixels.to_vec();
     let saved = gb.export_state();
-    assert_eq!(&saved[..6], b"RBSG\x06\0");
+    assert_eq!(&saved[..6], b"RBSG\x07\0");
     gb.reset();
     assert_eq!(gb.video_frame().geometry.width, 160);
     gb.import_state(&saved).unwrap();
@@ -197,7 +232,7 @@ fn version_one_sgb_envelope_loads_and_migrates_without_a_border() {
     gb.import_state(&old).unwrap();
     assert!(!gb.cpu().sgb.as_ref().unwrap().has_border());
     assert_eq!(gb.video_frame().geometry.width, 160);
-    assert_eq!(&gb.export_state()[..6], b"RBSG\x06\0");
+    assert_eq!(&gb.export_state()[..6], b"RBSG\x07\0");
     assert!(gb.state_id().ends_with("-sgb-hle-v1")); // storage identity remains stable
 }
 

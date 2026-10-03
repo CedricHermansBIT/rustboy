@@ -65,7 +65,7 @@ fn sou_trn_uses_lcd_pipeline_five_frame_window_and_snapshot_migration() {
     }
     assert_eq!(sgb.sound_uploads(), 0);
     let state = sgb.export_state();
-    let mut restored = Sgb::import_state(&rom, &state, 6).unwrap();
+    let mut restored = Sgb::import_state(&rom, &state, 7).unwrap();
     restored.start_frame();
     restored.capture_frame(&pixels);
     assert_eq!(restored.sound_uploads(), 1);
@@ -73,17 +73,17 @@ fn sou_trn_uses_lcd_pipeline_five_frame_window_and_snapshot_migration() {
     assert_eq!(restored.unsupported[9], 0);
     assert_eq!(restored.transfers_pending(), 0);
     let state = restored.export_state();
-    assert_eq!(Sgb::import_state(&rom, &state, 6).unwrap(), restored);
+    assert_eq!(Sgb::import_state(&rom, &state, 7).unwrap(), restored);
     let mut corrupt = state.clone();
-    let audio_offset=adapter().1.export_state().len()-sound::AUDIO_STATE_BASE_BYTES;
+    let audio_offset=adapter().1.export_state().len()-sound::AUDIO_STATE_BASE_BYTES-34;
     *corrupt.get_mut(audio_offset - 3).unwrap() = 2;
-    assert!(Sgb::import_state(&rom, &corrupt, 6).is_err());
+    assert!(Sgb::import_state(&rom, &corrupt, 7).is_err());
     // Old v4 saves have no audio RAM or uploads, but retain pulse timing.
     let mut legacy = adapter().1;
     legacy.tick_joyp(4);
     legacy.write_joyp_timed(0x20);
     let state = legacy.export_state();
-    let old = Sgb::import_state(&rom, &state[..state.len() - sound::STATE_BYTES - sound::AUDIO_STATE_BASE_BYTES], 4).unwrap();
+    let old = Sgb::import_state(&rom, &state[..state.len() - sound::STATE_BYTES - sound::AUDIO_STATE_BASE_BYTES - 34], 4).unwrap();
     assert_eq!(old.pulse_lines, legacy.pulse_lines);
     assert_eq!(old.sound, sound::Sound::default());
 }
@@ -116,13 +116,15 @@ fn sound_ports_use_music_first_order_and_valid_uploads_reach_the_running_process
 }
 
 #[test]
-fn snes_sound_clock_and_resampler_replay_exactly_with_v6_and_v5_still_migrates() {
+fn snes_sound_clock_and_resampler_replay_exactly_with_v7_and_older_versions_migrate() {
     let (rom,mut sgb)=singing_adapter();
     for _ in 0..501 { sgb.tick_sound(4); }
     assert_ne!(sgb.sound_sample(),[0.0;2]);
     let bytes=sgb.export_state();
-    let mut restored=Sgb::import_state(&rom,&bytes,6).unwrap();
+    let mut restored=Sgb::import_state(&rom,&bytes,7).unwrap();
     assert_eq!(restored,sgb);
+    let v6 = Sgb::import_state(&rom, &bytes[..bytes.len()-34], 6).unwrap();
+    assert_eq!(v6.sound, Sgb::import_state(&rom, &bytes, 7).unwrap().sound);
     for _ in 0..10000 {
         sgb.tick_sound(4); restored.tick_sound(4);
         assert_eq!(restored.sound_sample(),sgb.sound_sample());
@@ -130,13 +132,13 @@ fn snes_sound_clock_and_resampler_replay_exactly_with_v6_and_v5_still_migrates()
     assert_eq!(restored,sgb);
     let mut legacy=adapter().1; legacy.sound.upload(&payload());
     let bytes=legacy.export_state();
-    let audio_offset=adapter().1.export_state().len()-sound::AUDIO_STATE_BASE_BYTES;
+    let audio_offset=adapter().1.export_state().len()-sound::AUDIO_STATE_BASE_BYTES-34;
     let migrated=Sgb::import_state(&rom,&bytes[..audio_offset],5).unwrap();
     assert_eq!(migrated.sound_ram(),legacy.sound_ram());
     assert_eq!(migrated.sound_uploads(),legacy.sound_uploads());
     assert!(migrated.sound_uses_replacement());
     let mut corrupt=sgb.export_state(); corrupt.push(0);
-    assert!(Sgb::import_state(&rom,&corrupt,6).is_err());
+    assert!(Sgb::import_state(&rom,&corrupt,7).is_err());
 }
 
 #[test]
@@ -159,7 +161,7 @@ fn replacement_audio_survives_adapter_snapshot_and_custom_code_runs_on_spc700() 
     sgb.sound.command([0,4,0,0]);
     for _ in 0..40000 {sgb.tick_sound(4);}
     assert_ne!(sgb.sound_sample(),[0.;2]);
-    let mut restored=Sgb::import_state(&rom,&sgb.export_state(),6).unwrap();
+    let mut restored=Sgb::import_state(&rom,&sgb.export_state(),7).unwrap();
     for _ in 0..5000 {
         sgb.tick_sound(4);restored.tick_sound(4);
         assert_eq!(sgb.sound_sample(),restored.sound_sample());

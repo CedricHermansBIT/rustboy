@@ -154,7 +154,7 @@ fn old_snapshots_load_without_borders_and_new_snapshots_preserve_pending_transfe
     frame(&mut sgb, &signal(&[0x52; 4096]));
     command(&mut sgb, 0x14, 0);
     let bytes = sgb.export_state();
-    assert_eq!(Sgb::import_state(&rom, &bytes, 6).unwrap(), sgb);
+    assert_eq!(Sgb::import_state(&rom, &bytes, 7).unwrap(), sgb);
     let migrated = Sgb::import_state(&rom, &bytes[..BORDER_STATE_BYTES], 2).unwrap();
     assert_eq!(migrated.border, sgb.border);
     assert_eq!(migrated.transfers, sgb.transfers);
@@ -173,6 +173,6 @@ fn old_snapshots_load_without_borders_and_new_snapshots_preserve_pending_transfe
     ] {
         let mut corrupt = bytes.clone();
         corrupt[offset] = value;
-        assert!(Sgb::import_state(&rom, &corrupt, 6).is_err());
+        assert!(Sgb::import_state(&rom, &corrupt, 7).is_err());
     }
 }
