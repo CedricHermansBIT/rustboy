@@ -103,7 +103,7 @@ impl Emulator for GameBoyAdvance {
         AudioChunk {
             sample_rate: 32768,
             channels: 2,
-            samples: Vec::new(),
+            samples: self.bus.apu.drain(),
         }
     }
     fn state_id(&self) -> String {
@@ -161,7 +161,7 @@ fn put(data: &mut Vec<u8>, value: u64, n: usize) {
 }
 impl GameBoyAdvance {
     fn snapshot(&self) -> Vec<u8> {
-        let mut data = b"RBGA\x01\0\0\0".to_vec();
+        let mut data = b"RBGA\x02\0\0\0".to_vec();
         put(&mut data, hash(&self.bus.rom), 8);
         put(&mut data, hash(&self.bus.bios), 8);
         for register in self
@@ -221,6 +221,19 @@ impl GameBoyAdvance {
             put(&mut data, u64::from(dma.active), 1);
             put(&mut data, u64::from(dma.first), 1);
         }
+        for fifo in self.bus.apu.fifo {
+            for value in fifo.data {
+                data.push(value as u8);
+            }
+            data.extend_from_slice(&[fifo.head, fifo.len, fifo.held as u8]);
+        }
+        put(&mut data, u64::from(self.bus.apu.phase), 2);
+        put(&mut data, self.bus.apu.samples.len() as u64, 4);
+        for sample in &self.bus.apu.samples {
+            for value in sample {
+                put(&mut data, u64::from(value.to_bits()), 4);
+            }
+        }
         for bytes in [
             &self.bus.ewram,
             &self.bus.iwram,
@@ -237,7 +250,9 @@ impl GameBoyAdvance {
         data
     }
     fn restore(&mut self, data: &[u8]) -> Result<(), String> {
-        if data.len() != SNAPSHOT_BYTES {
+        if data.len() < SNAPSHOT_BYTES
+            || data.len() > SNAPSHOT_BYTES + 76 + crate::apu::MAX_SAMPLES * 8
+        {
             return Err("Incorrect GBA state size".into());
         }
         let checksum = u64::from_le_bytes(data[data.len() - 8..].try_into().unwrap());
@@ -248,9 +263,11 @@ impl GameBoyAdvance {
             bytes: &data[..data.len() - 8],
             position: 0,
         };
-        if reader.bytes(8)? != b"RBGA\x01\0\0\0" {
-            return Err("Unsupported GBA state version".into());
-        }
+        let version = match reader.bytes(8)? {
+            b"RBGA\x01\0\0\0" => 1,
+            b"RBGA\x02\0\0\0" => 2,
+            _ => return Err("Unsupported GBA state version".into()),
+        };
         if reader.int(8)? != hash(&self.bus.rom) || reader.int(8)? != hash(&self.bus.bios) {
             return Err("GBA state belongs to another ROM/firmware".into());
         }
@@ -320,6 +337,37 @@ impl GameBoyAdvance {
                 return Err("Invalid GBA DMA count".into());
             }
         }
+        if version == 2 {
+            for fifo in &mut next.bus.apu.fifo {
+                for value in &mut fifo.data {
+                    *value = reader.int(1)? as i8;
+                }
+                fifo.head = reader.int(1)? as u8;
+                fifo.len = reader.int(1)? as u8;
+                fifo.held = reader.int(1)? as i8;
+                if fifo.head >= 32 || fifo.len > 32 {
+                    return Err("Invalid GBA FIFO state".into());
+                }
+            }
+            next.bus.apu.phase = reader.int(2)? as u16;
+            let count = reader.int(4)? as usize;
+            if next.bus.apu.phase >= 512
+                || count > crate::apu::MAX_SAMPLES
+                || data.len() != SNAPSHOT_BYTES + 76 + count * 8
+            {
+                return Err("Invalid GBA audio state".into());
+            }
+            for _ in 0..count {
+                let sample = [
+                    f32::from_bits(reader.int(4)? as u32),
+                    f32::from_bits(reader.int(4)? as u32),
+                ];
+                if sample.iter().any(|s| !s.is_finite() || s.abs() > 1.) {
+                    return Err("Invalid GBA audio sample".into());
+                }
+                next.bus.apu.samples.push_back(sample);
+            }
+        }
         for bytes in [
             &mut next.bus.ewram,
             &mut next.bus.iwram,
@@ -351,6 +399,39 @@ mod tests {
         let mut rom = vec![0; 192];
         rom[..4].copy_from_slice(&0xeafffffeu32.to_le_bytes());
         GameBoyAdvance::new(rom, None).unwrap()
+    }
+    #[test]
+    fn snapshots_preserve_sound_and_accept_legacy_v1() {
+        use crate::cpu::Memory;
+        let mut m = machine();
+        m.bus.write16(0x04000084, 0x80, false);
+        m.bus.write16(0x04000082, 0x0304, false);
+        m.bus.write32(0x040000a0, 0x7f00ff80, false);
+        m.bus.apu.fifo[0].held = 64;
+        m.run(1500);
+        let state = m.export_state();
+        let expected = m.drain_audio();
+        assert!(expected.samples.iter().any(|s| *s != 0.));
+        m.import_state(&state).unwrap();
+        assert_eq!(m.drain_audio().samples, expected.samples);
+        assert_eq!(m.bus.apu.fifo[0].len, 4);
+        let queue = expected.samples.len() / 2;
+        let mut legacy = state[..491].to_vec();
+        legacy[4] = 1;
+        legacy.extend_from_slice(&state[491 + 76 + queue * 8..state.len() - 8]);
+        let checksum = hash(&legacy);
+        put(&mut legacy, checksum, 8);
+        m.import_state(&legacy).unwrap();
+        assert!(m.drain_audio().samples.is_empty());
+        assert_eq!(m.bus.apu.fifo[0].len, 0);
+        for (offset, value) in [(523, 32), (524, 33), (562, 255), (566, 255)] {
+            let mut invalid = state.clone();
+            invalid[offset] = value;
+            let length = invalid.len();
+            let checksum = hash(&invalid[..length - 8]);
+            invalid[length - 8..].copy_from_slice(&checksum.to_le_bytes());
+            assert!(m.import_state(&invalid).is_err());
+        }
     }
     #[test]
     fn snapshots_replay_and_reject_corruption_atomically() {
@@ -389,7 +470,7 @@ mod tests {
     fn snapshots_reject_checksum_valid_impossible_peripherals() {
         let mut m = machine();
         let saved = m.export_state();
-        assert_eq!(saved.len(), SNAPSHOT_BYTES);
+        assert_eq!(saved.len(), SNAPSHOT_BYTES + 76);
         for (offset, bytes) in [
             (348, &64u64.to_le_bytes()[..]),
             (415, &0x8000u16.to_le_bytes()[..]),

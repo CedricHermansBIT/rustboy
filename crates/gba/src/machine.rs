@@ -174,8 +174,13 @@ impl GameBoyAdvance {
         self.clocks = self.clocks.wrapping_add(clocks);
         while clocks > 0 {
             let boundary = if self.line_clocks < 1006 { 1006 } else { 1232 };
-            let advance = clocks.min(u64::from(boundary - self.line_clocks));
-            self.bus.advance_timers(advance);
+            let advance = clocks
+                .min(u64::from(boundary - self.line_clocks))
+                .min(self.bus.timer_deadline())
+                .min(self.bus.apu.deadline());
+            let overflow = self.bus.advance_timers(advance);
+            self.bus.clock_direct_sound(overflow);
+            self.bus.clock_audio(advance);
             self.line_clocks += advance as u16;
             clocks -= advance;
             if self.line_clocks == 1006 {

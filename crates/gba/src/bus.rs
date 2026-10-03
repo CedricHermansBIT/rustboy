@@ -16,6 +16,7 @@ pub struct Bus {
     pub halted: bool,
     pub(crate) timers: [Timer; 4],
     pub(crate) dma: [Dma; 4],
+    pub(crate) apu: crate::apu::Apu,
 }
 impl Bus {
     pub fn new(rom: Vec<u8>, bios: Option<Vec<u8>>) -> Result<Self, String> {
@@ -40,9 +41,11 @@ impl Bus {
             halted: false,
             timers: [Timer::default(); 4],
             dma: [Dma::default(); 4],
+            apu: crate::apu::Apu::default(),
         };
         bus.set_io(0x130, 0x3ff);
         bus.set_io(0, 0x80);
+        bus.set_io(0x88, 0x200);
         Ok(bus)
     }
     pub fn take_cycles(&mut self) -> u64 {
@@ -85,7 +88,9 @@ impl Bus {
                 let offset = index & 0x3ff;
                 if (0x100..0x110).contains(&offset) && offset & 3 < 2 {
                     (self.timers[(offset - 0x100) / 4].counter >> ((offset & 1) * 8)) as u8
-                } else if (0xb0..0xe0).contains(&offset) && (offset - 0xb0) % 12 < 10 {
+                } else if ((0xb0..0xe0).contains(&offset) && (offset - 0xb0) % 12 < 10)
+                    || (0xa0..0xa8).contains(&offset)
+                {
                     0
                 } else {
                     self.io[offset]
@@ -158,6 +163,7 @@ impl Bus {
                     _ => self.io[offset] = value,
                 }
                 self.peripheral_write(offset, old);
+                self.sound_write(offset);
             }
             5 => self.palette[index & 0x3ff] = value,
             6 => self.vram[Self::vram_index(address)] = value,

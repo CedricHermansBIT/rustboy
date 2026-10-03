@@ -53,14 +53,17 @@ impl Bus {
             } else if old & 0x80 == 0 {
                 let read_reg =
                     |index| u32::from_le_bytes(self.io[index..index + 4].try_into().unwrap());
-                let width = if control & 0x400 != 0 { 4 } else { 2 };
+                let sound = (n == 1 || n == 2) && control >> 12 & 3 == 3;
+                let width = if sound || control & 0x400 != 0 { 4 } else { 2 };
                 let source =
                     read_reg(base) & if n == 0 { 0x07ffffff } else { 0x0fffffff } & !(width - 1);
                 let destination = read_reg(base + 4)
                     & if n == 3 { 0x0fffffff } else { 0x07ffffff }
                     & !(width - 1);
                 let count = u32::from(self.io16(base + 8)) & if n == 3 { 0xffff } else { 0x3fff };
-                let count = if count == 0 {
+                let count = if sound {
+                    4
+                } else if count == 0 {
                     if n == 3 {
                         0x10000
                     } else {
@@ -146,11 +149,17 @@ impl Bus {
         }
     }
     pub(crate) fn dma_unit(&mut self) -> bool {
+        self.request_fifo_dma();
         let Some(n) = self.dma.iter().position(|d| d.active) else {
             return false;
         };
         let mut d = self.dma[n];
-        let width = if d.control & 0x400 != 0 { 4 } else { 2 };
+        let sound = (n == 1 || n == 2) && d.control >> 12 & 3 == 3;
+        let width = if sound || d.control & 0x400 != 0 {
+            4
+        } else {
+            2
+        };
         if d.first {
             self.internal(if d.source >> 24 >= 8 && d.destination >> 24 >= 8 {
                 4
@@ -171,7 +180,9 @@ impl Bus {
             _ => a,
         };
         d.source = move_address(d.source, d.control >> 7 & 3);
-        d.destination = move_address(d.destination, d.control >> 5 & 3);
+        if !sound {
+            d.destination = move_address(d.destination, d.control >> 5 & 3);
+        }
         d.first = false;
         d.remaining -= 1;
         if d.remaining == 0 {
@@ -188,6 +199,29 @@ impl Bus {
         }
         self.dma[n] = d;
         true
+    }
+    fn request_fifo_dma(&mut self) {
+        if self.io16(0x84) & 0x80 == 0 {
+            return;
+        }
+        for n in 1..=2 {
+            let d = &mut self.dma[n];
+            let fifo = match d.destination {
+                0x040000a0 => 0,
+                0x040000a4 => 1,
+                _ => continue,
+            };
+            if d.control & 0x8000 != 0
+                && d.control >> 12 & 3 == 3
+                && !d.active
+                && self.apu.fifo[fifo].len <= 16
+            {
+                d.count = 4;
+                d.remaining = 4;
+                d.active = true;
+                d.first = true;
+            }
+        }
     }
 }
 
@@ -207,6 +241,30 @@ mod tests {
             false,
         );
         b.take_cycles();
+    }
+    #[test]
+    fn sound_dma_forces_words_fixed_destination_and_four_transfers() {
+        let mut b = bus();
+        b.write16(0x04000084, 0x80, false);
+        for i in 0..12 {
+            b.write32(0x02000000 + i * 4, 0x03020100 + i * 0x04040404, false);
+        }
+        configure(&mut b, 1, 0x02000000, 0x040000a0, 1, 0xb200);
+        for _ in 0..8 {
+            assert!(b.dma_unit());
+        }
+        assert!(!b.dma_unit());
+        assert_eq!(b.apu.fifo[0].len, 32);
+        assert_eq!(b.apu.fifo[0].data, std::array::from_fn(|i| i as i8));
+        assert_eq!(b.dma[1].source, 0x02000020);
+        assert_eq!(b.dma[1].destination, 0x040000a0);
+        b.apu.fifo[0].len = 16;
+        for _ in 0..4 {
+            assert!(b.dma_unit());
+        }
+        assert!(!b.dma_unit());
+        assert_eq!(b.apu.fifo[0].len, 32);
+        assert_eq!(b.dma[1].source, 0x02000030);
     }
     #[test]
     fn timer_reload_read_and_enable_edge() {

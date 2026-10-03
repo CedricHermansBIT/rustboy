@@ -1,5 +1,6 @@
 //! Original GBA implementation, based on hardware documentation, not emulator
 //! source. Still under development: this is not a claim of game compatibility.
+mod apu;
 mod backend;
 mod bios;
 pub mod bus;
