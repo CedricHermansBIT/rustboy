@@ -9,6 +9,39 @@ mod palette_rom;
 mod audio_rom;
 
 #[test]
+fn backend_routes_four_sgb_players_and_restoring_releases_host_buttons() {
+    use crate::emulator::Button;
+    let mut gb = machine(&border_rom::make_rom());
+    let mut request = [0; 16];
+    request[0] = (0x11 << 3) | 1;
+    request[1] = 3;
+    write_packet(&mut gb, &request);
+    assert_eq!(gb.cpu().sgb.as_ref().unwrap().players(), 4);
+    for (port, button) in [Button::A, Button::B, Button::Select, Button::Start].into_iter().enumerate() {
+        gb.set_button(port, button, true).unwrap();
+    }
+    assert!(gb.set_button(4, Button::A, true).is_err());
+    {
+        let adapter = gb.cpu_mut().sgb.as_mut().unwrap();
+        for port in 0..4 {
+            assert_eq!(adapter.read_joyp(0x30) & 15, 15 - port);
+            adapter.write_joyp(0x10);
+            assert_eq!(adapter.read_joyp(0x10) & 15, 15 & !(1 << port));
+            adapter.write_joyp(0x30);
+        }
+    }
+    let saved = gb.export_state();
+    gb.import_state(&saved).unwrap();
+    let adapter = gb.cpu_mut().sgb.as_mut().unwrap();
+    assert_eq!(adapter.players(), 4);
+    for _ in 0..4 {
+        adapter.write_joyp(0x10);
+        assert_eq!(adapter.read_joyp(0x10) & 15, 15);
+        adapter.write_joyp(0x30);
+    }
+}
+
+#[test]
 fn user_palette_backend_api_preserves_game_priority_and_v6_snapshot_migration() {
     let mut gb = machine(&palette_rom::make_rom());
     gb.run(70_224 * 120);
