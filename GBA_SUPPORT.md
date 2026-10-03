@@ -118,6 +118,30 @@ through the frontend API and replay across state restoration.
 The native inspector supports bounded traces via `GBA_TRACE_IRQ=1` or
 `GBA_TRACE_PC=080008b0..080008d0`; normal execution keeps tracing disabled.
 
+### SRAM/Flash and local picker milestone
+
+Local installs now have a GBA picker tab, generated from `.gba` files alongside
+GB/CGB. The private manifest includes the local FireRed cartridge but remains
+ignored by Git; published Pages builds remain homebrew-only.
+
+Original backup hardware detects versioned SRAM/Flash SDK tags, supports 32 KiB
+SRAM and 64/128 KiB Flash, chip-ID mode, unlock commands, byte programming,
+4 KiB sector/chip erases and bank selection. Eight-bit save-bus accesses are
+handled separately from wide RAM accesses. Programming/erase completion is
+currently immediate; busy/toggle timing, alternate Flash-chip variants, EEPROM
+and tag-free save detection remain work. Battery saves use ROM-hashed keys,
+survive reset, and load/flush through the browser persistence API. Version-3
+states preserve save bytes and in-flight Flash commands; version-1/2 states
+retain current battery data when restored.
+
+The local FireRed diagnostic now reaches its rendered GAME FREAK intro at
+600 frames, with display control `5C40h`, after Flash hardware was added. It
+stops at an unimplemented ObjAffineSet service at frame 897 in a longer run.
+This demonstrates startup progress, not complete playability. Set
+`GBA_FRAME_PNG=/tmp/new-capture.png` to capture a diagnostic frame (existing files
+are not overwritten), or `GBA_TRACE_MEMORY=0300310c` for bounded halfword changes.
+These local screenshots and ROM bytes are not distributed.
+
 1. Expand ARM/Thumb instruction and exception validation; finish bus arbitration
    and an original BIOS-service replacement
    for boot-ROM-free deployments. Use local FireRed as a compatibility probe,

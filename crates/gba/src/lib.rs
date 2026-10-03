@@ -2,6 +2,7 @@
 //! source. Still under development: this is not a claim of game compatibility.
 mod apu;
 mod backend;
+mod backup;
 mod bios;
 pub mod bus;
 pub mod cpu;

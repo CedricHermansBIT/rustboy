@@ -15,6 +15,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         machine.title()
     );
     let start = Instant::now();
+    let watch = std::env::var("GBA_TRACE_MEMORY")
+        .ok()
+        .map(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16))
+        .transpose()?;
     let trace_range = std::env::var("GBA_TRACE_PC")
         .ok()
         .map(|value| {
@@ -27,11 +31,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             ))
         })
         .transpose()?;
-    if std::env::var_os("GBA_TRACE_IRQ").is_some() || trace_range.is_some() {
+    if std::env::var_os("GBA_TRACE_IRQ").is_some() || trace_range.is_some() || watch.is_some() {
         let mut traced = false;
         let mut remaining = 0u32;
         let mut window_lines = 128;
+        let mut watch_lines = 128;
         while machine.clocks < FRAME_CYCLES * frames && machine.fault.is_none() {
+            let old_pc = machine.cpu.r[15];
+            let old_value = watch.map(|addr| machine.bus.peek16(addr));
             let old_exceptions = machine.cpu.exceptions;
             let in_window = window_lines > 0
                 && trace_range
@@ -45,7 +52,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             machine.step();
-            if trace_range.is_none()
+            if let Some(addr) = watch {
+                let value = machine.bus.peek16(addr);
+                if watch_lines > 0 && old_value != Some(value) {
+                    println!(
+                        "watch {addr:08X}: {:04X}->{value:04X} PC={old_pc:08X} clocks={}",
+                        old_value.unwrap(),
+                        machine.clocks
+                    );
+                    watch_lines -= 1;
+                }
+            }
+            if std::env::var_os("GBA_TRACE_IRQ").is_some()
+                && trace_range.is_none()
                 && !traced
                 && old_exceptions != machine.cpu.exceptions
                 && machine.cpu.cpsr() & 31 == 0x12
@@ -90,6 +109,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         machine.bus.peek32(handler.wrapping_add(8)),
         machine.cpu.r
     );
+    if let Some(path) = std::env::var_os("GBA_FRAME_PNG") {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        let mut encoder = png::Encoder::new(file, 240, 160);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()?
+            .write_image_data(machine.video_frame().pixels)?;
+    }
     if let Some(fault) = machine.fault {
         println!(
             "Stopped at {:08X}: exception vector {:02X}: {}.",

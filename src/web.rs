@@ -215,8 +215,14 @@ pub fn load_rom_data(rom: &[u8], boot_rom: &[u8]) -> Result<(), JsValue> {
 pub fn load_gba_data(rom: &[u8], bios: &[u8]) -> Result<(), JsValue> {
     crate::gba::validate_cartridge(rom).map_err(|e| JsValue::from_str(&e))?;
     let bios = if bios.is_empty() { None } else { Some(bios.to_vec()) };
-    let backend = crate::gba::GameBoyAdvance::new(rom.to_vec(), bios)
+    let mut backend = crate::gba::GameBoyAdvance::new(rom.to_vec(), bios)
         .map_err(|e| JsValue::from_str(&e))?;
+    if let Some(info) = backend.save_info() {
+        let saved = loadSaveData(&info.key);
+        if let Ok(array) = saved.dyn_into::<js_sys::Uint8Array>() {
+            backend.import_save(&array.to_vec()).map_err(|e| JsValue::from_str(&e))?;
+        }
+    }
     save_game();
     toggleVramCanvas(false);
     install_backend(Box::new(backend));
@@ -233,7 +239,7 @@ pub fn get_backend_status() -> String {
         if let Some(fault) = &gba.fault {
             format!("GBA stopped at {:08X}: {}", fault.instruction_address, fault.reason)
         } else {
-            "GBA development: graphics and audio incomplete; saves not supported yet".to_owned()
+            "GBA development: graphics/audio timing incomplete; SRAM/Flash saves supported, EEPROM pending".to_owned()
         }
     }).unwrap_or_default()
 }

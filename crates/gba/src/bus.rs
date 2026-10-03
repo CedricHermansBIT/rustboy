@@ -17,6 +17,7 @@ pub struct Bus {
     pub(crate) timers: [Timer; 4],
     pub(crate) dma: [Dma; 4],
     pub(crate) apu: crate::apu::Apu,
+    pub(crate) backup: crate::backup::Backup,
 }
 impl Bus {
     pub fn new(rom: Vec<u8>, bios: Option<Vec<u8>>) -> Result<Self, String> {
@@ -27,6 +28,7 @@ impl Bus {
             return Err("GBA BIOS must be exactly 16 KiB".into());
         }
         let replacement_bios = bios.is_none();
+        let backup = crate::backup::Backup::detect(&rom);
         let mut bus = Self {
             bios: bios.unwrap_or_else(crate::bios::irq_firmware),
             replacement_bios,
@@ -42,6 +44,7 @@ impl Bus {
             timers: [Timer::default(); 4],
             dma: [Dma::default(); 4],
             apu: crate::apu::Apu::default(),
+            backup,
         };
         bus.set_io(0x130, 0x3ff);
         bus.set_io(0, 0x80);
@@ -104,6 +107,7 @@ impl Bus {
                 .get(index & 0x1ffffff)
                 .copied()
                 .unwrap_or(((address >> 1) >> ((address & 1) * 8)) as u8),
+            14..=15 => self.backup.read(address),
             _ => 0,
         }
     }
@@ -168,6 +172,7 @@ impl Bus {
             5 => self.palette[index & 0x3ff] = value,
             6 => self.vram[Self::vram_index(address)] = value,
             7 => self.oam[index & 0x3ff] = value,
+            14..=15 => self.backup.write(address, value),
             _ => {}
         }
     }
@@ -179,10 +184,16 @@ impl Memory for Bus {
     }
     fn read16(&mut self, address: u32, sequential: bool) -> u16 {
         self.charge(address, 2, sequential);
+        if (14..=15).contains(&(address >> 24)) {
+            return u16::from(self.backup.read(address)) * 0x101;
+        }
         self.peek16(address & !1)
     }
     fn read32(&mut self, address: u32, sequential: bool) -> u32 {
         self.charge(address, 4, sequential);
+        if (14..=15).contains(&(address >> 24)) {
+            return u32::from(self.backup.read(address)) * 0x01010101;
+        }
         self.peek32(address & !3)
     }
     fn write8(&mut self, address: u32, value: u8) {
@@ -209,6 +220,11 @@ impl Memory for Bus {
     }
     fn write16(&mut self, address: u32, value: u16, sequential: bool) {
         self.charge(address, 2, sequential);
+        if (14..=15).contains(&(address >> 24)) {
+            self.backup
+                .write(address, value.rotate_right((address & 1) * 8) as u8);
+            return;
+        }
         let address = address & !1;
         for (i, byte) in value.to_le_bytes().into_iter().enumerate() {
             self.put8(address + i as u32, byte);
@@ -216,6 +232,11 @@ impl Memory for Bus {
     }
     fn write32(&mut self, address: u32, value: u32, sequential: bool) {
         self.charge(address, 4, sequential);
+        if (14..=15).contains(&(address >> 24)) {
+            self.backup
+                .write(address, value.rotate_right((address & 3) * 8) as u8);
+            return;
+        }
         let address = address & !3;
         for (i, byte) in value.to_le_bytes().into_iter().enumerate() {
             self.put8(address + i as u32, byte);
@@ -231,6 +252,20 @@ mod tests {
     use super::*;
     fn bus() -> Bus {
         Bus::new(vec![0; 0xc0], None).unwrap()
+    }
+    #[test]
+    fn backup_is_an_eight_bit_bus_not_consecutive_wide_accesses() {
+        let mut rom = vec![0; 192];
+        rom[80..89].copy_from_slice(b"SRAM_V110");
+        let mut b = Bus::new(rom, None).unwrap();
+        b.write32(0x0e000003, 0x12345678, false);
+        assert_eq!(b.read8(0x0e000003), 0x12);
+        assert_eq!(b.read8(0x0e000004), 255);
+        assert_eq!(b.read16(0x0f000003, false), 0x1212);
+        assert_eq!(b.read32(0x0e000003, false), 0x12121212);
+        b.write16(0x0e000005, 0xabcd, false);
+        assert_eq!(b.read8(0x0e000005), 0xab);
+        assert_eq!(b.read8(0x0e000006), 255);
     }
     #[test]
     fn ram_mirrors_and_alignment() {

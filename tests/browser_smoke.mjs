@@ -177,6 +177,13 @@ try {
       0xe3a0101f,0xe0c210b2,0xe2533001,0x1afffffc,0xeafffffe,
       0x04000000,0x403,0x06000000,38400];
     const view=new DataView(gba.buffer);words.forEach((word,n)=>view.setUint32(n*4,word,true));
+    // After drawing, program one byte through the real Flash command bus.
+    view.setUint32(9*4,0xea000000|((0x100-(9*4+8))>>2),true);
+    const flash=[0xe59f0028,0xe59f1028,0xe3a020aa,0xe5c02000,
+      0xe3a02055,0xe5c12000,0xe3a020a0,0xe5c02000,0xe59f0010,
+      0xe3a0205a,0xe5c02000,0xeafffffe,0x0e005555,0x0e002aaa,0x0e001234];
+    flash.forEach((word,n)=>view.setUint32(0x100+n*4,word,true));
+    gba.set(new TextEncoder().encode('FLASH1M_V103'),0x180);
     gba[0xb2]=0x96;gba.set(new TextEncoder().encode('RUSTBOY TEST'),0xa0);
     const gbaPath=path.join(temporary,'original-32MiB.gba');await fs.writeFile(gbaPath,gba);
     await call('DOM.setFileInputFiles',{nodeId,files:[gbaPath]});
@@ -187,11 +194,18 @@ try {
     assert.equal(await evaluate("document.querySelector('#backend-status').hidden"),false);
     await evaluate("window.gbaUploadedId=Module._get_state_id(); Module._set_paused(true); window.gbaState=Module._export_state(); Module._import_state(gbaState)");
     assert.ok(await evaluate("gbaState.length > 500000 && Module._get_state_id()===gbaUploadedId"));
+    assert.ok(await evaluate("Module._get_save_key().startsWith('rustboy_save_gba_') && Module._export_save_data().length===131072 && Module._export_save_data()[0x1234]===0x5a"));
+    await evaluate("(async () => { const wasm=await import('./out/rustboy.js'); wasm.save_game(); window.gbaSaveKey=Module._get_save_key(); window.gbaPersisted=localStorage.getItem(gbaSaveKey); })()");
+    assert.ok(await evaluate("gbaPersisted?.length > 100000"));
+    await evaluate("window.gbaSavedBytes=Module._export_save_data(); gbaSavedBytes[0x1234]=0x33; Module._import_save_data(gbaSavedBytes)");
+    await call('DOM.setFileInputFiles',{nodeId,files:[gbaPath]});
+    await until("Module._export_save_data()[0x1234]===0x5a");
+    assert.ok(await evaluate("Module._get_save_key()===gbaSaveKey && localStorage.getItem(gbaSaveKey)===gbaPersisted"));
     const oversized=path.join(temporary,'oversized.gba');const file=await fs.open(oversized,'w');await file.truncate(gba.length+1);await file.close();
     await call('DOM.setFileInputFiles',{nodeId,files:[oversized]});
     await until("document.body.textContent.includes('Could not read ROM: ROM size must')");
     assert.equal(await evaluate("Module._get_state_id()===gbaUploadedId"),true);
-    console.log('GBA browser: 32 MiB File upload, real WASM routing, 240x160 bitmap rendering, checked states and oversized-load preservation passed');
+    console.log('GBA browser: 32 MiB upload, real WASM bitmap, Flash programming/persistence/reload, checked states and oversized-load preservation passed');
   }
   if (process.env.RUSTBOY_SGB_FIRMWARE) {
     const firmware = path.resolve(process.env.RUSTBOY_SGB_FIRMWARE);

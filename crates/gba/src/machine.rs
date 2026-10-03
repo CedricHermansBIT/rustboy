@@ -1,5 +1,5 @@
-//! Development-only headless machine. Tile/OBJ rendering, audio,
-//! cartridge saves and many BIOS services are not implemented yet.
+//! Development GBA machine with scanline graphics, Direct Sound and SRAM/Flash.
+//! PSG, EEPROM, precise raster/bus timing and some BIOS services remain pending.
 use crate::{
     bus::Bus,
     cpu::{Cpu, Memory},

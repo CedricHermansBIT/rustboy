@@ -7,3 +7,6 @@ description = "Independently authored headless Game Boy Advance hardware for Rus
 
 [dependencies]
 rustboy-emulator-api = { path = "../emulator-api" }
+
+[dev-dependencies]
+png = "0.18.1"

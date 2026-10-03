@@ -169,6 +169,7 @@ dependencies = [
 name = "rustboy-gba"
 version = "0.1.0"
 dependencies = [
+ "png",
  "rustboy-emulator-api",
 ]
 
