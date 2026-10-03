@@ -15,7 +15,8 @@ commercial game, or Nintendo firmware is included.
 - Scanline/HBlank/VBlank event scheduling and interrupt requests, HALT event
   skipping, and initial bitmap modes 3/4/5 (identity coordinates only).
 - Optional user-supplied 16 KiB BIOS; development direct entry into cartridge
-  code without BIOS. Missing-firmware exceptions stop execution explicitly.
+  code without BIOS, using our own replacement services and IRQ shim. Unsupported
+  services and exceptions stop execution explicitly.
 - Original unit/oracle tests and a synthetic cartridge that paints a mode-3
   frame, plus a bounded native diagnostic for local cartridges.
 
@@ -34,15 +35,18 @@ cargo run --release -p rustboy-gba --example inspect -- "path/to/game.gba" 60
 ```
 
 The diagnostic reports instruction/clock counts, CPU/display state and the first
-exception requiring missing firmware. Throughput measures this incomplete
+unsupported exception/service. Throughput measures this incomplete
 workload, **not finished-game speed**. The local FireRed cartridge is not committed
-and is not added to the public ROM picker. GBA is deliberately not advertised in
-the browser until useful graphics, audio, input and compatibility exist.
+and is not added to the public ROM picker. Browser uploads now accept `.gba`
+cartridges up to 32 MiB and route to this backend with a persistent development
+warning, not a promise that games are playable. Drop/file preflight rejects
+oversized cartridges before reading their contents. GB uploads retain an 8 MiB
+limit. Header detection also recognizes GBA data uploaded with a `.bin` extension.
 
-The first local FireRed diagnostic reaches Thumb `SWI 01h` (`RegisterRamReset`)
+The initial foundation's local FireRed diagnostic reached Thumb `SWI 01h` (`RegisterRamReset`)
 at `081E3BF0h` after 20 instructions and stops there. This identifies the first
 missing service; it does not establish game compatibility. The current test
-suite has 20 unit tests and two original synthetic-program integration tests.
+suite at that point had 20 unit tests and two original synthetic-program integration tests.
 `python3 scripts/check.py --offline` includes those tests alongside the existing
 GB/CGB/SGB checks; the first milestone passes all 193 native checks in that gate,
 its JS/Python checks, GBA Clippy with warnings denied, and the root WASM check.
@@ -62,6 +66,31 @@ Video and timers continue during DMA. Ten new tests cover these interactions.
 DMA startup phases, exact CPU register-write timing, cartridge DRQ/video capture,
 and Direct Sound FIFO requests still need work; this is not cycle-exact DMA yet.
 
+### Replacement BIOS and browser upload milestone
+
+Original functional services now cover SoftReset, RegisterRamReset, Halt,
+IntrWait/VBlankIntrWait, Div/DivArm, Sqrt, CpuSet/CpuFastSet, LZ77/RL decoding and
+SoundBias. Our tiny original ARM IRQ dispatcher executes game handlers on the
+emulated CPU and restores banked state. User-supplied BIOS execution remains
+separate. Service timing, reset register defaults and compression edge-case
+quirks are not claimed hardware-identical. Unimplemented services stop clearly.
+
+FireRed now runs a bounded 600-frame diagnostic without an unsupported service,
+but remains in a game-side interrupt polling loop around `080008BEh`; this needs
+investigation. This is **not evidence of a playable game**, and tile/OBJ graphics,
+audio and cartridge saves remain missing.
+
+The shared frontend adapter includes pause/reset/input and checked version-1
+snapshots: CPU/banks, timers/DMA, RAM/I/O, scheduler and rendered frame. Corrupt,
+wrong-ROM/firmware and impossible peripheral states are rejected atomically;
+host buttons are released on restore. Battery saves are not advertised yet.
+Browser tests exercise an actual 32 MiB file upload into WASM, 240×160 bitmap
+output, state restore and oversized-upload preservation. Native GBA coverage is
+now 41 unit tests plus five original program tests.
+The regression gate passes 217 native checks plus JS/Python checks; the existing
+nine browser scenarios and the new 32 MiB GBA upload scenario pass. The GBA
+scenario also switches back to the original GB backend to check coexistence.
+
 1. Expand ARM/Thumb instruction and exception validation; finish bus arbitration
    and an original BIOS-service replacement
    for boot-ROM-free deployments. Use local FireRed as a compatibility probe,
@@ -72,8 +101,9 @@ and Direct Sound FIFO requests still need work; this is not cycle-exact DMA yet.
    expose correctly clocked stereo samples through the shared frontend API.
 4. Cartridge SRAM/Flash/EEPROM, save detection and persistence, validated state
    snapshots, keypad IRQ, serial/link devices and cartridge peripherals.
-5. Integrate the shared emulator interface and WASM loader, GBA shoulder buttons,
-   settings, save/state formats and safe speed controls. Keep the public homebrew
+5. Complete browser GBA shoulder buttons, settings, battery-save support and
+   media/fault handling. Shared interface, upload routing, checked states and
+   existing speed controls are connected. Keep the public homebrew
    selection separate from local commercial ROMs.
 6. Profile native and WASM gameplay, batch events and audio, and optimize measured
    hot paths. No per-instruction allocation or dynamic bus dispatch is needed;

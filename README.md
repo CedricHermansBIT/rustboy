@@ -13,8 +13,9 @@ backend into a Cargo workspace. See [the architecture guide](ARCHITECTURE.md)
 for the extension boundaries intended for future NES/SNES/SGB support.
 
 An independently authored GBA backend is now under development, starting with
-headless ARM/Thumb execution and bitmap graphics. It is **not yet playable GBA
-support** and is not exposed by the browser. See [the GBA roadmap](GBA_SUPPORT.md).
+ARM/Thumb execution, timers/DMA, replacement BIOS services and bitmap graphics.
+Browser upload/drop accepts `.gba` files up to 32 MiB, with a development warning.
+It is **not yet playable GBA support**. See [the GBA roadmap](GBA_SUPPORT.md).
 
 Automatic hardware selection now recognizes **Super Game Boy-enhanced cartridges**,
 including their palettes, attributes and game-provided borders. Explicit GB/CGB/SGB

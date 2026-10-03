@@ -212,6 +212,33 @@ pub fn load_rom_data(rom: &[u8], boot_rom: &[u8]) -> Result<(), JsValue> {
 }
 
 #[wasm_bindgen]
+pub fn load_gba_data(rom: &[u8], bios: &[u8]) -> Result<(), JsValue> {
+    crate::gba::validate_cartridge(rom).map_err(|e| JsValue::from_str(&e))?;
+    let bios = if bios.is_empty() { None } else { Some(bios.to_vec()) };
+    let backend = crate::gba::GameBoyAdvance::new(rom.to_vec(), bios)
+        .map_err(|e| JsValue::from_str(&e))?;
+    save_game();
+    toggleVramCanvas(false);
+    install_backend(Box::new(backend));
+    Ok(())
+}
+
+#[wasm_bindgen]
+pub fn get_backend_status() -> String {
+    with_session(|session| {
+        let Some(gba) = session.backend.debug_extension()
+            .and_then(|d| d.downcast_ref::<crate::gba::GameBoyAdvance>()) else {
+            return String::new();
+        };
+        if let Some(fault) = &gba.fault {
+            format!("GBA stopped at {:08X}: {}", fault.instruction_address, fault.reason)
+        } else {
+            "GBA development: graphics and audio incomplete; saves not supported yet".to_owned()
+        }
+    }).unwrap_or_default()
+}
+
+#[wasm_bindgen]
 pub fn load_rom_data_with_model(rom: &[u8], boot_rom: &[u8], model: &str) -> Result<(), JsValue> {
     let model = match model {
         "auto" => HardwareModel::Auto,
@@ -240,7 +267,6 @@ pub fn load_rom_data_with_model(rom: &[u8], boot_rom: &[u8], model: &str) -> Res
     backend.set_border_visible(BORDER_VISIBLE.with(Cell::get));
     toggleVramCanvas(false);
     save_game();
-    let previous_speed = get_speed();
     console::log_1(&format!("Loaded {}: {}", backend.system_name(), backend.title()).into());
     if let Some(info) = backend.save_info() {
         let mut saved = loadSaveData(&info.key);
@@ -255,7 +281,13 @@ pub fn load_rom_data_with_model(rom: &[u8], boot_rom: &[u8], model: &str) -> Res
             storeSaveData(&info.key, &backend.export_save());
         }
     }
-    let mut session = Session::new(Box::new(backend));
+    install_backend(Box::new(backend));
+    Ok(())
+}
+
+fn install_backend(backend: Box<dyn Emulator>) {
+    let previous_speed = get_speed();
+    let mut session = Session::new(backend);
     session.set_speed(previous_speed);
     *KEYS.lock().unwrap() = [false; 256];
     *PREVIOUS_KEYS.lock().unwrap() = [false; 256];
@@ -267,7 +299,6 @@ pub fn load_rom_data_with_model(rom: &[u8], boot_rom: &[u8], model: &str) -> Res
             start_emulation_loop();
         }
     });
-    Ok(())
 }
 
 #[wasm_bindgen]

@@ -76,6 +76,11 @@
         transition: opacity 0.3s;
       }
       #speed-badge.hidden { opacity: 0; }
+      #backend-status {
+        position: absolute; bottom: 0; left: 8px; right: 8px; z-index: 10;
+        padding: 5px 8px; border-radius: 4px; background: rgba(0,0,0,0.85);
+        color: #ffd89b; font-size: 11px; pointer-events: none;
+      }
 
       /* Trace badge */
       #trace-badge {
@@ -729,6 +734,7 @@
         <canvas id="rustboy-canvas"></canvas>
         <canvas id="vram-canvas"></canvas>
         <div id="speed-badge" class="hidden">1×</div>
+        <p id="backend-status" class="hint" role="status" hidden></p>
         <div id="trace-badge" class="hidden">⏺ REC</div>
         <div id="touch-controls" class="hidden" aria-hidden="true">
           <button id="touch-settings-toggle" type="button" aria-label="Touch control settings">☰</button>
@@ -865,11 +871,11 @@
       </p>
       <ul id="rom-list"></ul>
       <div id="upload-area">
-        <button id="upload-btn">📂 Upload ROM (.gb/.gbc)</button>
+        <button id="upload-btn">📂 Upload ROM (.gb/.gbc/.gba)</button>
         <button class="ui-button" type="button" data-open-settings aria-haspopup="dialog">Settings</button>
-        <input type="file" id="rom-file-input" accept=".gb,.gbc,.bin" style="display:none" />
+        <input type="file" id="rom-file-input" accept=".gb,.gbc,.gba,.bin" style="display:none" />
       </div>
-      <p class="hint">Type to search · ←→↑↓ navigate · Enter load · Esc back · Drag & drop .gb/.gbc files</p>
+      <p class="hint">Type to search · ←→↑↓ navigate · Enter load · Esc back · Drop .gb/.gbc/.gba files · GBA up to 32 MiB (development)</p>
     </div>
 
     <dialog id="emulator-settings" class="settings-panel" aria-labelledby="settings-title">
@@ -2000,7 +2006,7 @@
           const tab = ROM_TABS[activeTab];
           const romInfo = { name: rom.name, folder: tab.folder, tab: activeTab };
           const data = await Module._fetch_library_rom(rom, tab.folder);
-          await Module._load_rom_data(data);
+          await Module._load_rom_data(data, rom.name);
           currentRomInfo = romInfo;
           addToRecent(romInfo);
           romLoaded = true;
@@ -2020,7 +2026,7 @@
         // Uploaded ROMs cannot be reopened from the built-in picker, and must
         // not inherit the previously selected ROM's recent/save association.
         try {
-          await Module._load_rom_data(new Uint8Array(buf));
+          await Module._load_rom_data(new Uint8Array(buf), name);
           currentRomInfo = { name, folder: 'uploads', tab: 'uploads', uploaded: true };
           romLoaded = true;
           await finishRomLoad();
@@ -2036,22 +2042,24 @@
       /* ── Upload ── */
       const uploadBtn = document.getElementById('upload-btn');
       const fileInput = document.getElementById('rom-file-input');
+      async function readUploadFile(file) {
+        if (!file || !Module) return;
+        try {
+          Module._validate_upload_size(file.size, file.name);
+          await loadRomFromBuffer(await file.arrayBuffer(), file.name);
+        } catch (error) { toast(`Could not read ROM: ${error.message || error}`, true); }
+      }
       uploadBtn.addEventListener('click', () => fileInput.click());
       fileInput.addEventListener('change', (e) => {
-        const f = e.target.files[0]; if (!f) return;
-        const r = new FileReader();
-        r.onload = () => { if (Module) loadRomFromBuffer(r.result, f.name); };
-        r.readAsArrayBuffer(f); fileInput.value = '';
+        readUploadFile(e.target.files[0]); fileInput.value = '';
       });
       pickerEl.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
       pickerEl.addEventListener('drop', (e) => {
-        e.preventDefault(); const f = e.dataTransfer.files[0];
-        if (f && Module) { const r = new FileReader(); r.onload = () => loadRomFromBuffer(r.result, f.name); r.readAsArrayBuffer(f); }
+        e.preventDefault(); e.stopPropagation(); readUploadFile(e.dataTransfer.files[0]);
       });
       document.body.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
       document.body.addEventListener('drop', (e) => {
-        e.preventDefault(); const f = e.dataTransfer.files[0];
-        if (f && Module) { const r = new FileReader(); r.onload = () => loadRomFromBuffer(r.result, f.name); r.readAsArrayBuffer(f); }
+        e.preventDefault(); readUploadFile(e.dataTransfer.files[0]);
       });
 
       async function fetchRomList() {
@@ -2515,11 +2523,17 @@
       // Import the namespace so optional/new exports do not prevent the entire
       // emulator from starting when a browser has an older generated bundle cached.
       import init, * as Rustboy from './out/rustboy.js';
-      import { loadWithBootRom } from './web/rom-loader.mjs';
+      import { loadCartridge, validateUploadSize } from './web/rom-loader.mjs';
       import { fetchLibraryRom } from './web/library-rom.mjs';
       import { ControllerInputs } from './web/controller-input.mjs';
       init().then(() => {
         const hardware = document.querySelector('#hardware-model');
+        const backendStatus=document.querySelector('#backend-status');
+        const updateBackendStatus=()=>{
+          const status=Rustboy.get_backend_status?.() || '';
+          if (backendStatus.textContent!==status) backendStatus.textContent=status;
+          backendStatus.hidden=!status;
+        };
         Module = {
           _fetch_library_rom: fetchLibraryRom,
           _set_key_state: Rustboy.set_key_state,
@@ -2540,14 +2554,15 @@
             Rustboy.clear_sgb_sound_firmware(); clearControllerInputs(); applySgbUserPalette();
             if (settingsDialog.open) Rustboy.set_paused(true);
           }),
-          _load_rom_data: data => {
+          _validate_upload_size: validateUploadSize,
+          _load_rom_data: (data, name = '') => {
             const model = hardware.value;
             if (!Rustboy.load_rom_data_with_model && model !== 'auto') {
               throw new Error('Hardware selection needs the updated WASM bundle; refresh the page');
             }
-            return loadWithBootRom((rom, boot) => Rustboy.load_rom_data_with_model
-              ? Rustboy.load_rom_data_with_model(rom, boot, model) : Rustboy.load_rom_data(rom, boot), data, fetch, model)
-              .then(result => { clearControllerInputs(); applySgbUserPalette(); return result; });
+            return loadCartridge((rom, boot) => Rustboy.load_rom_data_with_model
+              ? Rustboy.load_rom_data_with_model(rom, boot, model) : Rustboy.load_rom_data(rom, boot), Rustboy.load_gba_data, data, name, fetch, model)
+              .then(result => { clearControllerInputs(); applySgbUserPalette(); updateBackendStatus(); return result; });
           },
           _get_debug_state: Rustboy.get_debug_state,
           _save_game: Rustboy.save_game,
@@ -2582,7 +2597,11 @@
           document.querySelector('#controller-status').textContent = 'Player 1: keyboard / touch' +
             assignments.map(({port,id}) => ` · Player ${port+1}: ${id}`).join('');
         });
-        const poll = () => { pollControllers(); requestAnimationFrame(poll); };
+        const poll = () => {
+          pollControllers();
+          requestAnimationFrame(poll);
+        };
+        setInterval(updateBackendStatus,500);
         poll();
         window.addEventListener('gamepadconnected', pollControllers);
         window.addEventListener('gamepaddisconnected', pollControllers);

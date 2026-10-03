@@ -62,7 +62,7 @@ def main():
         subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT, check=True)
         subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT,
                        env={**os.environ, "RUSTBOY_PUBLIC_LIBRARY": "1", "RUSTBOY_NO_BOOT": "1"}, check=True)
-        for model in ["dmg", "cgb", "sgb", "sgb-border", "sgb-palettes", "sgb-audio", "sgb-multiplayer"]:
+        for model in ["dmg", "cgb", "sgb", "sgb-border", "sgb-palettes", "sgb-audio", "sgb-multiplayer", "gba-upload"]:
             environment = {**os.environ, "RUSTBOY_NO_BOOT": "1", "CARGO_TARGET_DIR": args.target_dir}
             environment.pop("RUSTBOY_ROM", None)
             environment.pop("RUSTBOY_SYNTHETIC_CGB", None)
@@ -73,6 +73,9 @@ def main():
             environment.pop("RUSTBOY_SGB_MULTIPLAYER", None)
             environment.pop("RUSTBOY_SGB_FIRMWARE", None)
             environment.pop("RUSTBOY_HARDWARE", None)
+            environment.pop("RUSTBOY_GBA_UPLOAD", None)
+            if model == "gba-upload":
+                environment["RUSTBOY_GBA_UPLOAD"] = "1"
             if model == "cgb":
                 environment["RUSTBOY_SYNTHETIC_CGB"] = "1"
             if model == "sgb":

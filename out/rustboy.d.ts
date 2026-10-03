@@ -25,6 +25,8 @@ export function export_save_data(): Uint8Array;
 
 export function export_state(): Uint8Array;
 
+export function get_backend_status(): string;
+
 /**
  * Keep the replacement firmware's attribution available in binary deployments.
  */
@@ -57,6 +59,8 @@ export function is_paused(): boolean;
 export function is_tracing(): boolean;
 
 export function list_breakpoints(): string;
+
+export function load_gba_data(rom: Uint8Array, bios: Uint8Array): void;
 
 export function load_rom_data(rom: Uint8Array, boot_rom: Uint8Array): void;
 
@@ -118,6 +122,7 @@ export interface InitOutput {
     readonly clear_sgb_user_palette: () => [number, number];
     readonly export_save_data: () => [number, number];
     readonly export_state: () => [number, number];
+    readonly get_backend_status: () => [number, number];
     readonly get_boot_rom_license: () => [number, number];
     readonly get_debug_flags: () => number;
     readonly get_debug_state: () => [number, number];
@@ -132,6 +137,7 @@ export interface InitOutput {
     readonly is_paused: () => number;
     readonly is_tracing: () => number;
     readonly list_breakpoints: () => [number, number];
+    readonly load_gba_data: (a: number, b: number, c: number, d: number) => [number, number];
     readonly load_rom_data: (a: number, b: number, c: number, d: number) => [number, number];
     readonly load_rom_data_with_model: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly main_js: () => void;

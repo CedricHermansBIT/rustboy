@@ -136,6 +136,28 @@ try {
   await call('DOM.setFileInputFiles', {nodeId, files: [invalidRom]});
   await until("document.body.textContent.includes('ROM is truncated')");
   assert.deepEqual(exceptions, [], 'unhandled browser errors');
+  if (process.env.RUSTBOY_GBA_UPLOAD) {
+    const gba=new Uint8Array(32*1024*1024);
+    const words=[0xe59f0020,0xe59f1020,0xe1c010b0,0xe59f201c,0xe59f301c,
+      0xe3a0101f,0xe0c210b2,0xe2533001,0x1afffffc,0xeafffffe,
+      0x04000000,0x403,0x06000000,38400];
+    const view=new DataView(gba.buffer);words.forEach((word,n)=>view.setUint32(n*4,word,true));
+    gba[0xb2]=0x96;gba.set(new TextEncoder().encode('RUSTBOY TEST'),0xa0);
+    const gbaPath=path.join(temporary,'original-32MiB.gba');await fs.writeFile(gbaPath,gba);
+    await call('DOM.setFileInputFiles',{nodeId,files:[gbaPath]});
+    await until("document.querySelector('#rustboy-canvas').width === 240");
+    await until("(() => { const c=document.querySelector('#rustboy-canvas'); const p=c.getContext('2d').getImageData(239,159,1,1).data; return p[0]===255 && p[1]===0 && p[2]===0; })()");
+    assert.equal(await evaluate("document.querySelector('#rustboy-canvas').height"),160);
+    assert.ok(await evaluate("Module._get_state_id().startsWith('gba-')"));
+    assert.equal(await evaluate("document.querySelector('#backend-status').hidden"),false);
+    await evaluate("window.gbaUploadedId=Module._get_state_id(); Module._set_paused(true); window.gbaState=Module._export_state(); Module._import_state(gbaState)");
+    assert.ok(await evaluate("gbaState.length > 500000 && Module._get_state_id()===gbaUploadedId"));
+    const oversized=path.join(temporary,'oversized.gba');const file=await fs.open(oversized,'w');await file.truncate(gba.length+1);await file.close();
+    await call('DOM.setFileInputFiles',{nodeId,files:[oversized]});
+    await until("document.body.textContent.includes('Could not read ROM: ROM size must')");
+    assert.equal(await evaluate("Module._get_state_id()===gbaUploadedId"),true);
+    console.log('GBA browser: 32 MiB File upload, real WASM routing, 240x160 bitmap rendering, checked states and oversized-load preservation passed');
+  }
   if (process.env.RUSTBOY_SGB_FIRMWARE) {
     const firmware = path.resolve(process.env.RUSTBOY_SGB_FIRMWARE);
     await fs.access(firmware);

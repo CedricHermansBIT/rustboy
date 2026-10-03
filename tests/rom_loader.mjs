@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {loadWithBootRom} from '../web/rom-loader.mjs';
+import {loadWithBootRom,loadCartridge,romFormat,validateUploadSize,GBA_MAX_BYTES} from '../web/rom-loader.mjs';
 
 for (const flag of [0, 0x80, 0xC0]) {
   const rom = new Uint8Array(32768); rom[0x143] = flag;
@@ -53,3 +53,25 @@ for (const model of ['sgb', 'dmg', 'unknown']) {
     () => assert.fail('invalid model must not fetch firmware'), model), /hardware/);
 }
 console.log('ROM loader: explicit DMG/CGB/SGB models, malformed uploads, and boot-file-free/network-error fallback passed');
+
+for (const size of [192,16*1024*1024,32*1024*1024]) {
+  const rom=new Uint8Array(size);rom[0xb2]=0x96;
+  let calls=0;
+  await loadCartridge(()=>assert.fail('GBA must not enter GB backend'),(data,bios)=>{
+    assert.equal(data,rom,'large cartridge must not be converted/copied in JS');assert.equal(bios.length,0);calls++;
+  },rom,'Uploaded.GBA',()=>assert.fail('GBA must not request GB/CGB firmware'),'sgb');
+  assert.equal(calls,1);validateUploadSize(size,'game.gba');
+}
+assert.equal(GBA_MAX_BYTES,32*1024*1024);
+assert.throws(()=>validateUploadSize(GBA_MAX_BYTES+1,'game.gba'),/32 MiB/);
+assert.throws(()=>validateUploadSize(16*1024*1024,'game.gb'),/8 MiB/);
+assert.throws(()=>validateUploadSize(0,'game.gba'),/truncated/);
+const invalidGba=new Uint8Array(192);
+await assert.rejects(loadCartridge(()=>assert.fail(),()=>assert.fail(),invalidGba,'game.gba'),/header/);
+invalidGba[0xb2]=0x96;
+await assert.rejects(loadCartridge(()=>assert.fail(),undefined,invalidGba,'game.gba'),/updated WASM/);
+let checksum=-0x19;for(let i=0xa0;i<=0xbc;i++)checksum-=invalidGba[i];invalidGba[0xbd]=checksum&255;
+assert.equal(romFormat(invalidGba,'game.bin'),'gba');
+assert.equal(romFormat(new Uint8Array(32768),'game.gb'),'gb');
+await assert.rejects(loadCartridge(()=>assert.fail(),()=>assert.fail(),new Uint8Array(GBA_MAX_BYTES+1),'game.gba'),/32 MiB/);
+console.log('GBA uploads: explicit/header detection, 16/32 MiB routing, limits, no GB firmware or JS copies, malformed/old-bundle errors passed');
