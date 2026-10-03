@@ -15,6 +15,9 @@ pub struct Bus {
     pub(crate) clocks: u64,
     pub halted: bool,
     pub(crate) timers: [Timer; 4],
+    // Derived scheduling caches: rebuilt after register writes/state restore.
+    pub(crate) timer_enabled: u8,
+    pub(crate) timer_next: u64,
     pub(crate) dma: [Dma; 4],
     pub(crate) apu: crate::apu::Apu,
     pub(crate) backup: crate::backup::Backup,
@@ -43,6 +46,8 @@ impl Bus {
             clocks: 0,
             halted: false,
             timers: [Timer::default(); 4],
+            timer_enabled: 0,
+            timer_next: u64::MAX,
             dma: [Dma::default(); 4],
             apu: crate::apu::Apu::default(),
             backup,
@@ -121,12 +126,45 @@ impl Bus {
         }
     }
     pub fn peek16(&self, address: u32) -> u16 {
+        if let Some(bytes) = self.linear_bytes::<2>(address) {
+            return u16::from_le_bytes(bytes);
+        }
         u16::from_le_bytes([self.peek8(address), self.peek8(address.wrapping_add(1))])
     }
     pub fn peek32(&self, address: u32) -> u32 {
+        if let Some(bytes) = self.linear_bytes::<4>(address) {
+            return u32::from_le_bytes(bytes);
+        }
         u32::from_le_bytes(std::array::from_fn(|i| {
             self.peek8(address.wrapping_add(i as u32))
         }))
+    }
+    /// Decode ordinary memory once per wide access. Fall back to byte decoding
+    /// for I/O, serial devices, absent ROM and mirror/region boundary crossings.
+    #[inline]
+    fn linear_bytes<const N: usize>(&self, address: u32) -> Option<[u8; N]> {
+        let index = address as usize;
+        let (bytes, offset): (&[u8], usize) = match address >> 24 {
+            0 if address < 0x4000 => (&self.bios, index),
+            2 => (&self.ewram, index & 0x3ffff),
+            3 => (&self.iwram, index & 0x7fff),
+            5 => (&self.palette, index & 0x3ff),
+            6 => (&self.vram, Self::vram_index(address)),
+            7 => (&self.oam, index & 0x3ff),
+            8..=13
+                if !(address >> 24 == 13
+                    && (self.eeprom_address(address)
+                        || self.eeprom_address(address.wrapping_add(N as u32 - 1)))) =>
+            {
+                (&self.rom, index & 0x1ffffff)
+            }
+            _ => return None,
+        };
+        // Cross-region unaligned debugger peeks retain byte-level semantics.
+        if address & 0xffffff > 0x1000000 - N as u32 {
+            return None;
+        }
+        bytes.get(offset..offset + N)?.try_into().ok()
     }
     fn charge(&mut self, address: u32, width: u32, sequential: bool) {
         let clocks = match address >> 24 {
@@ -291,6 +329,45 @@ mod tests {
         assert_eq!(b.peek32(0x02040000), 0x12345678);
         b.write16(0x03008000, 0xabcd, false);
         assert_eq!(b.peek16(0x03000000), 0xabcd);
+    }
+    #[test]
+    fn wide_memory_fast_path_matches_byte_decoder_at_mirrors_and_devices() {
+        let mut rom = vec![0x5a; 0x2000000];
+        rom[80..91].copy_from_slice(b"EEPROM_V124");
+        let mut b = Bus::new(rom, None).unwrap();
+        for bytes in [
+            &mut b.ewram,
+            &mut b.iwram,
+            &mut b.palette,
+            &mut b.vram,
+            &mut b.oam,
+        ] {
+            for (i, byte) in bytes.iter_mut().enumerate() {
+                *byte = i.wrapping_mul(37) as u8;
+            }
+        }
+        for base in [
+            0x3ffcu32, 0x0203fffc, 0x03007ffc, 0x04fffffc, 0x050003fc, 0x06017ffc, 0x0601fffc,
+            0x070003fc, 0x08000000, 0x09fffffc, 0x0dfffefc, 0x0dfffffc, 0x0efffffc,
+        ] {
+            for offset in 0..8 {
+                let address = base + offset;
+                let bytes = std::array::from_fn(|i| b.peek8(address + i as u32));
+                assert_eq!(
+                    b.peek32(address),
+                    u32::from_le_bytes(bytes),
+                    "{address:08x}"
+                );
+                assert_eq!(b.peek16(address), u16::from_le_bytes([bytes[0], bytes[1]]));
+            }
+        }
+        let short = bus();
+        for address in [0x080000be, 0x080000bf, 0x080000c0] {
+            assert_eq!(
+                short.peek32(address),
+                u32::from_le_bytes(std::array::from_fn(|i| short.peek8(address + i as u32)))
+            );
+        }
     }
     #[test]
     fn video_byte_writes() {

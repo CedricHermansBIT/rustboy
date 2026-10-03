@@ -510,11 +510,12 @@ fn start_emulation_loop() {
     let vram_context = setup_canvas("vram-canvas", 128, 192);
     let callback = Rc::new(RefCell::new(None));
     let next_callback = callback.clone();
+    let performance = web_sys::window().unwrap().performance().unwrap();
     *next_callback.borrow_mut() = Some(Closure::wrap(Box::new(move |timestamp: f64| {
         let current = SESSION.with(|slot| slot.borrow().clone());
         if let Some(current) = current {
             let mut session = current.borrow_mut();
-            session.tick(timestamp);
+            session.tick_bounded(timestamp, 12.0, || performance.now());
             check_keys(&mut session);
             draw_frame(&context, session.backend.video_frame());
             if let Some(debug) = session

@@ -42,6 +42,7 @@ impl Bus {
             } else {
                 self.io[offset] = 0;
             }
+            self.refresh_timer_schedule();
         }
         if (0xb0..0xe0).contains(&offset) && (offset - 0xb0) % 12 == 11 {
             let n = (offset - 0xb0) / 12;
@@ -91,19 +92,22 @@ impl Bus {
     /// overflow counts for future Direct Sound timer consumers.
     pub(crate) fn advance_timers(&mut self, clocks: u64) -> [u64; 4] {
         let mut overflows = [0; 4];
+        if self.timer_enabled == 0 {
+            return overflows;
+        }
         let mut irqs = 0;
         for n in 0..4 {
             let timer = &mut self.timers[n];
-            if timer.control & 0x80 == 0 {
+            if self.timer_enabled & (1 << n) == 0 {
                 continue;
             }
             let ticks = if n > 0 && timer.control & 4 != 0 {
                 overflows[n - 1]
             } else {
-                let divisor = [1, 64, 256, 1024][usize::from(timer.control & 3)];
+                let shift = [0, 6, 8, 10][usize::from(timer.control & 3)];
                 timer.phase += clocks;
-                let ticks = timer.phase / divisor;
-                timer.phase %= divisor;
+                let ticks = timer.phase >> shift;
+                timer.phase &= (1 << shift) - 1;
                 ticks
             };
             let to_overflow = 0x10000 - u64::from(timer.counter);
@@ -119,20 +123,36 @@ impl Bus {
                 }
             }
         }
-        self.request_irq(irqs);
+        if irqs != 0 {
+            self.request_irq(irqs);
+        }
+        if self.timer_next == u64::MAX {
+            // Enabled cascade-only timers have no independent deadline.
+        } else if clocks < self.timer_next {
+            self.timer_next -= clocks;
+        } else {
+            self.refresh_timer_schedule();
+        }
         overflows
     }
     pub(crate) fn timer_deadline(&self) -> u64 {
-        self.timers
+        self.timer_next
+    }
+    pub(crate) fn refresh_timer_schedule(&mut self) {
+        self.timer_enabled = self.timers.iter().enumerate().fold(0, |mask, (n, timer)| {
+            mask | (u8::from(timer.control & 0x80 != 0) << n)
+        });
+        self.timer_next = self
+            .timers
             .iter()
             .enumerate()
             .filter(|(n, t)| t.control & 0x80 != 0 && (*n == 0 || t.control & 4 == 0))
             .map(|(_, t)| {
-                (0x10000 - u64::from(t.counter)) * [1, 64, 256, 1024][usize::from(t.control & 3)]
+                ((0x10000 - u64::from(t.counter)) << [0, 6, 8, 10][usize::from(t.control & 3)])
                     - t.phase
             })
             .min()
-            .unwrap_or(u64::MAX)
+            .unwrap_or(u64::MAX);
     }
     /// 1=VBlank, 2=HBlank. Repeated DMA reloads count, and destination only in
     /// increment/reload mode; source continues from its internal latched address.
@@ -342,6 +362,42 @@ mod tests {
             assert_eq!(a.timers[n].phase, b.timers[n].phase);
         }
         assert_eq!(a.io16(0x202), b.io16(0x202));
+    }
+    #[test]
+    fn timer_schedule_cache_matches_canonical_state_after_writes_and_batches() {
+        let mut b = bus();
+        let check = |b: &Bus| {
+            let expected = b
+                .timers
+                .iter()
+                .enumerate()
+                .filter(|(n, t)| t.control & 0x80 != 0 && (*n == 0 || t.control & 4 == 0))
+                .map(|(_, t)| {
+                    (65536 - u64::from(t.counter)) * [1, 64, 256, 1024][usize::from(t.control & 3)]
+                        - t.phase
+                })
+                .min()
+                .unwrap_or(u64::MAX);
+            assert_eq!(b.timer_deadline(), expected);
+        };
+        for control in [0x80, 0xc1, 0x82, 0x83, 0xc4, 0, 0x80] {
+            for n in 0..4 {
+                b.write32(0x04000100 + n * 4, (control << 16) | 0xffed, false);
+                check(&b);
+                for clocks in [1, 3, 17, 64, 1025, 99999] {
+                    b.advance_timers(clocks);
+                    check(&b);
+                }
+                b.write16(0x04000100 + n * 4, 0xfffa, false);
+                check(&b);
+            }
+        }
+        for n in 0..4 {
+            b.write16(0x04000102 + n * 4, if n == 0 { 0 } else { 0x84 }, false);
+        }
+        b.advance_timers(65536);
+        check(&b);
+        assert_eq!(b.timer_deadline(), u64::MAX);
     }
     #[test]
     fn immediate_word_dma_and_irq_and_write_only_registers() {

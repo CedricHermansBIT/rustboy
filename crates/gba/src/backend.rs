@@ -543,6 +543,7 @@ impl GameBoyAdvance {
             return Err("Invalid GBA scheduler state".into());
         }
         next.bus.set_keys(0);
+        next.bus.refresh_timer_schedule();
         *self = next;
         Ok(())
     }
@@ -554,6 +555,25 @@ mod tests {
         let mut rom = vec![0; 192];
         rom[..4].copy_from_slice(&0xeafffffeu32.to_le_bytes());
         GameBoyAdvance::new(rom, None).unwrap()
+    }
+    #[test]
+    fn snapshot_rebuilds_derived_timer_deadlines() {
+        use crate::cpu::Memory;
+        let mut m = machine();
+        m.bus.write32(0x04000100, 0x0081fffa, false);
+        m.bus.take_cycles();
+        m.run(17);
+        let deadline = m.bus.timer_deadline();
+        let state = m.export_state();
+        m.run(1000);
+        let expected = m.export_state();
+        m.import_state(&state).unwrap();
+        assert_eq!(m.bus.timer_deadline(), deadline);
+        m.run(1000);
+        assert_eq!(m.export_state(), expected);
+        let legacy = legacy_none_state(&state, 4);
+        m.import_state(&legacy).unwrap();
+        assert_eq!(m.bus.timer_deadline(), deadline);
     }
     fn legacy_none_state(state: &[u8], version: u8) -> Vec<u8> {
         let count = u32::from_le_bytes(state[563..567].try_into().unwrap()) as usize;

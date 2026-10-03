@@ -1,5 +1,5 @@
-//! Development GBA machine with scanline graphics, Direct Sound and SRAM/Flash.
-//! PSG, EEPROM, precise raster/bus timing and some BIOS services remain pending.
+//! Development GBA machine with scanline graphics, Direct Sound and backup saves.
+//! PSG, precise raster/bus timing and some BIOS services remain pending.
 use crate::{
     bus::Bus,
     cpu::{Cpu, Memory},
@@ -179,7 +179,9 @@ impl GameBoyAdvance {
                 .min(self.bus.timer_deadline())
                 .min(self.bus.apu.deadline());
             let overflow = self.bus.advance_timers(advance);
-            self.bus.clock_direct_sound(overflow);
+            if overflow[0] != 0 || overflow[1] != 0 {
+                self.bus.clock_direct_sound(overflow);
+            }
             self.bus.clock_audio(advance);
             self.bus.backup.clock_eeprom(advance);
             self.line_clocks += advance as u16;

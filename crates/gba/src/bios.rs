@@ -202,6 +202,7 @@ fn reset_memory(bus: &mut Bus, flags: u8) {
         bus.set_io(0x202, 0);
         bus.set_io(0x208, 0);
         bus.timers = [Default::default(); 4];
+        bus.refresh_timer_schedule();
         bus.dma = [Default::default(); 4];
         for address in [0x20, 0x26, 0x30, 0x36] {
             bus.set_io(address, 0x100);

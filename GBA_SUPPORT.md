@@ -56,6 +56,30 @@ backend-only milestone.
 
 ## Remaining milestones
 
+### Fast-forward performance
+
+Timer scheduling now caches derived deadlines, uses shifts for power-of-two
+prescalers and avoids empty IRQ/audio work. Wide memory reads decode contiguous
+RAM/ROM once, retaining byte-decoder fallback at mirrors and device boundaries.
+Derived timer caches are reconstructed on BIOS reset and snapshot restore;
+regression tests compare cached scheduling and wide reads against canonical state.
+
+Browser execution runs in small clock-budget chunks with a 12-ms host allowance
+per animation callback. If the host cannot sustain fast-forward, missed wall time
+is dropped instead of accumulating an expanding catch-up job. Hardware events,
+instruction timing and instruction overshoot remain intact. The selected speed
+is a target, not a promise of 4x/8x on every device. Rendering still occurs each
+scanline; this change does not skip emulated frames or disable hardware features.
+
+To measure a local GBA cartridge in Chromium without copying it into the site:
+
+```sh
+RUSTBOY_GBA_PROFILE="path/to/game.gba" RUSTBOY_NO_BOOT=1 node tests/browser_smoke.mjs
+```
+
+The optional profile reports achieved startup throughput and animation callback
+latencies at a requested 8x. It is not a benchmark of completed gameplay.
+
 ### Timer/DMA milestone
 
 Four timers now implement reload/start semantics, all prescalers, overflow IRQs,
@@ -139,8 +163,8 @@ Original backup hardware detects versioned SRAM/Flash SDK tags, supports 32 KiB
 SRAM and 64/128 KiB Flash, chip-ID mode, unlock commands, byte programming,
 4 KiB sector/chip erases and bank selection. Eight-bit save-bus accesses are
 handled separately from wide RAM accesses. Programming/erase completion is
-currently immediate; busy/toggle timing, alternate Flash-chip variants, tag-free EEPROM
-and tag-free save detection remain work. Battery saves use ROM-hashed keys,
+currently immediate; busy/toggle timing, alternate Flash-chip variants and
+tag-free save detection remain work. Battery saves use ROM-hashed keys,
 survive reset, and load/flush through the browser persistence API. Version-3
 states preserve save bytes and in-flight Flash commands; version-1/2 states
 retain current battery data when restored.

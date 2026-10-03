@@ -28,6 +28,12 @@ impl FrameClock {
         // Keep instruction overshoot as negative debt for the next callback.
         self.budget -= ticks as f64;
     }
+
+    /// A host work limit drops missed presentation time, not hardware cycles.
+    /// Preserve instruction overshoot but never queue an expanding catch-up job.
+    pub fn drop_backlog(&mut self) {
+        self.budget = self.budget.min(0.0);
+    }
 }
 
 #[cfg(test)]

@@ -20,6 +20,18 @@ impl Session {
     }
 
     pub fn tick(&mut self, timestamp_ms: f64) -> RunResult {
+        self.tick_bounded(timestamp_ms, f64::INFINITY, || 0.0)
+    }
+
+    /// Run small hardware-clock chunks, yielding when the host time allowance is
+    /// spent. The injected monotonic clock keeps this policy platform-independent
+    /// and testable. Requested fast-forward is limited by actual host capacity.
+    pub fn tick_bounded(
+        &mut self,
+        timestamp_ms: f64,
+        max_work_ms: f64,
+        mut now: impl FnMut() -> f64,
+    ) -> RunResult {
         let paused = self.backend.paused();
         let budget = self
             .clock
@@ -34,9 +46,26 @@ impl Session {
             };
         }
         self.step_requested = false;
-        let result = self.backend.run(budget);
-        self.clock.consume(result.ticks);
-        result
+        let started = now();
+        let chunk = (self.backend.clock_hz() / 240).max(1);
+        let mut total = RunResult {
+            ticks: 0,
+            reason: StopReason::BudgetExhausted,
+        };
+        while total.ticks < budget {
+            let result = self.backend.run((budget - total.ticks).min(chunk));
+            self.clock.consume(result.ticks);
+            total.ticks += result.ticks;
+            total.reason = result.reason;
+            if result.reason != StopReason::BudgetExhausted || result.ticks == 0 {
+                break;
+            }
+            if now() - started >= max_work_ms {
+                self.clock.drop_backlog();
+                break;
+            }
+        }
+        total
     }
 
     pub fn request_step(&mut self) {
@@ -171,6 +200,41 @@ mod tests {
         assert_eq!(session.tick(30.0).ticks, 21);
         session.set_speed(99);
         assert_eq!(session.speed, 1);
+    }
+
+    #[test]
+    fn bounded_ticks_yield_and_drop_positive_debt_on_a_slow_host() {
+        let mut session = session();
+        session.set_speed(8);
+        session.tick(0.0);
+        for frame in 1..=100 {
+            let mut time = -4.0;
+            let result = session.tick_bounded(frame as f64 * 16.0, 12.0, || {
+                time += 4.0;
+                time
+            });
+            assert_eq!(result.ticks, 21);
+            assert_eq!(result.reason, StopReason::BudgetExhausted);
+        }
+        // Switch to a fast host: only this callback's 128 ticks are due,
+        // not the missed work from the preceding hundred callbacks.
+        let result = session.tick_bounded(1616.0, 12.0, || 0.0);
+        assert!((128..135).contains(&result.ticks));
+    }
+
+    #[test]
+    fn bounded_ticks_preserve_requested_rates_when_host_can_keep_up() {
+        for speed in [1, 2, 4, 8] {
+            let mut session = session();
+            session.set_speed(speed);
+            let mut ticks = 0;
+            for frame in 0..=60 {
+                ticks += session
+                    .tick_bounded(frame as f64 * 1000.0 / 60.0, 12.0, || 0.0)
+                    .ticks;
+            }
+            assert!((1000 * speed as u64..1000 * speed as u64 + 7).contains(&ticks));
+        }
     }
 
     #[test]
