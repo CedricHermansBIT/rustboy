@@ -655,6 +655,14 @@ function __wbg_get_imports() {
             const ret = Date.now();
             return ret;
         },
+        __wbg_now_d016ac3d79a46ea6: function(arg0) {
+            const ret = arg0.now();
+            return ret;
+        },
+        __wbg_performance_f332b77f9185fbef: function(arg0) {
+            const ret = arg0.performance;
+            return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
+        },
         __wbg_putImageData_11e4d488ba4c8adc: function() { return handleError(function (arg0, arg1, arg2, arg3) {
             arg0.putImageData(arg1, arg2, arg3);
         }, arguments); },
