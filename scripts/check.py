@@ -32,7 +32,7 @@ def main():
     if args.offline:
         cargo.append("--offline")
     subprocess.run(cargo + ["--workspace", "--lib", "--test", "ppu_strict"], cwd=ROOT, check=True)
-    for test in ["tests/audio_queue.cjs", "tests/audio_worklet.cjs", "tests/rom_loader.mjs", "tests/library_rom.mjs", "tests/cartridge_inventory.mjs"]:
+    for test in ["tests/audio_queue.cjs", "tests/audio_worklet.cjs", "tests/rom_loader.mjs", "tests/library_rom.mjs", "tests/cartridge_inventory.mjs", "tests/controller_input.mjs"]:
         subprocess.run([node, test], cwd=ROOT, check=True)
     subprocess.run(["python3", "tests/prepare_pages_test.py"], cwd=ROOT, check=True)
     if args.roms:
@@ -61,7 +61,7 @@ def main():
         subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT, check=True)
         subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT,
                        env={**os.environ, "RUSTBOY_PUBLIC_LIBRARY": "1", "RUSTBOY_NO_BOOT": "1"}, check=True)
-        for model in ["dmg", "cgb", "sgb", "sgb-border", "sgb-palettes", "sgb-audio"]:
+        for model in ["dmg", "cgb", "sgb", "sgb-border", "sgb-palettes", "sgb-audio", "sgb-multiplayer"]:
             environment = {**os.environ, "RUSTBOY_NO_BOOT": "1", "CARGO_TARGET_DIR": args.target_dir}
             environment.pop("RUSTBOY_ROM", None)
             environment.pop("RUSTBOY_SYNTHETIC_CGB", None)
@@ -69,6 +69,7 @@ def main():
             environment.pop("RUSTBOY_SGB_BORDER", None)
             environment.pop("RUSTBOY_SGB_PALETTES", None)
             environment.pop("RUSTBOY_SGB_AUDIO", None)
+            environment.pop("RUSTBOY_SGB_MULTIPLAYER", None)
             environment.pop("RUSTBOY_SGB_FIRMWARE", None)
             environment.pop("RUSTBOY_HARDWARE", None)
             if model == "cgb":
@@ -81,6 +82,8 @@ def main():
                 environment["RUSTBOY_SGB_PALETTES"] = "1"
             if model == "sgb-audio":
                 environment["RUSTBOY_SGB_AUDIO"] = "1"
+            if model == "sgb-multiplayer":
+                environment["RUSTBOY_SGB_MULTIPLAYER"] = "1"
             subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT, env=environment, check=True)
 
 

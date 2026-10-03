@@ -108,6 +108,7 @@ try {
   await until("typeof window.mem === 'function'");
   assert.equal(await evaluate("!!document.querySelector('#rustboy-canvas')"), true);
   assert.equal(await evaluate("document.querySelector('#rustboy-canvas').width"), 160);
+  await evaluate("document.querySelector('#sgb-user-palette').value = 'warm'; document.querySelector('#sgb-user-palette').dispatchEvent(new Event('change')); document.querySelector('#sgb-user-palette').value = 'game'; document.querySelector('#sgb-user-palette').dispatchEvent(new Event('change'))");
   if (process.env.RUSTBOY_PUBLIC_LIBRARY) {
     await until("ROMS.length === 1");
     assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.rom-tab')).filter(el => getComputedStyle(el).display !== 'none').map(el => el.dataset.tab)"), ['homebrew']);
@@ -140,6 +141,7 @@ try {
   let gamePath = process.env.RUSTBOY_ROM && path.resolve(process.env.RUSTBOY_ROM);
   const borderTest = !!process.env.RUSTBOY_SGB_BORDER;
   const paletteTest = !!process.env.RUSTBOY_SGB_PALETTES;
+  const multiplayerTest = !!process.env.RUSTBOY_SGB_MULTIPLAYER;
   const audioTest = !!process.env.RUSTBOY_SGB_AUDIO && !gamePath;
   assert.ok([borderTest,paletteTest,audioTest].filter(Boolean).length <= 1, 'select one generated SGB cartridge');
   if (process.env.RUSTBOY_HARDWARE) {
@@ -159,7 +161,7 @@ try {
     rom.set([0xC3, 0x50, 0x01], 0x100);
     rom.fill(0xAA, 0x104, 0x134);
     rom[0x143] = process.env.RUSTBOY_SYNTHETIC_CGB ? 0x80 : 0;
-    if (process.env.RUSTBOY_SYNTHETIC_SGB) {
+    if (process.env.RUSTBOY_SYNTHETIC_SGB || multiplayerTest) {
       rom[0x143] = 0x80; // Dual-mode cart explicitly running on the SGB/DMG path.
       rom[0x146] = 3; rom[0x14B] = 0x33;
       await evaluate("document.querySelector('#hardware-model').value = 'auto'; document.querySelector('#hardware-model').dispatchEvent(new Event('change'))");
@@ -169,7 +171,7 @@ try {
       0x21, 0x00, 0x80, 0x06, 0x10, 0x3E, 0xAA, 0x22, 0x05, 0x20, 0xFC,
       0x3E, 0x80, 0xE0, 0x68];
     for (const color of [0xFF, 0x7F, 0, 0, 0, 0, 0, 0]) code.push(0x3E, color, 0xE0, 0x69);
-    if (process.env.RUSTBOY_SYNTHETIC_SGB) {
+    if (process.env.RUSTBOY_SYNTHETIC_SGB || multiplayerTest) {
       // PAL01 through real cartridge instructions, with recommended low/high
       // pulse spacing. White backdrop, shade 3 red instead of handheld black.
       const pulse = value => code.push(0x3E, value, 0xE0, 0, ...Array(5).fill(0), 0x3E, 0x30, 0xE0, 0, ...Array(15).fill(0));
@@ -178,8 +180,25 @@ try {
         for (let bit = 0; bit < 8; bit++) pulse(byte & (1 << bit) ? 0x10 : 0x20);
       }
       pulse(0x20);
+      if (multiplayerTest) {
+        pulse(0);
+        for (const byte of [0x89,3,...Array(14).fill(0)]) {
+          for (let bit = 0; bit < 8; bit++) pulse(byte & (1 << bit) ? 0x10 : 0x20);
+        }
+        pulse(0x20);
+      }
     }
-    code.push(0x3E, 0x91, 0xE0, 0x40, 0x3E, 0x66, 0xEA, 0x00, 0xC0, 0x18, 0xFE);
+    code.push(0x3E, 0x91, 0xE0, 0x40, 0x3E, 0x66, 0xEA, 0x00, 0xC0);
+    if (multiplayerTest) {
+      const loop = 0x150 + code.length;
+      // Original cartridge code records each player's action/direction rows.
+      // P15 release advances the player only after the action row is sampled.
+      code.push(0x3E,0x30,0xE0,0,0xF0,0,0x2F,0xE6,3,0x6F,0x26,0xC1,
+        0x3E,0x20,0xE0,0,0xF0,0,0x47,0x7D,0xC6,4,0x6F,0x70,
+        0x3E,0x30,0xE0,0,0x7D,0xD6,4,0x6F,
+        0x3E,0x10,0xE0,0,0xF0,0,0x77,0x3E,0x30,0xE0,0,
+        0xC3,loop&255,loop>>8);
+    } else code.push(0x18,0xFE);
     rom.set(code, 0x150);
     gamePath = path.join(temporary, rom[0x143] ? 'synthetic.gbc' : 'synthetic.gb');
     await fs.writeFile(gamePath, rom);
@@ -254,6 +273,57 @@ try {
     const waitMs = Number(process.env.RUSTBOY_GAME_WAIT_MS || 6000);
     assert.ok(Number.isFinite(waitMs) && waitMs >= 0 && waitMs <= 60000);
     await new Promise(resolve => setTimeout(resolve, waitMs));
+    if (multiplayerTest) {
+      await until("Module._get_sgb_status().includes('players 4')");
+      assert.equal(await evaluate('Module._get_debug_flags()'),0,'multiplayer needs no debug opt-in');
+      const rows = "Array.from({length:8},(_,i) => parseInt(window.mem(0xC100+i),16)&15)";
+      await evaluate("window.testPads = []; window.makeTestPad = (index,held=[],axes=[0,0]) => ({index,id:'Simulated pad '+index,connected:true,mapping:'standard',axes,buttons:Array.from({length:16},(_,i)=>({pressed:held.includes(i)}))}); Object.defineProperty(navigator,'getGamepads',{configurable:true,value:()=>window.testPads}); window.testPads = [makeTestPad(0),makeTestPad(1),makeTestPad(2),makeTestPad(3)]; pollControllers()");
+      await until(`${rows}.every(value => value === 15)`);
+      await evaluate("window.testPads = [makeTestPad(0,[1]),makeTestPad(1,[0]),makeTestPad(2,[9]),makeTestPad(3,[8],[-1,0])]; pollControllers()");
+      await until(`JSON.stringify(${rows}) === '[14,13,7,11,15,15,15,13]'`);
+      assert.ok(await evaluate("document.querySelector('#controller-status').textContent.includes('Player 4: Simulated pad 3')"));
+      await evaluate("dispatchActionPress('btn_a','keyKeyK'); dispatchActionPress('btn_a','touch42'); testPads[0]=makeTestPad(0); pollControllers(); dispatchActionRelease('btn_a','keyKeyK')");
+      await until(`${rows}[0] === 14`);
+      await evaluate("dispatchActionRelease('btn_a','touch42'); testPads.splice(1,1); pollControllers()");
+      await until(`${rows}[0] === 15 && ${rows}[1] === 15 && ${rows}[2] === 7`);
+      await evaluate("window.controllerSavedState = Module._export_state(); Module._import_state(window.controllerSavedState); pollControllers()");
+      await until(`${rows}.every(value => value === 15)`);
+      await evaluate("testPads = [makeTestPad(0),makeTestPad(2),makeTestPad(3)]; pollControllers(); testPads[1] = makeTestPad(2,[1]); pollControllers()");
+      await until(`${rows}[2] === 14`);
+      await evaluate("window.dispatchEvent(new Event('blur')); window.dispatchEvent(new Event('focus')); pollControllers()");
+      await until(`${rows}.every(value => value === 15)`);
+      await evaluate("testPads[1]=makeTestPad(2); pollControllers(); testPads[1]=makeTestPad(2,[1]); pollControllers(); Module._reset_emulator(); pollControllers()");
+      await until(`Module._get_sgb_status().includes('players 4') && ${rows}.every(value => value === 15)`);
+      await evaluate("testPads=[]; pollControllers(); Module._set_controller_button(3,'start',true)");
+      await until(`${rows}[3] === 7`);
+      await evaluate("Module._release_controller_inputs()");
+      await until(`${rows}.every(value => value === 15)`);
+      await evaluate("testPads=[makeTestPad(0,[1])]; pollControllers()");
+      await until(`${rows}[0] === 14`);
+      await evaluate("Module._set_paused(true); Module._set_paused(false); pollControllers()");
+      await until(`${rows}.every(value => value === 15)`);
+      await evaluate("testPads=[makeTestPad(0)]; pollControllers(); testPads=[makeTestPad(0,[1])]; pollControllers()");
+      await until(`${rows}[0] === 14`);
+      await call('Input.dispatchKeyEvent', {type:'keyDown',key:' ',code:'Space'});
+      await until("Module._is_paused()");
+      await call('Input.dispatchKeyEvent', {type:'keyUp',key:' ',code:'Space'});
+      await new Promise(resolve => setTimeout(resolve,100));
+      await evaluate("Module._set_paused(false); pollControllers()");
+      await until(`${rows}.every(value => value === 15)`);
+      await evaluate("testPads=[]; pollControllers()");
+      const pixel = "Array.from(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,1,1).data)";
+      await evaluate("document.querySelector('#sgb-user-palette').value='warm'; document.querySelector('#sgb-user-palette').dispatchEvent(new Event('change'))");
+      await until(`JSON.stringify(${pixel}) === '[74,16,16,255]'`);
+      await evaluate("window.warmPaletteState=Module._export_state(); document.querySelector('#sgb-user-palette').value='cool'; document.querySelector('#sgb-user-palette').dispatchEvent(new Event('change'))");
+      await until(`JSON.stringify(${pixel}) === '[0,24,66,255]'`);
+      await evaluate("Module._import_state(window.warmPaletteState)");
+      await until(`JSON.stringify(${pixel}) === '[74,16,16,255]'`);
+      await evaluate("Module._reset_emulator()");
+      await until(`JSON.stringify(${pixel}) === '[0,24,66,255]'`);
+      await evaluate("document.querySelector('#sgb-user-palette').value='game'; document.querySelector('#sgb-user-palette').dispatchEvent(new Event('change'))");
+      await until(`JSON.stringify(${pixel}) === '[255,0,0,255]'`);
+      console.log('SGB multiplayer browser: four simulated pads, source union, stable disconnect, neutral restore/reset/blur/pause, public controller exports and palette preference/snapshot passed');
+    }
     if (process.env.RUSTBOY_SGB_FIRMWARE || process.env.RUSTBOY_SGB_AUDIO) {
       assert.ok(await evaluate("Module._get_sgb_status().includes('SNES audio active')"));
       if (!process.env.RUSTBOY_SGB_FIRMWARE) {

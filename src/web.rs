@@ -10,7 +10,13 @@ use crate::session::Session;
 lazy_static::lazy_static! {
     static ref KEYS: Mutex<[bool; 256]> = Mutex::new([false; 256]);
     static ref PREVIOUS_KEYS: Mutex<[bool; 256]> = Mutex::new([false; 256]);
+    static ref CONTROLLER_BUTTONS: Mutex<[[bool; 8]; 4]> = Mutex::new([[false; 8]; 4]);
 }
+
+const CONTROLLER_MAPPING: [(usize, Button); 8] = [
+    (38, Button::Up), (40, Button::Down), (37, Button::Left), (39, Button::Right),
+    (65, Button::A), (66, Button::B), (13, Button::Start), (16, Button::Select),
+];
 
 #[wasm_bindgen]
 extern "C" {
@@ -101,6 +107,35 @@ pub fn set_vram_view(view: &str) -> Result<(), JsValue> {
     Ok(())
 }
 
+#[wasm_bindgen]
+pub fn set_sgb_user_palette(colors: &[u16]) -> Result<(), JsValue> {
+    if colors.len() != 16 || colors.iter().any(|color| *color > 0x7fff) {
+        return Err(JsValue::from_str("SGB palette needs sixteen RGB555 colors"));
+    }
+    let mut palettes = [[0; 4]; 4];
+    for (palette, colors) in palettes.iter_mut().zip(colors.chunks_exact(4)) {
+        palette.copy_from_slice(colors);
+    }
+    with_session_mut(|session| {
+        session.backend.debug_extension_mut()
+            .and_then(|debug| debug.downcast_mut::<GameBoy>())
+            .ok_or_else(|| "SGB palette is unavailable".to_string())?
+            .set_sgb_user_palette(palettes)
+    }).unwrap_or_else(|| Err("No ROM is loaded".into()))
+        .map_err(|error| JsValue::from_str(&error))
+}
+
+#[wasm_bindgen]
+pub fn clear_sgb_user_palette() -> Result<(), JsValue> {
+    with_session_mut(|session| {
+        session.backend.debug_extension_mut()
+            .and_then(|debug| debug.downcast_mut::<GameBoy>())
+            .ok_or_else(|| "SGB palette is unavailable".to_string())?
+            .clear_sgb_user_palette()
+    }).unwrap_or_else(|| Err("No ROM is loaded".into()))
+        .map_err(|error| JsValue::from_str(&error))
+}
+
 fn with_session<R>(f: impl FnOnce(&Session) -> R) -> Option<R> {
     SESSION.with(|slot| slot.borrow().as_ref().map(|session| f(&session.borrow())))
 }
@@ -140,6 +175,35 @@ pub fn set_key_state(key_code: u32, pressed: bool) {
     if let Some(key) = KEYS.lock().unwrap().get_mut(key_code as usize) {
         *key = pressed;
     }
+}
+
+/// Port 0 is player one; SGB additionally supports ports 1 through 3.
+#[wasm_bindgen]
+pub fn set_controller_button(port: u32, button: &str, pressed: bool) -> Result<(), JsValue> {
+    let index = match button {
+        "up" => 0, "down" => 1, "left" => 2, "right" => 3,
+        "a" => 4, "b" => 5, "start" => 6, "select" => 7,
+        _ => return Err(JsValue::from_str("Unknown controller button")),
+    };
+    let mut controllers = CONTROLLER_BUTTONS.lock().unwrap();
+    let controller = controllers.get_mut(port as usize)
+        .ok_or_else(|| JsValue::from_str("Controller port must be 0 through 3"))?;
+    controller[index] = pressed;
+    Ok(())
+}
+
+#[wasm_bindgen]
+pub fn release_controller_inputs() {
+    *CONTROLLER_BUTTONS.lock().unwrap() = [[false; 8]; 4];
+    *KEYS.lock().unwrap() = [false; 256];
+    *PREVIOUS_KEYS.lock().unwrap() = [false; 256];
+    with_session_mut(|session| {
+        for port in 0..4 {
+            for (_, button) in CONTROLLER_MAPPING {
+                let _ = session.backend.set_button(port, button, false);
+            }
+        }
+    });
 }
 
 #[wasm_bindgen]
@@ -195,6 +259,7 @@ pub fn load_rom_data_with_model(rom: &[u8], boot_rom: &[u8], model: &str) -> Res
     session.set_speed(previous_speed);
     *KEYS.lock().unwrap() = [false; 256];
     *PREVIOUS_KEYS.lock().unwrap() = [false; 256];
+    *CONTROLLER_BUTTONS.lock().unwrap() = [[false; 8]; 4];
     SESSION.with(|slot| *slot.borrow_mut() = Some(Rc::new(RefCell::new(session))));
     EMULATION_RUNNING.with(|running| {
         if !*running.borrow() {
@@ -223,7 +288,9 @@ pub fn export_state() -> Vec<u8> {
 pub fn import_state(data: &[u8]) -> Result<(), JsValue> {
     with_session_mut(|s| s.import_state(data))
         .unwrap_or_else(|| Err("No ROM is loaded".into()))
-        .map_err(|error| JsValue::from_str(&error))
+        .map_err(|error| JsValue::from_str(&error))?;
+    release_controller_inputs();
+    Ok(())
 }
 #[wasm_bindgen]
 pub fn get_state_id() -> String {
@@ -254,6 +321,7 @@ pub fn clear_save_data() {
 #[wasm_bindgen]
 pub fn set_paused(paused: bool) {
     with_session_mut(|s| s.backend.set_paused(paused));
+    if paused { release_controller_inputs(); }
 }
 #[wasm_bindgen]
 pub fn is_paused() -> bool {
@@ -262,6 +330,7 @@ pub fn is_paused() -> bool {
 #[wasm_bindgen]
 pub fn reset_emulator() {
     with_session_mut(Session::reset);
+    release_controller_inputs();
 }
 #[wasm_bindgen]
 pub fn set_speed(speed: u32) {
@@ -295,7 +364,7 @@ pub fn get_sgb_status() -> String {
             .collect::<Vec<_>>()
             .join(", ");
         format!(
-            "SGB HLE: functions {}, players {}, commands {}; unsupported [{}]; border {}, pending transfers {}, dropped transfers {}; screen mask {}; rejected pulses {}; sound uploads {}, rejected {}; SNES audio {}; replacement notes {}, score errors {}",
+            "SGB HLE: functions {}, players {}, commands {}; unsupported [{}]; border {}, pending transfers {}, dropped transfers {}; screen mask {}; rejected pulses {}; sound uploads {}, rejected {}; SNES audio {}; replacement notes {}, score errors {}; palette priority {}, user palette {}",
             if sgb.enabled() {
                 "enabled"
             } else {
@@ -314,6 +383,8 @@ pub fn get_sgb_status() -> String {
             if sgb.sound_uses_replacement() { "active (RustBoy built-in replacement)" } else { "active (RustBoy SPC700/DSP)" },
             sgb.sound_replacement_statistics().0,
             sgb.sound_replacement_statistics().1,
+            sgb.palette_priority(),
+            sgb.user_palette_active(),
         )
     })
     .unwrap_or_else(|| "No ROM is loaded".into())
@@ -454,10 +525,14 @@ fn start_emulation_loop() {
 }
 
 fn check_keys(session: &mut Session) {
-    let keys = KEYS.lock().unwrap();
+    let mut keys = KEYS.lock().unwrap();
     let mut previous = PREVIOUS_KEYS.lock().unwrap();
     if keys[32] && !previous[32] {
         session.backend.set_paused(!session.backend.paused());
+        if session.backend.paused() {
+            *CONTROLLER_BUTTONS.lock().unwrap() = [[false; 8]; 4];
+            for (key, _) in CONTROLLER_MAPPING { keys[key] = false; }
+        }
     }
     let debug_enabled = DEBUG_ENABLED.with(Cell::get);
     if debug_enabled && keys[78] && !previous[78] {
@@ -486,17 +561,16 @@ fn check_keys(session: &mut Session) {
             toggleVramCanvas(cpu.show_vram);
         }
     }
-    for (key, button) in [
-        (37, Button::Left),
-        (38, Button::Up),
-        (39, Button::Right),
-        (40, Button::Down),
-        (65, Button::A),
-        (66, Button::B),
-        (13, Button::Start),
-        (16, Button::Select),
-    ] {
-        let _ = session.backend.set_button(0, button, keys[key]);
+    let controllers = CONTROLLER_BUTTONS.lock().unwrap();
+    let ports = session.backend.debug_extension()
+        .and_then(|debug| debug.downcast_ref::<GameBoy>())
+        .map(|gb| if gb.cpu().sgb.is_some() { 4 } else { 1 })
+        .unwrap_or(4);
+    for port in 0..ports {
+        for (index, (key, button)) in CONTROLLER_MAPPING.iter().enumerate() {
+            let pressed = controllers[port][index] || (port == 0 && keys[*key]);
+            let _ = session.backend.set_button(port, *button, pressed);
+        }
     }
     *previous = *keys;
 }

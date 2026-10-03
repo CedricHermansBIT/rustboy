@@ -20,7 +20,7 @@ class PackagingTests(unittest.TestCase):
         for folder in ("out", "web", "homebrew/licenses", "roms", "testroms"):
             (self.root / folder).mkdir(parents=True)
         for name in ("index.html", "LICENSE", "out/rustboy.js", "out/rustboy_bg.wasm",
-                     "web/library-rom.mjs", "homebrew/licenses/GPL.txt", "roms/private.gb",
+                     "web/library-rom.mjs", "web/controller-input.mjs", "homebrew/licenses/GPL.txt", "roms/private.gb",
                      "roms/cgb_boot.bin", "testroms/private.gb"):
             (self.root / name).write_text("fixture")
         (self.root / "index.html").write_text('<html data-library="local">fixture</html>')
@@ -48,6 +48,7 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual((self.output / "homebrew/sources/demo.zip").read_bytes(), self.source)
         self.assertTrue((self.output / "homebrew/licenses/GPL.txt").is_file())
         self.assertTrue((self.output / "web/library-rom.mjs").is_file())
+        self.assertTrue((self.output / "web/controller-input.mjs").is_file())
         credits = (self.output / "homebrew/credits.html").read_text()
         self.assertIn("Demo &lt;game&gt;", credits)
         self.assertIn('href="sources/demo.zip"', credits)

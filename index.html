@@ -754,6 +754,11 @@
           <h3>Appearance</h3>
           <div class="key-row" data-action="hide_panels"><kbd></kbd><span class="desc">Hide Panels</span></div>
           <label><input id="show-sgb-border" data-sgb-border type="checkbox" checked /> Show SGB decorations</label>
+          <label for="sgb-user-palette">SGB palette</label>
+          <select id="sgb-user-palette"><option value="game">Game palette</option><option value="warm">Warm</option><option value="cool">Cool</option><option value="gray">Grayscale</option></select>
+          <p class="hint">Games can request their own colors.</p>
+          <p id="controller-status" class="hint" role="status">Player 1: keyboard / touch. Connect a standard gamepad and press a button.</p>
+          <p class="hint">Up to four pads for SGB multiplayer. East = A, south = B; D-pad / left stick, Start / Select.</p>
         </div>
         <div class="key-group debug-tools hidden">
           <h3>Debug</h3>
@@ -886,6 +891,20 @@
         speed: 9, hide_panels: -1,
         trace_toggle: -1, trace_download: -1,
       };
+      let controllerInputs = null;
+      let controllerWindowFocused = true;
+      const GAME_BUTTONS = {up:'up', down:'down', left:'left', right:'right', btn_a:'a', btn_b:'b', start:'start', select:'select'};
+      function pollControllers() {
+        controllerInputs?.suspend(!controllerWindowFocused || document.hidden || !!Module?._is_paused?.());
+        let pads = [];
+        try { pads = navigator.getGamepads?.() || []; } catch (_) {}
+        controllerInputs?.poll(pads);
+      }
+      function clearControllerInputs() {
+        pollControllers();
+        controllerInputs?.clear();
+        Module?._release_controller_inputs?.();
+      }
 
       const DEFAULT_BINDINGS = {
         up: 'KeyW', down: 'KeyS', left: 'KeyA', right: 'KeyD',
@@ -1145,7 +1164,7 @@
         return touchControlsState.positions[profile];
       }
       function releaseAllTouchActions() {
-        for (const action of touchPointerActions.values()) dispatchActionRelease(action);
+        for (const [pointer, action] of touchPointerActions) dispatchActionRelease(action, `touch${pointer}`);
         touchPointerActions.clear();
         touchActionEls.forEach(btn => btn.classList.remove('pressed'));
       }
@@ -1650,6 +1669,26 @@
       }
       document.querySelector('#debug-tools-toggle').addEventListener('click', toggleDebugTools);
       const borderCheckbox = document.querySelector('#show-sgb-border');
+      const sgbPaletteSelect = document.querySelector('#sgb-user-palette');
+      const SGB_USER_PALETTES = {
+        warm: [0x77df, 0x3a5d, 0x18f4, 0x0849],
+        cool: [0x7fee, 0x6f03, 0x49c1, 0x2060],
+        gray: [0x7fff, 0x56b5, 0x294a, 0],
+      };
+      try {
+        const saved = localStorage.getItem('rustboy_sgb_palette');
+        if (saved === 'game' || SGB_USER_PALETTES[saved]) sgbPaletteSelect.value = saved;
+      } catch {}
+      function applySgbUserPalette() {
+        if (!Module?._get_sgb_status?.().startsWith('SGB HLE:')) return;
+        const palette = SGB_USER_PALETTES[sgbPaletteSelect.value];
+        if (palette) Module._set_sgb_user_palette?.(new Uint16Array(Array.from({length:4}, () => palette).flat()));
+        else Module._clear_sgb_user_palette?.();
+      }
+      sgbPaletteSelect.addEventListener('change', () => {
+        try { localStorage.setItem('rustboy_sgb_palette', sgbPaletteSelect.value); } catch {}
+        applySgbUserPalette();
+      });
       try { borderCheckbox.checked = localStorage.getItem('rustboy_show_sgb_border') !== 'false'; } catch {}
       document.querySelectorAll('[data-sgb-border]').forEach(checkbox => {
         checkbox.checked = borderCheckbox.checked;
@@ -2187,8 +2226,9 @@
       /* ═══════════════════════════════════════════════════════════════
        *  INPUT DISPATCH
        * ═══════════════════════════════════════════════════════════════ */
-      function dispatchActionPress(action) {
+      function dispatchActionPress(action, source = 'ui') {
         if (!action) return;
+        if (GAME_BUTTONS[action] && controllerInputs) { controllerInputs.set(source, 0, GAME_BUTTONS[action], true); return; }
         if (action === 'debug_tools') { toggleDebugTools(); return; }
         if (DEBUG_ACTIONS.has(action) && !debugToolsEnabled) return;
         if (action === 'rom_picker') {
@@ -2205,12 +2245,13 @@
           setTimeout(updateSpeedBadge, 50); return;
         }
         if (action === 'pause' && Module) setTimeout(() => { updatePauseButton(); toast(Module._is_paused?.() ? 'Paused' : 'Resumed'); }, 30);
-        if (action === 'reset' && Module) { clearAudioQueue(); toast('Game reset'); }
+        if (action === 'reset' && Module) { Module._reset_emulator(); clearAudioQueue(); toast('Game reset'); return; }
         const rc = ACTION_TO_RUST[action];
         if (rc >= 0 && Module) Module._set_key_state(rc, true);
       }
-      function dispatchActionRelease(action) {
+      function dispatchActionRelease(action, source = 'ui') {
         if (!action) return;
+        if (GAME_BUTTONS[action] && controllerInputs) { controllerInputs.set(source, 0, GAME_BUTTONS[action], false); return; }
         const rc = ACTION_TO_RUST[action];
         if (rc >= 0 && Module) Module._set_key_state(rc, false);
       }
@@ -2260,14 +2301,14 @@
           touchPointerActions.set(e.pointerId, action);
           btn.classList.add('pressed');
           if (btn.setPointerCapture) btn.setPointerCapture(e.pointerId);
-          dispatchActionPress(action);
+          dispatchActionPress(action, `touch${e.pointerId}`);
         });
         const release = (e) => {
           const action = touchPointerActions.get(e.pointerId);
           if (!action) return;
           touchPointerActions.delete(e.pointerId);
           btn.classList.remove('pressed');
-          dispatchActionRelease(action);
+          dispatchActionRelease(action, `touch${e.pointerId}`);
         };
         btn.addEventListener('pointerup', release);
         btn.addEventListener('pointercancel', release);
@@ -2311,6 +2352,8 @@
       window.addEventListener('pointerup', finishTouchDrag);
       window.addEventListener('pointercancel', finishTouchDrag);
       window.addEventListener('blur', () => {
+        controllerWindowFocused = false;
+        clearControllerInputs();
         releaseAllTouchActions();
         if (Module) Object.values(ACTION_TO_RUST).forEach(key => Module._set_key_state(key, false));
         if (activeTouchDrag) {
@@ -2318,8 +2361,10 @@
           activeTouchDrag = null;
         }
       });
+      window.addEventListener('focus', () => { controllerWindowFocused = true; pollControllers(); });
       document.addEventListener('visibilitychange', () => {
-        if (document.hidden) releaseAllTouchActions();
+        pollControllers();
+        if (document.hidden) { clearControllerInputs(); releaseAllTouchActions(); }
       });
       window.addEventListener('resize', () => renderTouchControls());
       window.addEventListener('orientationchange', () => setTimeout(renderTouchControls, 60));
@@ -2382,17 +2427,16 @@
         if (!action) return;
         if (DEBUG_ACTIONS.has(action) && !debugToolsEnabled) return;
         e.preventDefault();
-        dispatchActionPress(action);
+        dispatchActionPress(action, `key${e.code}`);
       });
 
       window.addEventListener('keyup', (e) => {
         if (e.code === 'F5') return;
         if (rebindAction) { e.preventDefault(); return; }
-        if (pickerOpen) return;
         const action = codeToAction[e.code];
         if (!action) return;
         e.preventDefault();
-        dispatchActionRelease(action);
+        dispatchActionRelease(action, `key${e.code}`);
       });
     </script>
 
@@ -2402,24 +2446,36 @@
       import init, * as Rustboy from './out/rustboy.js';
       import { loadWithBootRom } from './web/rom-loader.mjs';
       import { fetchLibraryRom } from './web/library-rom.mjs';
+      import { ControllerInputs } from './web/controller-input.mjs';
       init().then(() => {
         const hardware = document.querySelector('#hardware-model');
         Module = {
           _fetch_library_rom: fetchLibraryRom,
           _set_key_state: Rustboy.set_key_state,
+          _set_controller_button: Rustboy.set_controller_button,
+          _release_controller_inputs: Rustboy.release_controller_inputs,
+          _set_sgb_user_palette: Rustboy.set_sgb_user_palette,
+          _clear_sgb_user_palette: Rustboy.clear_sgb_user_palette,
           _set_debug_enabled: Rustboy.set_debug_enabled,
           _get_debug_flags: Rustboy.get_debug_flags,
           _set_border_visible: Rustboy.set_border_visible,
           _set_vram_view: Rustboy.set_vram_view,
-          _set_sgb_sound_firmware: Rustboy.set_sgb_sound_firmware,
-          _clear_sgb_sound_firmware: Rustboy.clear_sgb_sound_firmware,
+          _set_sgb_sound_firmware: Rustboy.set_sgb_sound_firmware && (data => {
+            const restarted = Rustboy.set_sgb_sound_firmware(data);
+            if (restarted) { clearControllerInputs(); applySgbUserPalette(); }
+            return restarted;
+          }),
+          _clear_sgb_sound_firmware: Rustboy.clear_sgb_sound_firmware && (() => {
+            Rustboy.clear_sgb_sound_firmware(); clearControllerInputs(); applySgbUserPalette();
+          }),
           _load_rom_data: data => {
             const model = hardware.value;
             if (!Rustboy.load_rom_data_with_model && model !== 'auto') {
               throw new Error('Hardware selection needs the updated WASM bundle; refresh the page');
             }
             return loadWithBootRom((rom, boot) => Rustboy.load_rom_data_with_model
-              ? Rustboy.load_rom_data_with_model(rom, boot, model) : Rustboy.load_rom_data(rom, boot), data, fetch, model);
+              ? Rustboy.load_rom_data_with_model(rom, boot, model) : Rustboy.load_rom_data(rom, boot), data, fetch, model)
+              .then(result => { clearControllerInputs(); applySgbUserPalette(); return result; });
           },
           _get_debug_state: Rustboy.get_debug_state,
           _save_game: Rustboy.save_game,
@@ -2427,16 +2483,16 @@
           _get_is_cgb: Rustboy.get_is_cgb,
           _get_sgb_status: Rustboy.get_sgb_status,
           _export_state: Rustboy.export_state,
-          _import_state: Rustboy.import_state,
+          _import_state: data => { const result = Rustboy.import_state(data); clearControllerInputs(); return result; },
           _get_state_id: Rustboy.get_state_id,
           _get_rom_title: Rustboy.get_rom_title,
           _get_save_key: Rustboy.get_save_key,
           _export_save_data: Rustboy.export_save_data,
           _import_save_data: Rustboy.import_save_data,
           _clear_save_data: Rustboy.clear_save_data,
-          _set_paused: Rustboy.set_paused,
+          _set_paused: paused => { Rustboy.set_paused(paused); pollControllers(); if (paused) clearControllerInputs(); },
           _is_paused: Rustboy.is_paused,
-          _reset_emulator: Rustboy.reset_emulator,
+          _reset_emulator: () => { clearControllerInputs(); Rustboy.reset_emulator(); applySgbUserPalette(); },
           _set_speed: Rustboy.set_speed,
           _toggle_trace: Rustboy.toggle_trace,
           _is_tracing: Rustboy.is_tracing,
@@ -2444,6 +2500,20 @@
           _clear_trace: Rustboy.clear_trace,
           _trace_len: Rustboy.trace_len,
         };
+        controllerInputs = new ControllerInputs((port, button, pressed) => {
+          if (Rustboy.set_controller_button) Rustboy.set_controller_button(port, button, pressed);
+          else if (port === 0) {
+            const action = Object.keys(GAME_BUTTONS).find(action => GAME_BUTTONS[action] === button);
+            Rustboy.set_key_state(ACTION_TO_RUST[action], pressed);
+          }
+        }, assignments => {
+          document.querySelector('#controller-status').textContent = 'Player 1: keyboard / touch' +
+            assignments.map(({port,id}) => ` · Player ${port+1}: ${id}`).join('');
+        });
+        const poll = () => { pollControllers(); requestAnimationFrame(poll); };
+        poll();
+        window.addEventListener('gamepadconnected', pollControllers);
+        window.addEventListener('gamepaddisconnected', pollControllers);
         restoreSgbFirmware();
         Rustboy.set_border_visible?.(document.querySelector('#show-sgb-border').checked);
         Rustboy.set_debug_enabled?.(debugToolsEnabled);
