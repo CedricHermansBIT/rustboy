@@ -84,6 +84,13 @@ impl Bus {
     }
     /// Non-mutating debugger read. BIOS protection and open-bus latch are pending.
     pub fn peek8(&self, address: u32) -> u8 {
+        if self.eeprom_address(address) {
+            return if address & 1 == 0 {
+                self.backup.eeprom.peek() as u8
+            } else {
+                0
+            };
+        }
         let index = address as usize;
         match address >> 24 {
             0 if address < 0x4000 => self.bios.get(index).copied().unwrap_or(0),
@@ -187,6 +194,9 @@ impl Memory for Bus {
     }
     fn read16(&mut self, address: u32, sequential: bool) -> u16 {
         self.charge(address, 2, sequential);
+        if self.eeprom_address(address) {
+            return self.backup.eeprom.read();
+        }
         if (14..=15).contains(&(address >> 24)) {
             return u16::from(self.backup.read(address)) * 0x101;
         }
@@ -223,6 +233,10 @@ impl Memory for Bus {
     }
     fn write16(&mut self, address: u32, value: u16, sequential: bool) {
         self.charge(address, 2, sequential);
+        if self.eeprom_address(address) {
+            self.backup.eeprom_bit(value);
+            return;
+        }
         if (14..=15).contains(&(address >> 24)) {
             self.backup
                 .write(address, value.rotate_right((address & 1) * 8) as u8);

@@ -6,6 +6,7 @@ mod backup;
 mod bios;
 pub mod bus;
 pub mod cpu;
+mod eeprom;
 pub mod machine;
 mod peripherals;
 mod ppu;

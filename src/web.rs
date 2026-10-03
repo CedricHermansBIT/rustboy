@@ -239,7 +239,7 @@ pub fn get_backend_status() -> String {
         if let Some(fault) = &gba.fault {
             format!("GBA stopped at {:08X}: {}", fault.instruction_address, fault.reason)
         } else {
-            "GBA development: graphics/audio timing incomplete; SRAM/Flash saves supported, EEPROM pending".to_owned()
+            "GBA development: graphics/audio timing incomplete; SRAM/Flash/EEPROM saves supported".to_owned()
         }
     }).unwrap_or_default()
 }

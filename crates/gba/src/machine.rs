@@ -181,6 +181,7 @@ impl GameBoyAdvance {
             let overflow = self.bus.advance_timers(advance);
             self.bus.clock_direct_sound(overflow);
             self.bus.clock_audio(advance);
+            self.bus.backup.clock_eeprom(advance);
             self.line_clocks += advance as u16;
             clocks -= advance;
             if self.line_clocks == 1006 {

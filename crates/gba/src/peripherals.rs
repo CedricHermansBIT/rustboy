@@ -161,6 +161,9 @@ impl Bus {
             2
         };
         if d.first {
+            if n == 3 && width == 2 && self.eeprom_address(d.destination) {
+                self.backup.begin_eeprom(d.remaining);
+            }
             self.internal(if d.source >> 24 >= 8 && d.destination >> 24 >= 8 {
                 4
             } else {

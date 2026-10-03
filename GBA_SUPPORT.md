@@ -118,6 +118,17 @@ through the frontend API and replay across state restoration.
 The native inspector supports bounded traces via `GBA_TRACE_IRQ=1` or
 `GBA_TRACE_PC=080008b0..080008d0`; normal execution keeps tracing disabled.
 
+### EEPROM milestone
+
+Original serial EEPROM now supports 512-byte/8-KiB saves, DMA3 command-length
+geometry detection, MSB-first commands, dummy read bits and deferred writes.
+The 32-MiB cartridge mapping is restricted to the last 256 bytes of region 0Dh.
+Battery imports and version-5 snapshots retain geometry and in-flight commands,
+read streams and programming; older snapshots remain readable. Detection still
+requires a versioned SDK tag. Programming uses the documented nominal delay,
+not a claim of chip-specific or sub-access timing accuracy. Three synthetic
+integration tests cover actual DMA transfers, persistence, replay and mapping.
+
 ### SRAM/Flash and local picker milestone
 
 Local installs now have a GBA picker tab, generated from `.gba` files alongside
@@ -128,7 +139,7 @@ Original backup hardware detects versioned SRAM/Flash SDK tags, supports 32 KiB
 SRAM and 64/128 KiB Flash, chip-ID mode, unlock commands, byte programming,
 4 KiB sector/chip erases and bank selection. Eight-bit save-bus accesses are
 handled separately from wide RAM accesses. Programming/erase completion is
-currently immediate; busy/toggle timing, alternate Flash-chip variants, EEPROM
+currently immediate; busy/toggle timing, alternate Flash-chip variants, tag-free EEPROM
 and tag-free save detection remain work. Battery saves use ROM-hashed keys,
 survive reset, and load/flush through the browser persistence API. Version-3
 states preserve save bytes and in-flight Flash commands; version-1/2 states

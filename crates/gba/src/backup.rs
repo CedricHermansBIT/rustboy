@@ -1,13 +1,14 @@
 //! Original cartridge SRAM and Macronix-compatible Flash command hardware.
 //! Chip identification uses SDK tags in cartridge data, not a title database.
-//! Program/erase currently complete immediately; busy/toggle timing and EEPROM
-//! serial transfers require further hardware work.
+//! Flash program/erase currently complete immediately; busy/toggle timing
+//! requires further hardware work. Serial EEPROM is implemented separately.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
     None,
     Sram,
     Flash64,
     Flash128,
+    Eeprom,
 }
 impl Kind {
     pub fn size(self) -> usize {
@@ -16,6 +17,7 @@ impl Kind {
             Self::Sram => 0x8000,
             Self::Flash64 => 0x10000,
             Self::Flash128 => 0x20000,
+            Self::Eeprom => 8192,
         }
     }
     pub fn code(self) -> u8 {
@@ -24,6 +26,7 @@ impl Kind {
             Self::Sram => 1,
             Self::Flash64 => 2,
             Self::Flash128 => 3,
+            Self::Eeprom => 4,
         }
     }
 }
@@ -35,6 +38,7 @@ pub(crate) struct Backup {
     pub id: bool,
     pub dirty: bool,
     pub rom_hash: u64,
+    pub eeprom: crate::eeprom::Eeprom,
 }
 impl Backup {
     pub fn detect(rom: &[u8]) -> Self {
@@ -48,6 +52,8 @@ impl Backup {
             Kind::Flash64
         } else if contains(b"SRAM_V") || contains(b"SRAM_F_V") {
             Kind::Sram
+        } else if contains(b"EEPROM_V") {
+            Kind::Eeprom
         } else {
             Kind::None
         };
@@ -59,11 +65,12 @@ impl Backup {
             id: false,
             dirty: false,
             rom_hash: crate::backend::hash(rom),
+            eeprom: crate::eeprom::Eeprom::default(),
         }
     }
     pub fn read(&self, address: u32) -> u8 {
         let offset = address as usize & 0xffff;
-        if self.kind == Kind::None {
+        if matches!(self.kind, Kind::None | Kind::Eeprom) {
             return 255;
         }
         if self.id {
@@ -91,7 +98,7 @@ impl Backup {
         bytes.fill(255);
     }
     pub fn write(&mut self, address: u32, value: u8) {
-        if self.kind == Kind::None {
+        if matches!(self.kind, Kind::None | Kind::Eeprom) {
             return;
         }
         let offset = address as usize & 0xffff;
@@ -172,6 +179,21 @@ impl Backup {
         };
     }
     pub fn import(&mut self, data: &[u8]) -> Result<(), String> {
+        if self.kind == Kind::Eeprom {
+            let bits = match data.len() {
+                512 => 6,
+                8192 => 14,
+                _ => return Err("EEPROM saves must contain 512 or 8192 bytes".into()),
+            };
+            self.data.clear();
+            self.data.extend_from_slice(data);
+            self.dirty = false;
+            self.eeprom = crate::eeprom::Eeprom {
+                address_bits: bits,
+                ..Default::default()
+            };
+            return Ok(());
+        }
         if self.kind == Kind::None || data.len() != self.data.len() {
             return Err("Incorrect GBA cartridge save size".into());
         }
@@ -180,6 +202,10 @@ impl Backup {
         Ok(())
     }
     pub fn reset_commands(&mut self) {
+        self.eeprom = crate::eeprom::Eeprom {
+            address_bits: self.eeprom.address_bits,
+            ..Default::default()
+        };
         self.bank = 0;
         self.phase = 0;
         self.id = false;
@@ -210,7 +236,7 @@ mod tests {
             ("SRAM_V110", Kind::Sram),
             ("SRAM_F_V100", Kind::Sram),
             ("FLASH1M_VXXX", Kind::None),
-            ("EEPROM_V124", Kind::None),
+            ("EEPROM_V124", Kind::Eeprom),
         ] {
             assert_eq!(chip(tag).kind, kind);
         }
