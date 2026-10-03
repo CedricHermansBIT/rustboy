@@ -17,7 +17,20 @@ fn pal(bus: &mut Bus, index: usize, color: u16) {
 }
 fn pixel(bus: &Bus, x: usize, y: u16) -> [u8; 4] {
     let mut pixels = vec![0; 240 * 160 * 4];
-    render_line(bus, y, &mut pixels);
+    // These compositor tests supply a static affine transform at the selected
+    // line. Machine tests separately exercise the evolving hardware latches.
+    let mut affine = Affine::default();
+    let first = y - y % ((bus.io16(0x4c) >> 4 & 15) + 1);
+    for bg in 0..2 {
+        for axis in 0..2 {
+            let reference = register_reference(bus, bg, axis);
+            let step = bus.io16(0x22 + bg * 16 + axis * 4) as i16 as i32;
+            affine.current[bg][axis] = wrap_reference(reference.wrapping_add(step * i32::from(y)));
+            affine.mosaic[bg][axis] =
+                wrap_reference(reference.wrapping_add(step * i32::from(first)));
+        }
+    }
+    render_line_origins(bus, y, &mut pixels, affine);
     pixels[(y as usize * 240 + x) * 4..(y as usize * 240 + x + 1) * 4]
         .try_into()
         .unwrap()
@@ -188,7 +201,10 @@ fn bitmap_page_and_index_zero_transparency() {
     bus.vram[0] = 1;
     bus.vram[0xa000] = 2;
     pal(&mut bus, 2, 31 << 10);
-    assert_eq!(background(&bus, 2, 4, 1, 0).map(|d| d.color), None);
+    assert_eq!(
+        background(&bus, Affine::default(), 2, 4, 1, 0).map(|d| d.color),
+        None
+    );
     assert_eq!(pixel(&bus, 0, 0), RED);
     bus.set_io(0, 4 | 0x410);
     assert_eq!(pixel(&bus, 0, 0), BLUE);

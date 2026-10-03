@@ -198,6 +198,11 @@ impl GameBoyAdvance {
             } else if self.line_clocks == 1232 {
                 self.line_clocks = 0;
                 self.line = (self.line + 1) % 228;
+                if self.line == 0 || self.line == 160 {
+                    self.bus.reload_affine();
+                } else if self.line < 160 {
+                    self.bus.advance_affine(self.line);
+                }
                 self.bus.set_io(6, self.line);
                 let old = self.bus.io16(4);
                 let matched = self.line == old >> 8;
@@ -231,6 +236,79 @@ mod tests {
         let mut rom = vec![0; 192];
         rom[..4].copy_from_slice(&0xeafffffeu32.to_le_bytes());
         GameBoyAdvance::new(rom, None).unwrap()
+    }
+    #[test]
+    fn affine_scanline_steps_and_reference_writes_do_not_recompute_past_lines() {
+        let mut m = machine();
+        m.bus.write16(0x04000000, 0x403, false);
+        m.bus.write16(0x04000020, 0x100, false);
+        m.bus.write16(0x04000026, 0x100, false);
+        for (y, color) in [(0, 31u16), (1, 31 << 5), (3, 31 << 10), (6, 0x7fff)] {
+            m.bus.write16(0x06000000 + y * 480, color, false);
+        }
+        m.bus.take_cycles();
+        m.advance_video(1006);
+        assert_eq!(&m.pixels[..4], &[255, 0, 0, 255]);
+        m.advance_video(226);
+        assert_eq!(m.bus.affine.current[0], [0, 0x100]);
+        m.bus.write16(0x04000026, 0x200, false);
+        m.bus.take_cycles();
+        m.advance_video(1006);
+        assert_eq!(&m.pixels[960..964], &[0, 255, 0, 255]);
+        m.advance_video(226);
+        assert_eq!(m.bus.affine.current[0], [0, 0x300]);
+        m.advance_video(1006);
+        assert_eq!(&m.pixels[1920..1924], &[0, 0, 255, 255]);
+        m.advance_video(226);
+        m.bus.write32(0x0400002c, 0x600, false);
+        m.bus.take_cycles();
+        m.advance_video(1006);
+        assert_eq!(&m.pixels[2880..2884], &[255; 4]);
+        assert_eq!(m.bus.peek32(0x0400002c), 0x600);
+    }
+    #[test]
+    fn affine_mosaic_keeps_group_origin_and_vblank_reloads_registers() {
+        let mut m = machine();
+        m.bus.write16(0x04000000, 0x403, false);
+        m.bus.write16(0x0400000c, 0x40, false);
+        m.bus.write16(0x0400004c, 0x20, false); // Three scanlines/group.
+        m.bus.write16(0x04000026, 0x100, false);
+        m.bus.write16(0x06000000, 31, false);
+        m.bus.write16(0x06000000 + 3 * 480, 31 << 5, false);
+        m.bus.take_cycles();
+        m.advance_video(1232 * 3);
+        for y in 0..3 {
+            assert_eq!(&m.pixels[y * 960..y * 960 + 4], &[255, 0, 0, 255]);
+        }
+        assert_eq!(m.bus.affine.current[0], [0, 0x300]);
+        assert_eq!(m.bus.affine.mosaic[0], [0, 0x300]);
+        m.advance_video(1006);
+        assert_eq!(&m.pixels[2880..2884], &[0, 255, 0, 255]);
+        m.advance_video(160 * 1232 - 3 * 1232 - 1006);
+        assert_eq!(m.bus.affine.current[0], [0, 0]);
+        m.bus.write32(0x0400002c, 0x12345, false);
+        m.bus.take_cycles();
+        m.advance_video(68 * 1232);
+        assert_eq!(m.line, 0);
+        assert_eq!(m.bus.affine.current[0], [0, 0x12345]);
+        assert_eq!(m.bus.affine.mosaic, m.bus.affine.current);
+    }
+    #[test]
+    fn affine_register_halves_axes_fraction_and_signed_wrap() {
+        let mut m = machine();
+        m.bus.write32(0x04000028, 0x07ffff80, false);
+        m.bus.write16(0x04000022, 0x100, false);
+        m.bus.write32(0x04000038, (-256i32) as u32, false);
+        m.bus.write16(0x04000032, 0x80, false);
+        m.bus.take_cycles();
+        m.advance_video(1232);
+        assert_eq!(m.bus.affine.current[0][0], -0x07ffff80);
+        assert_eq!(m.bus.affine.current[1][0], -128);
+        m.bus.write16(0x04000038, 0x1234, false);
+        assert_eq!(m.bus.affine.current[1][0], -0xedcc);
+        m.bus.write16(0x0400003a, 0, false);
+        assert_eq!(m.bus.affine.current[1][0], 0x1234);
+        assert_eq!(m.bus.affine.current[0][1], 0);
     }
     #[test]
     fn direct_boot_and_frame_budget() {

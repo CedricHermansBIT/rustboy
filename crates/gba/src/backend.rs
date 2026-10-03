@@ -184,7 +184,7 @@ fn put(data: &mut Vec<u8>, value: u64, n: usize) {
 }
 impl GameBoyAdvance {
     fn snapshot(&self) -> Vec<u8> {
-        let mut data = b"RBGA\x03\0\0\0".to_vec();
+        let mut data = b"RBGA\x04\0\0\0".to_vec();
         put(&mut data, hash(&self.bus.rom), 8);
         put(&mut data, hash(&self.bus.bios), 8);
         for register in self
@@ -277,13 +277,23 @@ impl GameBoyAdvance {
             u8::from(backup.dirty),
         ]);
         data.extend_from_slice(&backup.data);
+        for value in self
+            .bus
+            .affine
+            .current
+            .into_iter()
+            .flatten()
+            .chain(self.bus.affine.mosaic.into_iter().flatten())
+        {
+            put(&mut data, u64::from(value as u32), 4);
+        }
         let checksum = hash(&data);
         put(&mut data, checksum, 8);
         data
     }
     fn restore(&mut self, data: &[u8]) -> Result<(), String> {
         if data.len() < SNAPSHOT_BYTES
-            || data.len() > SNAPSHOT_BYTES + 81 + crate::apu::MAX_SAMPLES * 8 + 0x20000
+            || data.len() > SNAPSHOT_BYTES + 113 + crate::apu::MAX_SAMPLES * 8 + 0x20000
         {
             return Err("Incorrect GBA state size".into());
         }
@@ -299,6 +309,7 @@ impl GameBoyAdvance {
             b"RBGA\x01\0\0\0" => 1,
             b"RBGA\x02\0\0\0" => 2,
             b"RBGA\x03\0\0\0" => 3,
+            b"RBGA\x04\0\0\0" => 4,
             _ => return Err("Unsupported GBA state version".into()),
         };
         if reader.int(8)? != hash(&self.bus.rom) || reader.int(8)? != hash(&self.bus.bios) {
@@ -390,11 +401,12 @@ impl GameBoyAdvance {
                     != SNAPSHOT_BYTES
                         + 76
                         + count * 8
-                        + if version == 3 {
+                        + if version >= 3 {
                             5 + next.bus.backup.data.len()
                         } else {
                             0
                         }
+                        + if version == 4 { 32 } else { 0 }
             {
                 return Err("Invalid GBA audio state".into());
             }
@@ -421,7 +433,7 @@ impl GameBoyAdvance {
             let length = bytes.len();
             bytes.copy_from_slice(reader.bytes(length)?);
         }
-        if version == 3 {
+        if version >= 3 {
             if reader.int(1)? as u8 != next.bus.backup.kind.code() {
                 return Err("GBA save hardware mismatch".into());
             }
@@ -449,6 +461,23 @@ impl GameBoyAdvance {
             next.bus.backup.data.clone_from(&self.bus.backup.data);
             next.bus.backup.dirty = self.bus.backup.dirty;
         }
+        if version == 4 {
+            for value in next
+                .bus
+                .affine
+                .current
+                .iter_mut()
+                .flatten()
+                .chain(next.bus.affine.mosaic.iter_mut().flatten())
+            {
+                *value = reader.int(4)? as u32 as i32;
+                if *value != crate::ppu::wrap_reference(*value) {
+                    return Err("Invalid GBA affine reference state".into());
+                }
+            }
+        } else {
+            next.bus.reconstruct_affine(next.line);
+        }
         if next.line >= 228
             || next.line_clocks >= 1232
             || next.bus.clocks > 1_000_000_000
@@ -468,6 +497,52 @@ mod tests {
         let mut rom = vec![0; 192];
         rom[..4].copy_from_slice(&0xeafffffeu32.to_le_bytes());
         GameBoyAdvance::new(rom, None).unwrap()
+    }
+    #[test]
+    fn affine_snapshots_replay_distinct_latches_and_migrate_v3() {
+        use crate::cpu::Memory;
+        let mut m = machine();
+        m.bus.write16(0x04000026, 0x100, false);
+        m.bus.write16(0x0400004c, 0x30, false);
+        m.bus.take_cycles();
+        m.run(1232 * 9);
+        m.bus.write32(0x0400002c, 0x4000, false);
+        m.bus.take_cycles();
+        let origin = m.bus.affine;
+        assert_ne!(origin.current, origin.mosaic);
+        let state = m.export_state();
+        m.run(10000);
+        let expected = m.export_state();
+        m.import_state(&state).unwrap();
+        assert_eq!(m.bus.affine, origin);
+        m.run(10000);
+        assert_eq!(m.export_state(), expected);
+        let mut invalid = state.clone();
+        let position = invalid.len() - 40;
+        invalid[position..position + 4].copy_from_slice(&i32::MAX.to_le_bytes());
+        let length = invalid.len();
+        let checksum = hash(&invalid[..length - 8]);
+        invalid[length - 8..].copy_from_slice(&checksum.to_le_bytes());
+        assert!(m.import_state(&invalid).is_err());
+        assert_eq!(m.export_state(), expected);
+        let mut old = state[..state.len() - 40].to_vec();
+        old[4] = 3;
+        let checksum = hash(&old);
+        put(&mut old, checksum, 8);
+        m.import_state(&old).unwrap();
+        assert_eq!(
+            m.bus.affine.current[0][1],
+            0x4000 + i32::from(m.line) * 0x100
+        );
+        let mut old = state[..state.len() - 45].to_vec();
+        old[4] = 2;
+        let checksum = hash(&old);
+        put(&mut old, checksum, 8);
+        m.import_state(&old).unwrap();
+        assert_eq!(
+            m.bus.affine.current[0][1],
+            0x4000 + i32::from(m.line) * 0x100
+        );
     }
     #[test]
     fn cartridge_saves_reset_state_restore_and_identity() {
@@ -531,7 +606,7 @@ mod tests {
         let queue = expected.samples.len() / 2;
         let mut legacy = state[..491].to_vec();
         legacy[4] = 1;
-        legacy.extend_from_slice(&state[491 + 76 + queue * 8..state.len() - 13]);
+        legacy.extend_from_slice(&state[491 + 76 + queue * 8..state.len() - 45]);
         let checksum = hash(&legacy);
         put(&mut legacy, checksum, 8);
         m.import_state(&legacy).unwrap();
@@ -583,7 +658,7 @@ mod tests {
     fn snapshots_reject_checksum_valid_impossible_peripherals() {
         let mut m = machine();
         let saved = m.export_state();
-        assert_eq!(saved.len(), SNAPSHOT_BYTES + 81);
+        assert_eq!(saved.len(), SNAPSHOT_BYTES + 113);
         for (offset, bytes) in [
             (348, &64u64.to_le_bytes()[..]),
             (415, &0x8000u16.to_le_bytes()[..]),

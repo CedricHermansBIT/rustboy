@@ -160,6 +160,28 @@ checks, and eleven browser scenarios, including local GBA selection and Flash
 save programming/persistence/reload. GBA Clippy with warnings denied and the
 root WASM check pass. This does not include the separate local GB ROM suite.
 
+### Affine scanline accumulators milestone
+
+BG2/BG3 now have independent signed 28-bit internal X/Y origins. Reference writes
+replace the corresponding current origin; PB/PD changes affect subsequent
+scanline increments rather than recalculating already elapsed lines. VBlank
+and frame-start reloads preserve the public reference registers. Vertical mosaic
+groups retain an origin rather than resampling all rows from changed parameters.
+Scanline-edge timing, mid-dot writes and dynamic mosaic-size phases remain
+unverified; this is not a dot-accurate PPU.
+
+Version-4 states preserve both current and mosaic origins. Older version-1/2/3
+states reconstruct their static affine convention before continuing with the new
+latches. Tests exercise raster reference changes, per-axis halfword writes,
+fractional signed wrapping, step changes, mosaic groups, reloads, state replay,
+corruption rejection and migration. Native GBA coverage is 82 unit tests plus
+seven program tests.
+
+The native diagnostic accepts `GBA_START_AT=1800` for a five-frame Start press.
+With this input the local FireRed probe reaches its controls introduction at
+2,400 frames, without a missing-service fault. Full gameplay, audio quality,
+cartridge/peripheral coverage and renderer accuracy still need validation.
+
 1. Expand ARM/Thumb instruction and exception validation; finish bus arbitration
    and an original BIOS-service replacement
    for boot-ROM-free deployments. Use local FireRed as a compatibility probe,

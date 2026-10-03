@@ -18,6 +18,7 @@ pub struct Bus {
     pub(crate) dma: [Dma; 4],
     pub(crate) apu: crate::apu::Apu,
     pub(crate) backup: crate::backup::Backup,
+    pub(crate) affine: crate::ppu::Affine,
 }
 impl Bus {
     pub fn new(rom: Vec<u8>, bios: Option<Vec<u8>>) -> Result<Self, String> {
@@ -45,6 +46,7 @@ impl Bus {
             dma: [Dma::default(); 4],
             apu: crate::apu::Apu::default(),
             backup,
+            affine: crate::ppu::Affine::default(),
         };
         bus.set_io(0x130, 0x3ff);
         bus.set_io(0, 0x80);
@@ -168,6 +170,7 @@ impl Bus {
                 }
                 self.peripheral_write(offset, old);
                 self.sound_write(offset);
+                self.affine_write(offset);
             }
             5 => self.palette[index & 0x3ff] = value,
             6 => self.vram[Self::vram_index(address)] = value,

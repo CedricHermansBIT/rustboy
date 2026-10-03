@@ -206,6 +206,7 @@ fn reset_memory(bus: &mut Bus, flags: u8) {
         for address in [0x20, 0x26, 0x30, 0x36] {
             bus.set_io(address, 0x100);
         }
+        bus.reload_affine();
     }
     bus.set_io(0, 0x80);
 }

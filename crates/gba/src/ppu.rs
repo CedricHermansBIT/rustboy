@@ -3,6 +3,70 @@
 //! to the video scheduler, rather than this color compositor.
 use crate::bus::Bus;
 
+/// Internal scanline origins and vertical-mosaic group origins, in signed 20.8
+/// fixed point (28 significant bits). Registers are not modified by stepping.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub(crate) struct Affine {
+    pub current: [[i32; 2]; 2],
+    pub mosaic: [[i32; 2]; 2],
+}
+pub(crate) fn wrap_reference(value: i32) -> i32 {
+    (value.wrapping_shl(4)) >> 4
+}
+pub(crate) fn register_reference(bus: &Bus, bg: usize, axis: usize) -> i32 {
+    signed_ref(bus, 0x28 + bg * 0x10 + axis * 4)
+}
+impl Bus {
+    pub(crate) fn reload_affine(&mut self) {
+        for bg in 0..2 {
+            for axis in 0..2 {
+                self.affine.current[bg][axis] = register_reference(self, bg, axis);
+            }
+        }
+        self.affine.mosaic = self.affine.current;
+    }
+    pub(crate) fn advance_affine(&mut self, line: u16) {
+        for bg in 0..2 {
+            for axis in 0..2 {
+                let step = self.io16(0x22 + bg * 0x10 + axis * 4) as i16 as i32;
+                self.affine.current[bg][axis] =
+                    wrap_reference(self.affine.current[bg][axis].wrapping_add(step));
+            }
+        }
+        if line.is_multiple_of((self.io16(0x4c) >> 4 & 15) + 1) {
+            self.affine.mosaic = self.affine.current;
+        }
+    }
+    pub(crate) fn affine_write(&mut self, offset: usize) {
+        if !matches!(offset, 0x28..=0x2f | 0x38..=0x3f) {
+            return;
+        }
+        let bg = (offset - 0x28) / 16;
+        let axis = (offset & 7) / 4;
+        let value = register_reference(self, bg, axis);
+        self.affine.current[bg][axis] = value;
+        if self.io16(6).is_multiple_of((self.io16(0x4c) >> 4 & 15) + 1) {
+            self.affine.mosaic[bg][axis] = value;
+        }
+    }
+    /// Legacy states stored only the public registers. This reconstructs their
+    /// old static-origin convention; subsequent scanlines use the new latches.
+    pub(crate) fn reconstruct_affine(&mut self, line: u16) {
+        let line = if line < 160 { line } else { 0 };
+        let first = line - line % ((self.io16(0x4c) >> 4 & 15) + 1);
+        for bg in 0..2 {
+            for axis in 0..2 {
+                let value = register_reference(self, bg, axis);
+                let step = self.io16(0x22 + bg * 0x10 + axis * 4) as i16 as i32;
+                self.affine.current[bg][axis] =
+                    wrap_reference(value.wrapping_add(step * i32::from(line)));
+                self.affine.mosaic[bg][axis] =
+                    wrap_reference(value.wrapping_add(step * i32::from(first)));
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Dot {
     color: u16,
@@ -25,18 +89,28 @@ fn signed_ref(bus: &Bus, offset: usize) -> i32 {
     let value = u32::from_le_bytes(bus.io[offset..offset + 4].try_into().unwrap());
     (value.wrapping_shl(4) as i32) >> 4
 }
-fn bg_coordinates(bus: &Bus, bg: usize, x: i32, line: i32) -> (i32, i32) {
+fn bg_coordinates(bus: &Bus, affine: Affine, bg: usize, x: i32, mosaic: bool) -> (i32, i32) {
     let base = 0x20 + (bg - 2) * 0x10;
     let a = bus.io16(base) as i16 as i32;
-    let b = bus.io16(base + 2) as i16 as i32;
     let c = bus.io16(base + 4) as i16 as i32;
-    let d = bus.io16(base + 6) as i16 as i32;
+    let origin = if mosaic {
+        affine.mosaic[bg - 2]
+    } else {
+        affine.current[bg - 2]
+    };
     (
-        (signed_ref(bus, base + 8) + a * x + b * line) >> 8,
-        (signed_ref(bus, base + 12) + c * x + d * line) >> 8,
+        wrap_reference(origin[0].wrapping_add(a * x)) >> 8,
+        wrap_reference(origin[1].wrapping_add(c * x)) >> 8,
     )
 }
-fn background(bus: &Bus, bg: usize, mode: u16, x: usize, line: usize) -> Option<Dot> {
+fn background(
+    bus: &Bus,
+    affine: Affine,
+    bg: usize,
+    mode: u16,
+    x: usize,
+    line: usize,
+) -> Option<Dot> {
     let cnt = bus.io16(8 + bg * 2);
     let mosaic = bus.io16(0x4c);
     let (mut x, mut y) = (x as i32, line as i32);
@@ -95,7 +169,7 @@ fn background(bus: &Bus, bg: usize, mode: u16, x: usize, line: usize) -> Option<
                 },
         )
     } else {
-        (x, y) = bg_coordinates(bus, bg, x, y);
+        (x, y) = bg_coordinates(bus, affine, bg, x, cnt & 0x40 != 0);
         if mode <= 2 {
             let size = 128i32 << (cnt >> 14);
             if cnt & 0x2000 != 0 {
@@ -327,6 +401,9 @@ fn brighten(color: u16, coefficient: u16, increase: bool) -> u16 {
     result
 }
 pub(crate) fn render_line(bus: &Bus, line: u16, pixels: &mut [u8]) {
+    render_line_origins(bus, line, pixels, bus.affine);
+}
+fn render_line_origins(bus: &Bus, line: u16, pixels: &mut [u8], affine: Affine) {
     if line >= 160 {
         return;
     }
@@ -372,7 +449,7 @@ pub(crate) fn render_line(bus: &Bus, line: u16, pixels: &mut [u8]) {
         };
         for bg in 0..4 {
             if enabled & mask as u16 & (1 << bg) != 0 {
-                if let Some(dot) = background(bus, bg, mode, x, line as usize) {
+                if let Some(dot) = background(bus, affine, bg, mode, x, line as usize) {
                     insert(dot);
                 }
             }
