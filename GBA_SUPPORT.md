@@ -142,6 +142,20 @@ This demonstrates startup progress, not complete playability. Set
 are not overwritten), or `GBA_TRACE_MEMORY=0300310c` for bounded halfword changes.
 These local screenshots and ROM bytes are not distributed.
 
+### Affine BIOS services milestone
+
+Original BgAffineSet/ObjAffineSet services generate rotation/scaling matrices,
+BG center offsets and strided OBJ entries for arrays. Sine values are generated
+mathematically, not copied from Nintendo firmware or another emulator. Exact
+firmware rounding and service timing remain unverified. Tests cover cardinal
+rotations, negative scales, fractional angle handling, matrix norms, source
+padding/strides, destination neighbors and actual Thumb SWI dispatch/return.
+
+With these services, the local FireRed diagnostic reaches and renders its title
+screen at 1,800 frames without a missing-service fault. The image still has
+visible graphics inaccuracies; this is not proof of complete game compatibility.
+Native GBA coverage now has 78 unit tests and seven original program tests.
+
 1. Expand ARM/Thumb instruction and exception validation; finish bus arbitration
    and an original BIOS-service replacement
    for boot-ROM-free deployments. Use local FireRed as a compatibility probe,

@@ -63,6 +63,29 @@ fn install_irq_handler(machine: &mut GameBoyAdvance) {
 }
 
 #[test]
+fn thumb_object_affine_service_writes_oam_and_returns_to_caller() {
+    let mut rom = vec![0; 192];
+    rom[..4].copy_from_slice(&[0x0f, 0xdf, 0xfe, 0xe7]);
+    let mut m = GameBoyAdvance::new(rom, None).unwrap();
+    m.cpu.set_cpsr(0x3f).unwrap();
+    m.cpu.r[0] = 0x02000000;
+    m.cpu.r[1] = 0x07000006;
+    m.cpu.r[2] = 1;
+    m.cpu.r[3] = 8;
+    m.bus.write16(0x02000000, 256, false);
+    m.bus.write16(0x02000002, 512, false);
+    m.bus.write16(0x02000004, 0x4000, false);
+    m.bus.take_cycles();
+    m.step();
+    assert!(m.fault.is_none());
+    assert!(m.cpu.thumb());
+    assert_eq!(m.cpu.r[15], 0x08000002);
+    for (n, value) in [0, -256, 512, 0].into_iter().enumerate() {
+        assert_eq!(m.bus.peek16(0x07000006 + n as u32 * 8), value as u16);
+        assert_eq!(m.bus.peek16(0x07000000 + n as u32 * 8), 0);
+    }
+}
+#[test]
 fn arm_cartridge_paints_bitmap_and_reaches_idle_loop() {
     // LDR display/literals; STRH DISPCNT; fill mode 3 red using a counted loop.
     let words: [u32; 14] = [

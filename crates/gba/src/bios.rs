@@ -95,11 +95,73 @@ pub(crate) fn service(number: u8, cpu: &mut Cpu, bus: &mut Bus) -> Result<Effect
             bus.internal(32);
         }
         0xb | 0xc => copy(bus, cpu.r[0], cpu.r[1], cpu.r[2], number == 0xc),
+        0xe | 0xf => affine_set(bus, cpu.r[0], cpu.r[1], cpu.r[2], cpu.r[3], number == 0xe)?,
         0x11 | 0x12 | 0x14 | 0x15 => decompress(bus, cpu.r[0], cpu.r[1], number)?,
         0x19 => bus.write16(0x04000088, if cpu.r[0] == 0 { 0 } else { 0x200 }, false),
         _ => return Err("BIOS service not implemented yet"),
     }
     Ok(Effect::Return)
+}
+/// Independently generated mathematical sine values, not firmware table bytes.
+/// Quantized 8-bit angles / 14-bit sine; exact firmware rounding is not claimed.
+fn affine_matrix(x: i16, y: i16, angle: u16) -> [i16; 4] {
+    static SINE: std::sync::OnceLock<[i16; 256]> = std::sync::OnceLock::new();
+    let sine = SINE.get_or_init(|| {
+        std::array::from_fn(|i| {
+            ((i as f64 * std::f64::consts::TAU / 256.).sin() * 16384.).round() as i16
+        })
+    });
+    let index = usize::from(angle >> 8);
+    let (sin, cos) = (i32::from(sine[index]), i32::from(sine[(index + 64) & 255]));
+    [
+        ((i32::from(x) * cos) >> 14) as i16,
+        (-((i32::from(x) * sin) >> 14)) as i16,
+        ((i32::from(y) * sin) >> 14) as i16,
+        ((i32::from(y) * cos) >> 14) as i16,
+    ]
+}
+fn affine_set(
+    bus: &mut Bus,
+    mut source: u32,
+    mut dest: u32,
+    count: u32,
+    stride: u32,
+    bg: bool,
+) -> Result<(), &'static str> {
+    if count > 65536 {
+        return Err("BIOS affine calculation count exceeds bounded hardware storage");
+    }
+    for _ in 0..count {
+        let offset = if bg { 12 } else { 0 };
+        let x = bus.read16(source.wrapping_add(offset), false) as i16;
+        let y = bus.read16(source.wrapping_add(offset + 2), false) as i16;
+        let angle = bus.read16(source.wrapping_add(offset + 4), false);
+        let matrix = affine_matrix(x, y, angle);
+        let spacing = if bg { 2 } else { stride };
+        for value in matrix {
+            bus.write16(dest, value as u16, false);
+            dest = dest.wrapping_add(spacing);
+        }
+        if bg {
+            let origin_x = bus.read32(source, false);
+            let origin_y = bus.read32(source.wrapping_add(4), false);
+            let screen_x = bus.read16(source.wrapping_add(8), false) as i16 as i32;
+            let screen_y = bus.read16(source.wrapping_add(10), false) as i16 as i32;
+            for (origin, a, b) in [
+                (origin_x, matrix[0], matrix[1]),
+                (origin_y, matrix[2], matrix[3]),
+            ] {
+                let start = origin
+                    .wrapping_sub(i32::from(a).wrapping_mul(screen_x) as u32)
+                    .wrapping_sub(i32::from(b).wrapping_mul(screen_y) as u32);
+                bus.write32(dest, start, false);
+                dest = dest.wrapping_add(4);
+            }
+        }
+        source = source.wrapping_add(if bg { 20 } else { 8 });
+        bus.internal(32);
+    }
+    Ok(())
 }
 fn reset_memory(bus: &mut Bus, flags: u8) {
     let mut clocks = 0;
@@ -272,6 +334,66 @@ mod tests {
     use super::*;
     fn bus() -> Bus {
         Bus::new(vec![0; 192], None).unwrap()
+    }
+    #[test]
+    fn affine_cardinal_rotations_signed_scaling_and_fractional_angle() {
+        for (angle, expected) in [
+            (0, [256, 0, 0, 512]),
+            (0x4000, [0, -256, 512, 0]),
+            (0x8000, [-256, 0, 0, -512]),
+            (0xc000, [0, 256, -512, 0]),
+        ] {
+            assert_eq!(affine_matrix(256, 512, angle), expected);
+            assert_eq!(affine_matrix(256, 512, angle | 255), expected);
+        }
+        assert_eq!(affine_matrix(-256, 256, 0), [-256, 0, 0, 256]);
+        for angle in 0..256u16 {
+            let matrix = affine_matrix(256, 256, angle << 8);
+            assert_eq!(matrix[0], matrix[3]);
+            assert!((i32::from(matrix[1]) + i32::from(matrix[2])).abs() <= 1);
+            let norm = i32::from(matrix[0]).pow(2) + i32::from(matrix[2]).pow(2);
+            assert!((norm - 65536).abs() < 750);
+        }
+    }
+    #[test]
+    fn object_affine_array_stride_and_padding_preserve_neighbors() {
+        let mut b = bus();
+        b.oam.fill(0x5a);
+        for (n, angle) in [0, 0x4000].into_iter().enumerate() {
+            let source = 0x02000000 + n as u32 * 8;
+            b.write16(source, 256, false);
+            b.write16(source + 2, 512, false);
+            b.write16(source + 4, angle, false);
+            b.write16(source + 6, 0xffff, false);
+        }
+        affine_set(&mut b, 0x02000000, 0x07000006, 2, 8, false).unwrap();
+        for (n, value) in [256, 0, 0, 512, 0, -256, 512, 0].into_iter().enumerate() {
+            assert_eq!(b.peek16(0x07000006 + n as u32 * 8), value as u16);
+            assert_eq!(b.peek16(0x07000000 + n as u32 * 8), 0x5a5a);
+        }
+        let saved = b.oam.clone();
+        assert!(affine_set(&mut b, 0, 0x07000000, 65537, 8, false).is_err());
+        assert_eq!(b.oam, saved);
+    }
+    #[test]
+    fn background_affine_array_centers_and_twenty_byte_source_stride() {
+        let mut b = bus();
+        for (n, angle) in [0, 0x4000].into_iter().enumerate() {
+            let source = 0x02000000 + n as u32 * 20;
+            b.write32(source, 100 << 8, false);
+            b.write32(source + 4, 200 << 8, false);
+            b.write16(source + 8, 10, false);
+            b.write16(source + 10, 20, false);
+            b.write16(source + 12, 256, false);
+            b.write16(source + 14, 512, false);
+            b.write16(source + 16, angle, false);
+            b.write16(source + 18, 0xffff, false);
+        }
+        affine_set(&mut b, 0x02000000, 0x03000000, 2, 0, true).unwrap();
+        assert_eq!(b.peek32(0x03000008), 90 << 8);
+        assert_eq!(b.peek32(0x0300000c), 160 << 8);
+        assert_eq!(b.peek32(0x03000018), 120 << 8);
+        assert_eq!(b.peek32(0x0300001c), 180 << 8);
     }
     #[test]
     fn sqrt_uses_integer_floor_across_boundaries() {
