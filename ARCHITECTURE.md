@@ -65,7 +65,10 @@ no original firmware, instrument recordings or other emulator code is bundled.
 Cartridge-uploaded programs switch from the resident player to the SPC700;
 user-supplied sound firmware uses the same execution core. These components have
 no browser dependencies and can be composed with a future SNES backend.
-The SGB reader accepts v1–v6 and preserves legacy RGBA frames until a fresh LCD frame
+Version 7 appends palette priority and a validated optional user palette after
+the variable audio body. Host input is released on restore; browser input-source
+aggregation and stable gamepad assignments remain outside the emulated state.
+The SGB reader accepts v1–v7 and preserves legacy RGBA frames until a fresh LCD frame
 is captured. Handheld CPU snapshot versions and battery-save bytes are unchanged.
 
 `HostServices` supplies a per-machine clock callback for RTCs and an optional

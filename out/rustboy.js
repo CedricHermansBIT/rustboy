@@ -51,6 +51,13 @@ export function clear_sgb_sound_firmware() {
     wasm.clear_sgb_sound_firmware();
 }
 
+export function clear_sgb_user_palette() {
+    const ret = wasm.clear_sgb_user_palette();
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
 export function clear_trace() {
     wasm.clear_trace();
 }
@@ -348,6 +355,10 @@ export function peek_slice(start, len) {
     }
 }
 
+export function release_controller_inputs() {
+    wasm.release_controller_inputs();
+}
+
 /**
  * @param {number} index
  */
@@ -368,6 +379,21 @@ export function save_game() {
  */
 export function set_border_visible(visible) {
     wasm.set_border_visible(visible);
+}
+
+/**
+ * Port 0 is player one; SGB additionally supports ports 1 through 3.
+ * @param {number} port
+ * @param {string} button
+ * @param {boolean} pressed
+ */
+export function set_controller_button(port, button, pressed) {
+    const ptr0 = passStringToWasm0(button, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.set_controller_button(port, ptr0, len0, pressed);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
 }
 
 /**
@@ -405,6 +431,18 @@ export function set_sgb_sound_firmware(data) {
         throw takeFromExternrefTable0(ret[1]);
     }
     return ret[0] !== 0;
+}
+
+/**
+ * @param {Uint16Array} colors
+ */
+export function set_sgb_user_palette(colors) {
+    const ptr0 = passArray16ToWasm0(colors, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.set_sgb_user_palette(ptr0, len0);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
 }
 
 /**
@@ -639,7 +677,7 @@ function __wbg_get_imports() {
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [F64], shim_idx: 46, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [F64], shim_idx: 47, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_5aa949e133d73c3e___convert__closures_____invoke___f64______true_);
             return ret;
         },
@@ -779,6 +817,14 @@ function getStringFromWasm0(ptr, len) {
     return decodeText(ptr, len);
 }
 
+let cachedUint16ArrayMemory0 = null;
+function getUint16ArrayMemory0() {
+    if (cachedUint16ArrayMemory0 === null || cachedUint16ArrayMemory0.byteLength === 0) {
+        cachedUint16ArrayMemory0 = new Uint16Array(wasm.memory.buffer);
+    }
+    return cachedUint16ArrayMemory0;
+}
+
 let cachedUint8ArrayMemory0 = null;
 function getUint8ArrayMemory0() {
     if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength === 0) {
@@ -834,6 +880,13 @@ function makeMutClosure(arg0, arg1, f) {
     };
     CLOSURE_DTORS.register(real, state, state);
     return real;
+}
+
+function passArray16ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 2, 2) >>> 0;
+    getUint16ArrayMemory0().set(arg, ptr / 2);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passArray8ToWasm0(arg, malloc) {
@@ -921,6 +974,7 @@ function __wbg_finalize_init(instance, module) {
     wasmModule = module;
     cachedDataViewMemory0 = null;
     cachedFloat32ArrayMemory0 = null;
+    cachedUint16ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     cachedUint8ClampedArrayMemory0 = null;
     wasm.__wbindgen_start();

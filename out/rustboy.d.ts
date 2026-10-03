@@ -17,6 +17,8 @@ export function clear_save_data(): void;
 
 export function clear_sgb_sound_firmware(): void;
 
+export function clear_sgb_user_palette(): void;
+
 export function clear_trace(): void;
 
 export function export_save_data(): Uint8Array;
@@ -68,6 +70,8 @@ export function peek_regs(): string;
 
 export function peek_slice(start: number, len: number): string;
 
+export function release_controller_inputs(): void;
+
 export function remove_breakpoint(index: number): void;
 
 export function reset_emulator(): void;
@@ -75,6 +79,11 @@ export function reset_emulator(): void;
 export function save_game(): void;
 
 export function set_border_visible(visible: boolean): void;
+
+/**
+ * Port 0 is player one; SGB additionally supports ports 1 through 3.
+ */
+export function set_controller_button(port: number, button: string, pressed: boolean): void;
 
 export function set_debug_enabled(enabled: boolean): void;
 
@@ -86,6 +95,8 @@ export function set_paused(paused: boolean): void;
  * User-provided SNES firmware, distinct from the handheld startup override.
  */
 export function set_sgb_sound_firmware(data: Uint8Array): boolean;
+
+export function set_sgb_user_palette(colors: Uint16Array): void;
 
 export function set_speed(speed: number): void;
 
@@ -104,6 +115,7 @@ export interface InitOutput {
     readonly add_breakpoint_opcode: (a: number) => void;
     readonly add_breakpoint_pc: (a: number) => void;
     readonly add_breakpoint_reg: (a: number, b: number, c: number) => void;
+    readonly clear_sgb_user_palette: () => [number, number];
     readonly export_save_data: () => [number, number];
     readonly export_state: () => [number, number];
     readonly get_boot_rom_license: () => [number, number];
@@ -126,19 +138,22 @@ export interface InitOutput {
     readonly peek: (a: number) => number;
     readonly peek_regs: () => [number, number];
     readonly peek_slice: (a: number, b: number) => [number, number];
+    readonly release_controller_inputs: () => void;
     readonly remove_breakpoint: (a: number) => void;
     readonly set_border_visible: (a: number) => void;
+    readonly set_controller_button: (a: number, b: number, c: number, d: number) => [number, number];
     readonly set_debug_enabled: (a: number) => void;
     readonly set_key_state: (a: number, b: number) => void;
     readonly set_paused: (a: number) => void;
     readonly set_sgb_sound_firmware: (a: number, b: number) => [number, number, number];
+    readonly set_sgb_user_palette: (a: number, b: number) => [number, number];
     readonly set_vram_view: (a: number, b: number) => [number, number];
     readonly trace_len: () => number;
     readonly clear_sgb_sound_firmware: () => void;
     readonly toggle_trace: () => void;
+    readonly reset_emulator: () => void;
     readonly get_speed: () => number;
     readonly set_speed: (a: number) => void;
-    readonly reset_emulator: () => void;
     readonly clear_save_data: () => void;
     readonly clear_breakpoints: () => void;
     readonly clear_trace: () => void;

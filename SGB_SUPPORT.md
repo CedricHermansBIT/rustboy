@@ -9,19 +9,19 @@ code `0x33`, and prefers SGB for enhanced cartridges, including dual-mode CGB
 games. CGB-only cartridges always use CGB. Other cartridges select GB/CGB from
 their CGB header flag. Filename extensions do not determine the hardware.
 
-In the ROM picker, **Hardware for next load** can override detection with
+In **Settings → Hardware & firmware**, **Next game's hardware** can override detection with
 Game Boy, Game Boy Color or Super Game Boy. In SGB, a CGB-compatible cartridge runs on
 the DMG path; a CGB-only cartridge is rejected without replacing the running
 game. Non-SGB games can still run, with a neutral grayscale fallback palette.
 The choice applies to the next load, not to an already-running cartridge.
 
-**Show SGB decorations**, under Appearance and in the touch-settings menu,
+**SGB decorations**, under Settings → Appearance and in the touch-settings menu,
 switches between the full 256×224 border and the 160×144 game image. This is a
 persisted host preference: transfers, palettes, inputs and emulation continue
 unchanged, and restoring a snapshot does not override it. H hides the interface
 panels independently of debug mode.
 
-Debug tools start hidden/off. Press the backtick key or **Show debug tools** to
+Debug tools start hidden/off. Press the backtick key or **Settings → Developer tools → Show debug tools** to
 reveal them; that does not start instruction logging. F5 remains browser refresh.
 With tools enabled, F2 opens the memory viewer and its dropdown selects GB tiles,
 SGB border tiles (all 256 tiles shown in each of palettes 4–6), or the SGB border
@@ -30,9 +30,12 @@ Turning debug tools off also disables logging, tracing, the HUD and the viewer.
 
 SGB colorization is separate from CGB rendering: SGB uses the four-shade Game
 Boy image and applies its own palettes, not a cartridge's native CGB colors.
-Both direct palettes and transferred `PAL_TRN`/`PAL_SET` tables now work.
-Non-SGB games retain the neutral grayscale fallback; built-in firmware palettes
-and user-selected palette overrides are not included.
+Both direct palettes and transferred `PAL_TRN`/`PAL_SET` tables work. Appearance
+now offers independently authored Warm, Cool and Grayscale overrides, or Game
+palette to restore cartridge colors. `PAL_PRI` lets subsequent direct palette or
+`PAL_SET` commands cancel an override; the priority command itself and `PAL_TRN`
+do not cancel it. The selected preference is applied on load/reset, not each
+frame or snapshot import. Built-in Nintendo palette tables are not included.
 
 ## Implemented
 
@@ -71,8 +74,16 @@ and user-selected palette overrides are not included.
   import or loading another handheld game restores the appropriate geometry.
   Browser canvas and save previews preserve the entire border image.
 - `MLT_REQ`: controller IDs and multiplexing for 1, 2 or 4 players. The native
-  `Emulator::set_button` API accepts ports 0–3; browser controls still drive only
-  port 0. Full browser gamepad/multiplayer controls are future frontend work.
+  `Emulator::set_button` API and browser controller API accept ports 0–3.
+  Standard gamepads receive stable player assignments, up to four. The first pad
+  shares player 1 with keyboard/touch; east is A, south is B, with D-pad/left stick,
+  Start and Select. Other players require a game requesting multiplayer.
+  Disconnect, blur, pause, reset, load and restore release inputs; held controls
+  must return to neutral before becoming active again. Nonstandard gamepads are
+  not guessed, and extra ports have no effect on ordinary handheld games.
+- `PAL_PRI`: cartridge/user palette priority, separate saved game colors and
+  validated original user palettes; masks and frozen images retain LCD shades
+  and can be recolored without exposing transfer graphics.
 - `ICON_EN` register-file-disable bit; the other menu-related bits have no host
   menu implementation. Packet reception stops when requested, but controller
   multiplexing remains active.
@@ -90,7 +101,7 @@ and user-selected palette overrides are not included.
 
 Battery saves retain the cartridge's existing identity and can be shared across
 handheld/SGB modes. SGB save states use a separate `-sgb-hle-v1` identity and an
-`RBSG` envelope (now version 6); the storage identity remains stable so older
+`RBSG` envelope (now version 7); the storage identity remains stable so older
 SGB autosaves can migrate. Handheld snapshots keep their original `RBST` format. Loading a
 snapshot into the wrong mode is rejected. For SGB snapshots use the backend's
 `Emulator::export_state`, not the low-level CPU-only snapshot API.
@@ -113,7 +124,9 @@ routes `SOU_TRN` through that same LCD pipeline. Its packet lists upload into
 64 KiB of SPC RAM (including wrapping addresses); zero-length packets retain
 the requested jump address. Malformed lists are rejected before any write.
 Version 6 additionally saves CPU/DSP/timer execution, resident score playback,
-effects, fades and rational resampling. Versions 1–5 remain readable, but old
+effects, fades and rational resampling. Version 7 adds palette priority and the
+current user override without changing the variable audio body. Versions 1–6
+remain readable, but old
 transport-only saves do not contain an audio execution position.
 
 ## Resident audio replacement
@@ -139,9 +152,12 @@ provides its own high-level resident sound driver (Rust code, not a binary ROM):
   addresses are not generally compatible with the high-level replacement.
 - SNES audio continues when the handheld APU is off. Its 32 kHz stereo output
   is resampled into the existing handheld output and browser AudioWorklet.
+- ADSR/GAIN and noise use the documented shared rate-divider phases. Envelope
+  stage transitions use the unclamped candidate, sustained KOFF prevents
+  retriggering, and nonlooping BRR end blocks silence without stopping decoding.
 
 Original SGB1/SGB2 SNES sound firmware is an optional user-supplied override,
-selected under **SGB audio (optional firmware override)** in the ROM picker.
+selected under **Settings → Hardware & firmware → Optional SGB sound firmware**.
 Validated images stay in that browser's local storage; invalid uploads preserve
 the previous selection. Loading/forgetting firmware restarts an active SGB
 game. This is distinct from the Game Boy boot ROM. Nintendo firmware and sample
@@ -167,10 +183,11 @@ existing save state deliberately retains the instrument/sample RAM it saved.
   fade/menu animations. A game without a custom border keeps a 160×144 viewport.
 - Bit-identical Nintendo instrument/effect reproduction without original sound
   firmware; Gaussian interpolation, exact DSP sub-sample timing and uncommon
-  SPC TEST-register clock modes. Full-game audio compatibility is not certified.
+  SPC TEST-register clock modes, exact KON/KOFF polling and bent-GAIN candidate
+  history. Full-game audio compatibility is not certified.
 - SNES CPU/bus/PPU, `DATA_SND`/`DATA_TRN` patch execution and `JUMP` (including
   Space Invaders' SNES arcade mode).
-- SNES system menus, user-selected palette/border overrides and `PAL_PRI`.
+- SNES system menus and user-selected border overrides.
 - ICD2 analog/sampling details, firmware chunk-transfer scheduling and SGB1's faster clock.
   This adapter uses the GB/SGB2 base rate of 4,194,304 Hz; it does not claim
   hardware-identical SGB1/SGB2 behavior.
@@ -208,6 +225,7 @@ RUSTBOY_NO_BOOT=1 RUSTBOY_SYNTHETIC_SGB=1 node tests/browser_smoke.mjs
 RUSTBOY_NO_BOOT=1 RUSTBOY_SGB_BORDER=1 node tests/browser_smoke.mjs
 RUSTBOY_NO_BOOT=1 RUSTBOY_SGB_PALETTES=1 node tests/browser_smoke.mjs
 RUSTBOY_NO_BOOT=1 RUSTBOY_SGB_AUDIO=1 node tests/browser_smoke.mjs
+RUSTBOY_NO_BOOT=1 RUSTBOY_SGB_MULTIPLAYER=1 node tests/browser_smoke.mjs
 python3 scripts/check.py --browser
 RUSTBOY_COMPARE_ASSERT=1 cargo run --release --no-default-features --example sgb_sound_compare -- roms/sgb1.program.rom
 RUSTBOY_VERIFY_SGB_AUDIO=1 cargo run --release --no-default-features --example sgb_audio_inspect -- "roms/Animaniacs (USA) (SGB Enhanced).gb"

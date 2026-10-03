@@ -23,9 +23,9 @@ diagnostics pass with the locally supplied games. Browser smoke checks pass
 for DMG and CGB loading, nonblank rendering, pause/resume, and malformed-upload
 handling. Audio queue and boot-ROM loader JavaScript regressions pass.
 
-The latest implementation checks also pass 131 Game Boy, 20 SNES-APU and 7 root
+The latest implementation checks also pass 138 Game Boy, 24 SNES-APU and 7 root
 unit tests plus 2 PPU regressions, browser AudioWorklet/fallback queue tests, the
-public-library picker check, and all eight browser smoke cases. Five local SGB
+public-library picker check, and all nine browser smoke cases. Five local SGB
 games pass the optional
 input/game-window/transfer/state-replay checks. Four exact Makon Diamond/Jade/Pearl
 dumps now render with the verified NT-new mapper; these are not full playthroughs.
@@ -38,7 +38,17 @@ requests were additionally exercised; these are not full playthroughs or a
 claim of identical instrument timbres. The independent SPC700 corpus previously
 passed all 256,000 instruction vectors. Resident-player, BRR encoding quality,
 custom-code execution and original synthetic cartridge audio regressions are
-included in the self-contained checks; the browser gate now has eight cases.
+included in the self-contained checks; the browser gate now has nine cases.
+The new four-player synthetic cartridge polls JOYP on the CPU and verifies
+standard-pad mapping, source union, stable disconnects and input release after
+restore/reset/blur/pause. PAL_PRI/user colors and v1–v7 state migration are tested;
+DSP envelope/noise divider phases, stage thresholds and persistent KOFF have
+targeted regressions. The five local SGB game checks also compare complete
+adapter/audio replay, not only final framebuffer pixels.
+Grouped Settings are checked for keyboard isolation, Escape dismissal, preserving
+an intentional pause, and resuming previously running gameplay. Optional
+`RUSTBOY_UI_SCREENSHOTS` captures desktop/mobile settings and library previews
+into an existing output directory without overwriting files.
 The original ROM totals above remain unchanged; no new exclusions were added.
 This is not a broad manual gameplay or listening test.
 
