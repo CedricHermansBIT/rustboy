@@ -1,46 +1,36 @@
 #!/usr/bin/env python3
-"""Generate romlist.json from the roms/ directory and its subdirectories.
-Run from the rustboy/ directory: python3 generate_romlist.py
-"""
+"""Generate the ignored local GB/GBC/GBA library manifest (never a Pages asset)."""
 import json
-import os
+from pathlib import Path
 
-script_dir = os.path.dirname(os.path.abspath(__file__))
-roms_dir = os.path.join(script_dir, "roms")
-images_dir = os.path.join(roms_dir, "images")
 
-entries = []
+def collect_roms(roms_dir):
+    roms_dir = Path(roms_dir)
+    entries = []
+    for rom in roms_dir.rglob('*'):
+        if not rom.is_file() or rom.suffix.lower() not in ('.gb', '.gbc', '.gba'):
+            continue
+        relative = rom.relative_to(roms_dir)
+        if relative.parts[0] == 'images':
+            continue
+        entry = {'name': relative.as_posix()}
+        for suffix in ('-thumb.png', '-image.png', '-marquee.png'):
+            image = Path('images') / (rom.stem + suffix)
+            if (roms_dir / image).is_file():
+                entry['img'] = image.as_posix()
+                break
+        entries.append(entry)
+    return sorted(entries, key=lambda entry: entry['name'].lower())
 
-# os.walk yields (current_path, subdirectories, files) for every level
-for root, dirs, files in os.walk(roms_dir):
-    # Skip the images directory itself to avoid processing artwork as ROMs
-    if os.path.commonpath([root, images_dir]) == images_dir:
-        continue
 
-    for f in sorted(files):
-        if f.lower().endswith(".gb") or f.lower().endswith(".gbc"):
-            # Get the path relative to roms_dir (e.g., "Action/game.gb")
-            full_path = os.path.join(root, f)
-            rel_rom_path = os.path.relpath(full_path, roms_dir)
+def main():
+    roms_dir = Path(__file__).resolve().parent / 'roms'
+    roms_dir.mkdir(exist_ok=True)
+    entries = collect_roms(roms_dir)
+    output = roms_dir / 'romlist.json'
+    output.write_text(json.dumps(entries, ensure_ascii=False, indent=1) + '\n', encoding='utf-8')
+    print(f'Generated {output} with {len(entries)} local GB/GBC/GBA entries.')
 
-            # Use the filename (minus extension) to look for images
-            base_name = os.path.splitext(f)[0]
-            entry = {"name": rel_rom_path}
 
-            # Check for images in the central images/ folder
-            for suffix in ("-thumb.png", "-image.png", "-marquee.png"):
-                img_name = base_name + suffix
-                if os.path.isfile(os.path.join(images_dir, img_name)):
-                    entry["img"] = "images/" + img_name
-                    break
-
-            entries.append(entry)
-
-# Sort entries alphabetically by the relative path name
-entries.sort(key=lambda x: x["name"].lower())
-
-out_path = os.path.join(roms_dir, "romlist.json")
-with open(out_path, "w", encoding="utf-8") as f:
-    json.dump(entries, f, ensure_ascii=False, indent=1)
-
-print(f"Generated {out_path} with {len(entries)} entries from the directory tree.")
+if __name__ == '__main__':
+    main()

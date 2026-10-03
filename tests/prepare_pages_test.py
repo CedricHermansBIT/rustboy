@@ -21,7 +21,7 @@ class PackagingTests(unittest.TestCase):
             (self.root / folder).mkdir(parents=True)
         for name in ("index.html", "LICENSE", "out/rustboy.js", "out/rustboy_bg.wasm",
                      "web/library-rom.mjs", "web/controller-input.mjs", "homebrew/licenses/GPL.txt", "roms/private.gb",
-                     "roms/cgb_boot.bin", "testroms/private.gb"):
+                     "roms/cgb_boot.bin", "roms/private.gba", "testroms/private.gb"):
             (self.root / name).write_text("fixture")
         (self.root / "index.html").write_text('<html data-library="local">fixture</html>')
         self.rom, self.source = b"ROM", b"source archive"

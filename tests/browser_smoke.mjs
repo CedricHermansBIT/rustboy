@@ -15,6 +15,15 @@ const site = process.env.RUSTBOY_SITE_DIR ? path.resolve(process.env.RUSTBOY_SIT
 const basePath = process.env.RUSTBOY_BASE_PATH || '';
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'rustboy-browser-test-'));
 const libraryRequests = [];
+// Original executable fixture, not a copyrighted game: the picker must fetch
+// a nested filename, route it to GBA and actually render through WASM.
+const pickerGba = new Uint8Array(32768);
+const pickerWords = [0xe59f0020, 0xe59f1020, 0xe1c010b0, 0xe59f201c, 0xe59f301c,
+  0xe3a0101f, 0xe0c210b2, 0xe2533001, 0x1afffffc, 0xeafffffe,
+  0x04000000, 0x403, 0x06000000, 38400];
+pickerWords.forEach((word, n) => new DataView(pickerGba.buffer).setUint32(n * 4, word, true));
+pickerGba[0xb2] = 0x96;
+const pickerName = 'Advance/Original red screen.GBA';
 const contentTypes = {'.wasm': 'application/wasm', '.js': 'text/javascript', '.mjs': 'text/javascript', '.json': 'application/json', '.html': 'text/html'};
 const server = http.createServer(async (request, response) => {
   try {
@@ -22,6 +31,14 @@ const server = http.createServer(async (request, response) => {
     if (!pathname.startsWith(basePath + '/')) { response.writeHead(404).end(); return; }
     const name = pathname.slice(basePath.length);
     if (/^\/(roms|testroms)\/romlist\.json$/.test(name)) libraryRequests.push(name);
+    if (process.env.RUSTBOY_GBA_PICKER && name === '/roms/romlist.json') {
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify([{name: 'local.gb'}, {name: 'local.gbc'}, {name: pickerName}]));
+      return;
+    }
+    if (process.env.RUSTBOY_GBA_PICKER && name === `/roms/${pickerName}`) {
+      response.end(pickerGba); return;
+    }
     if (process.env.RUSTBOY_PUBLIC_LIBRARY && name === '/homebrew/romlist.json') {
       response.setHeader('Content-Type', 'application/json');
       response.end(JSON.stringify([{name: 'demo.gbc', title: 'Free demo', author: 'Test', size: 32768, sha256: '0'.repeat(64)}]));
@@ -124,6 +141,24 @@ try {
     assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.rom-tab')).filter(el => getComputedStyle(el).display !== 'none').map(el => el.dataset.tab)"), ['homebrew']);
     assert.equal(await evaluate("getComputedStyle(document.querySelector('#local-hardware')).display"), 'none');
     assert.deepEqual(libraryRequests, [], 'public picker must not request private libraries');
+  }
+  if (process.env.RUSTBOY_GBA_PICKER && !process.env.RUSTBOY_PUBLIC_LIBRARY) {
+    await until("ROM_TABS.gba.available && ROM_TABS.gb.available && ROM_TABS.gbc.available");
+    assert.equal(libraryRequests.filter(name => name === '/roms/romlist.json').length, 1,
+      'GB, GBC and GBA share one manifest request');
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('[data-tab=gba]')).display !== 'none'"), true);
+    await evaluate("document.querySelector('[data-tab=gba]').click()");
+    assert.equal(await evaluate("activeTab"), 'gba');
+    assert.equal(await evaluate("document.querySelector('#rom-list .rom-name').textContent"), pickerName.replace(/\.gba$/i, ''));
+    await evaluate("document.querySelector('#rom-list li').click()");
+    await until("currentRomInfo?.tab === 'gba' && document.querySelector('#rustboy-canvas').width === 240");
+    await until("(() => { const c=document.querySelector('#rustboy-canvas'); const p=c.getContext('2d').getImageData(239,159,1,1).data; return p[0]===255 && p[1]===0 && p[2]===0; })()");
+    assert.equal(await evaluate("Module._get_state_id().startsWith('gba-')"), true);
+    await evaluate("openPicker()");
+    assert.equal(await evaluate("document.querySelector('#recent-list .recent-name').textContent"), pickerName.replace(/\.gba$/i, ''));
+    await evaluate("document.querySelector('#recent-list .recent-item').click()");
+    await until("document.querySelector('#rom-picker').classList.contains('hidden') && currentRomInfo?.tab === 'gba'");
+    console.log('Local GBA picker: shared manifest, filtered tab, nested download, real WASM rendering and recent-game reopen passed');
   }
   await evaluate('initAudio()');
   await until('audioWorkletNode !== null');

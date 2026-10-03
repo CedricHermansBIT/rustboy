@@ -71,12 +71,14 @@ python3 -m http.server 8000
 ```
 
 Open `http://localhost:8000`, then upload or drag-and-drop your own `.gb` or
-`.gbc` file. Optional library lists are read from `roms/romlist.json` and
+`.gbc` or `.gba` file (GBA support is in development; up to 32 MiB). Run
+`python3 generate_romlist.py` after adding games to `roms/` to refresh the local
+Game Boy, Game Boy Color and Game Boy Advance picker tabs. Optional library lists are read from `roms/romlist.json` and
 `testroms/romlist.json`; uploading works without those lists. No commercial game
 ROMs or Nintendo boot ROMs are committed to this repository. The public deployment downloads
 three licensed homebrew games into its deployment artifact (see below).
 Pages uses a homebrew-only picker and automatic hardware detection; the local
-GB/GBC/test categories and hardware overrides are not shown there. ROM uploads
+GB/GBC/GBA/test categories and hardware overrides are not shown there. ROM uploads
 remain available. Locally served checkouts retain the full picker.
 
 On HTTPS/localhost, audio playback uses a dedicated AudioWorklet with a bounded

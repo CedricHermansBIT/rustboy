@@ -857,6 +857,7 @@
         <button class="rom-tab" data-tab="homebrew">🌱 Free homebrew</button>
         <button class="rom-tab hidden" data-tab="gb">🎮 Game Boy</button>
         <button class="rom-tab hidden" data-tab="gbc">🌈 Game Boy Color</button>
+        <button class="rom-tab hidden" data-tab="gba">🎮 Game Boy Advance</button>
         <button class="rom-tab hidden" data-tab="testroms">🧪 Test ROMs</button>
       </div>
       <input type="text" id="rom-search" placeholder="🔍 Search games..." autocomplete="off" spellcheck="false" aria-label="Search ROMs" />
@@ -1316,6 +1317,13 @@
           folder: 'roms',
           listPath: 'roms/romlist.json',
           accepts: (name) => /\.gbc$/i.test(name),
+          available: false,
+        },
+        gba: {
+          allRoms: [],
+          folder: 'roms',
+          listPath: 'roms/romlist.json',
+          accepts: (name) => /\.gba$/i.test(name),
           available: false,
         },
         testroms: {
@@ -1886,7 +1894,7 @@
           }
           const nameSpan = document.createElement('span');
           nameSpan.className = 'recent-name';
-          nameSpan.textContent = rom.title || rom.name.replace(/\.gbc?$/i, '');
+          nameSpan.textContent = rom.title || rom.name.replace(/\.(gb|gbc|gba)$/i, '');
           item.appendChild(nameSpan);
           item.addEventListener('click', () => {
             // Switch to the correct tab and load
@@ -1954,8 +1962,8 @@
             }
             const nameSpan = document.createElement('span');
             nameSpan.className = 'rom-name';
-            // Display name without .gb/.gbc extension
-            nameSpan.textContent = rom.title || rom.name.replace(/\.gbc?$/i, '');
+            // Display name without the cartridge extension.
+            nameSpan.textContent = rom.title || rom.name.replace(/\.(gb|gbc|gba)$/i, '');
             if (rom.author) li.title = `${rom.platform} · ${rom.author}\n${rom.description}\n${rom.license}`;
             li.appendChild(nameSpan);
             if (rom.author) {
@@ -2065,16 +2073,17 @@
       async function fetchRomList() {
         const manifestCache = {};
 
-        // Fetch all tabs in parallel (GB + GBC share one manifest)
+        // Fetch all tabs in parallel (GB + GBC + GBA share one manifest).
         await Promise.all(Object.entries(ROM_TABS).map(async ([key, tab]) => {
           if (PUBLIC_LIBRARY && key !== 'homebrew') return;
           try {
             if (!manifestCache[tab.listPath]) {
-              const resp = await fetch(tab.listPath);
-              if (!resp.ok) throw new Error('not found');
-              manifestCache[tab.listPath] = await resp.json();
+              manifestCache[tab.listPath] = fetch(tab.listPath).then(resp => {
+                if (!resp.ok) throw new Error('not found');
+                return resp.json();
+              });
             }
-            const source = manifestCache[tab.listPath];
+            const source = await manifestCache[tab.listPath];
             tab.allRoms = source
               .filter((entry) => entry && typeof entry.name === 'string')
               .filter((entry) => tab.accepts(entry.name));

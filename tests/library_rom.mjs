@@ -23,4 +23,10 @@ for (const name of ['../game.gb', 'folder/game.gb', 'folder\\game.gb', 'game.zip
 }
 assert.deepEqual(await fetchLibraryRom({name: 'my game.gb'}, 'roms', fetchFile), bytes);
 assert.equal(requested, 'roms/my%20game.gb');
+assert.deepEqual(await fetchLibraryRom({name: 'Advance/Fire Red (USA).GBA'}, 'roms', fetchFile), bytes);
+assert.equal(requested, 'roms/Advance/Fire%20Red%20(USA).GBA');
+for (const name of ['../game.gba', '/game.gba', 'a/../game.gba', 'a//game.gba', 'a/./game.gba', 'a\\game.gba', 'game.gba\0']) {
+  await assert.rejects(fetchLibraryRom({name}, 'roms', fetchFile), /filename/);
+}
+await assert.rejects(fetchLibraryRom({name: 'game.gba'}, 'homebrew', fetchFile), /filename/);
 console.log('Library ROM loader: pinned size/hash validation, download failures, safe names, and local-library compatibility passed');

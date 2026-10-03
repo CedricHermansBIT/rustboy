@@ -36,6 +36,7 @@ def main():
     for test in ["tests/audio_queue.cjs", "tests/audio_worklet.cjs", "tests/rom_loader.mjs", "tests/library_rom.mjs", "tests/cartridge_inventory.mjs", "tests/controller_input.mjs"]:
         subprocess.run([node, test], cwd=ROOT, check=True)
     subprocess.run(["python3", "tests/prepare_pages_test.py"], cwd=ROOT, check=True)
+    subprocess.run(["python3", "tests/generate_romlist_test.py"], cwd=ROOT, check=True)
     if args.roms:
         cases = json.loads((ROOT / "tests/rom_cases.json").read_text())
         for case in cases:
@@ -62,7 +63,7 @@ def main():
         subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT, check=True)
         subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT,
                        env={**os.environ, "RUSTBOY_PUBLIC_LIBRARY": "1", "RUSTBOY_NO_BOOT": "1"}, check=True)
-        for model in ["dmg", "cgb", "sgb", "sgb-border", "sgb-palettes", "sgb-audio", "sgb-multiplayer", "gba-upload"]:
+        for model in ["dmg", "cgb", "sgb", "sgb-border", "sgb-palettes", "sgb-audio", "sgb-multiplayer", "gba-upload", "gba-picker"]:
             environment = {**os.environ, "RUSTBOY_NO_BOOT": "1", "CARGO_TARGET_DIR": args.target_dir}
             environment.pop("RUSTBOY_ROM", None)
             environment.pop("RUSTBOY_SYNTHETIC_CGB", None)
@@ -74,8 +75,11 @@ def main():
             environment.pop("RUSTBOY_SGB_FIRMWARE", None)
             environment.pop("RUSTBOY_HARDWARE", None)
             environment.pop("RUSTBOY_GBA_UPLOAD", None)
+            environment.pop("RUSTBOY_GBA_PICKER", None)
             if model == "gba-upload":
                 environment["RUSTBOY_GBA_UPLOAD"] = "1"
+            if model == "gba-picker":
+                environment["RUSTBOY_GBA_PICKER"] = "1"
             if model == "cgb":
                 environment["RUSTBOY_SYNTHETIC_CGB"] = "1"
             if model == "sgb":

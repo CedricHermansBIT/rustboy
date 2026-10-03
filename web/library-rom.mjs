@@ -1,9 +1,13 @@
 // Same-origin library downloads, with integrity checks for curated homebrew.
 export async function fetchLibraryRom(entry, folder, fetchFile = fetch, subtle = globalThis.crypto.subtle) {
-  if (typeof entry.name !== 'string' || /[/\\]/.test(entry.name) || !/\.(gb|gbc)$/i.test(entry.name)) {
+  const local = folder === 'roms' || folder === 'testroms';
+  const parts = typeof entry.name === 'string' ? entry.name.split('/') : [];
+  if (!parts.length || parts.some(part => !part || part === '.' || part === '..' || /[\\\u0000-\u001f\u007f]/.test(part))
+      || (!local && parts.length !== 1)
+      || !(local ? /\.(gb|gbc|gba)$/i : /\.(gb|gbc)$/i).test(entry.name)) {
     throw new Error('Invalid library ROM filename');
   }
-  const response = await fetchFile(`${folder}/${encodeURIComponent(entry.name)}`, {signal: AbortSignal.timeout(15000)});
+  const response = await fetchFile(`${folder}/${parts.map(encodeURIComponent).join('/')}`, {signal: AbortSignal.timeout(15000)});
   if (!response.ok) throw new Error(`ROM download failed (HTTP ${response.status})`);
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (entry.size !== undefined && bytes.length !== entry.size) throw new Error('Homebrew ROM size mismatch');
