@@ -109,6 +109,16 @@ try {
   assert.equal(await evaluate("!!document.querySelector('#rustboy-canvas')"), true);
   assert.equal(await evaluate("document.querySelector('#rustboy-canvas').width"), 160);
   await evaluate("document.querySelector('#sgb-user-palette').value = 'warm'; document.querySelector('#sgb-user-palette').dispatchEvent(new Event('change')); document.querySelector('#sgb-user-palette').value = 'game'; document.querySelector('#sgb-user-palette').dispatchEvent(new Event('change'))");
+  assert.equal(await evaluate("document.querySelector('#rom-picker #hardware-model') === null && document.querySelector('#emulator-settings #hardware-model') !== null"), true, 'advanced settings do not clutter the ROM picker');
+  assert.equal(await evaluate("Array.from(document.querySelectorAll('#emulator-settings > details')).filter(el => el.open).length"), 1, 'only everyday appearance settings start expanded');
+  await evaluate("openSettings(); window.settingsSelectionBefore = selectedIdx");
+  assert.equal(await evaluate("document.querySelector('#emulator-settings').open"), true);
+  await call('Input.dispatchKeyEvent', {type:'keyDown',key:'ArrowDown',code:'ArrowDown',windowsVirtualKeyCode:40});
+  await call('Input.dispatchKeyEvent', {type:'keyUp',key:'ArrowDown',code:'ArrowDown',windowsVirtualKeyCode:40});
+  assert.equal(await evaluate("selectedIdx === window.settingsSelectionBefore"), true, 'settings keyboard input does not navigate the library behind the dialog');
+  await call('Input.dispatchKeyEvent', {type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+  await call('Input.dispatchKeyEvent', {type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+  await until("!document.querySelector('#emulator-settings').open");
   if (process.env.RUSTBOY_PUBLIC_LIBRARY) {
     await until("ROMS.length === 1");
     assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.rom-tab')).filter(el => getComputedStyle(el).display !== 'none').map(el => el.dataset.tab)"), ['homebrew']);
@@ -478,6 +488,13 @@ try {
     await until("document.querySelector('#quick-pause').textContent.includes('Resume')");
     await evaluate("document.querySelector('#quick-pause').click()");
     await until("document.querySelector('#quick-pause').textContent.includes('Pause')");
+    await evaluate("openSettings()");
+    assert.equal(await evaluate("Module._is_paused()"), true, 'settings pause gameplay');
+    await evaluate("document.querySelector('#settings-close').click()");
+    await until("!Module._is_paused()");
+    await evaluate("Module._set_paused(true); openSettings(); document.querySelector('#settings-close').click()");
+    assert.equal(await evaluate("Module._is_paused()"), true, 'closing settings preserves a deliberate pause');
+    await evaluate("Module._set_paused(false)");
     assert.deepEqual(exceptions, [], 'gameplay browser errors');
   }
   if (process.env.RUSTBOY_SGB_FIRMWARE) {
@@ -489,7 +506,30 @@ try {
     await until("Module._get_sgb_status().includes('SNES audio active')", 15000);
     console.log('SGB firmware browser persistence: page reload and subsequent ROM load passed');
   }
-  console.log('Browser smoke: WASM initialization, canvas, upload error handling' + (gamePath ? ', rendering, pause/resume' : '') + (process.env.RUSTBOY_NO_BOOT ? (process.env.RUSTBOY_ROM || process.env.RUSTBOY_HOMEBREW ? ', bundled boot without external firmware' : ', RustBoy wordmark and bundled boot without external firmware') : '') + ' passed');
+  if (process.env.RUSTBOY_UI_SCREENSHOTS) {
+    const capture = async name => {
+      const {data} = await call('Page.captureScreenshot', {format:'png'});
+      await fs.writeFile(path.join(process.env.RUSTBOY_UI_SCREENSHOTS, name), Buffer.from(data,'base64'), {flag:'wx'});
+    };
+    await call('Emulation.setDeviceMetricsOverride', {width:1280,height:800,deviceScaleFactor:1,mobile:false});
+    await evaluate("openPicker()");
+    await capture('library-desktop.png');
+    await evaluate("openSettings()");
+    await capture('settings-desktop.png');
+    await evaluate("document.querySelectorAll('#emulator-settings > details')[2].open = true; document.querySelector('#sgb-audio-settings').open = true");
+    await capture('hardware-desktop.png');
+    await call('Emulation.setDeviceMetricsOverride', {width:390,height:844,deviceScaleFactor:1,mobile:true});
+    // Reload so the viewport meta tag establishes a fresh mobile page scale,
+    // rather than retaining the previous desktop layout's scale.
+    await call('Page.reload');
+    await until("typeof openSettings === 'function' && typeof Module !== 'undefined' && Module?._is_paused");
+    await evaluate("openSettings()");
+    await capture('settings-mobile.png');
+    assert.equal(await evaluate("innerWidth"), 390, 'mobile preview uses device-width viewport');
+    assert.ok(await evaluate("(() => { const r = document.querySelector('#emulator-settings').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight; })()"), 'settings fit the mobile viewport');
+  }
+  assert.deepEqual(exceptions, [], 'settings and initialization browser errors');
+  console.log('Browser smoke: WASM initialization, canvas, upload error handling' + (gamePath ? ', rendering, pause/resume' : '') + (process.env.RUSTBOY_NO_BOOT ? (process.env.RUSTBOY_ROM || process.env.RUSTBOY_HOMEBREW ? ', bundled boot without external firmware' : ', RustBoy wordmark and bundled boot without external firmware') : '') + ', grouped settings, keyboard isolation passed');
 } finally {
   socket?.close();
   browser.kill();

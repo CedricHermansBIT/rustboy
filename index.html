@@ -6,6 +6,7 @@
     <title>RustBoy</title>
     <style>
       :root {
+        color-scheme: dark;
         --app-vw: 100vw;
         --app-vh: 100vh;
       }
@@ -94,6 +95,7 @@
       /* Side panels */
       .side-panel {
         width: 220px; padding: 20px 18px; flex-shrink: 0;
+        max-height: 100%; overflow-y: auto;
         transition: opacity 0.25s, visibility 0.25s;
       }
       .side-panel.left { text-align: right; }
@@ -132,6 +134,45 @@
       .side-panel .key-row kbd.no-rebind:hover { background: #222; border-color: #444; }
       .side-panel .key-row .desc { color: #999; padding: 0 8px; }
       .debug-tools.hidden { display: none; }
+      .ui-button {
+        background: #1b201b; color: #b8c7b8; border: 1px solid #394539;
+        border-radius: 6px; padding: 8px 12px; font: inherit;
+        font-size: .8rem; cursor: pointer; transition: background .15s, border-color .15s;
+      }
+      .ui-button:hover { background: #242d24; color: #9be89b; border-color: #719071; }
+      .ui-button:focus-visible, .settings-panel select:focus-visible, .settings-section summary:focus-visible {
+        outline: 2px solid #9be89b; outline-offset: 3px;
+      }
+      .side-panel .ui-button { width: 100%; margin: 7px 0; text-align: left; }
+      .settings-panel {
+        margin: auto; width: min(520px, calc(100vw - 28px)); max-height: calc(100dvh - 40px);
+        padding: 22px; overflow-y: auto; background: #141814; color: #ccc;
+        border: 1px solid #465446; border-radius: 12px; box-shadow: 0 24px 80px #0009;
+        user-select: text;
+      }
+      .settings-panel::backdrop { background: #000b; }
+      .settings-panel header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+      .settings-panel h2 { font-size: 1.15rem; font-weight: 600; color: #9be89b; }
+      .settings-panel kbd { color: #c9d7c9; background: #232a23; border: 1px solid #455045; border-radius: 4px; padding: 3px 8px; font-size: .76rem; cursor: pointer; }
+      .settings-section { border-top: 1px solid #2d382d; padding: 13px 0; }
+      .settings-section:last-child { padding-bottom: 0; }
+      .settings-section > summary { cursor: pointer; color: #b8d2b8; font-size: .85rem; font-weight: 600; }
+      .settings-section > summary:hover { color: #9be89b; }
+      .settings-section[open] > summary { margin-bottom: 15px; }
+      .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 12px 0; font-size: .82rem; }
+      .settings-row select, #vram-view {
+        min-width: 0; max-width: 100%; background: #1b201b; color: #c9d7c9;
+        border: 1px solid #394539; border-radius: 6px; padding: 8px 10px; font: inherit; font-size: .8rem;
+      }
+      .settings-row select { width: 55%; }
+      .settings-panel input[type="checkbox"] { accent-color: #9be89b; width: 16px; height: 16px; }
+      .settings-panel .hint { color: #869586; font-size: .74rem; line-height: 1.55; margin: 8px 0; overflow-wrap: anywhere; }
+      .settings-panel .button-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+      #sgb-audio-settings { margin-top: 16px; padding-top: 15px; border-top: 1px solid #2d382d; }
+      #sgb-audio-settings summary { font-size: .82rem; color: #b8c7b8; cursor: pointer; }
+      #sgb-firmware-status { border-left: 2px solid #587258; padding-left: 10px; }
+      #vram-view { width: 100%; margin: 6px 0 10px; }
+      .side-panel label[for="vram-view"] { color: #899589; font-size: .75rem; }
 
       .reset-bindings {
         display: inline-block; margin-top: 4px;
@@ -404,7 +445,7 @@
       #rom-count {
         font-size: 0.7rem; color: #555; margin-bottom: 0.4rem;
       }
-      #rom-picker .hint { margin-top: 0.8rem; font-size: 0.75rem; color: #888; }
+      #rom-picker .hint { margin-top: 0.8rem; font-size: 0.75rem; color: #888; text-align: center; max-width: 90vw; }
 
       /* ROM picker tabs */
       #rom-tabs {
@@ -429,9 +470,9 @@
         border-color: #9be89b;
       }
 
-      #upload-area { margin-top: 0.6rem; width: 540px; max-width: 90vw; text-align: center; }
+      #upload-area { margin-top: 0.6rem; width: 540px; max-width: 90vw; display: flex; gap: 8px; }
       #upload-btn {
-        width: 100%; padding: 0.65rem 1rem;
+        flex: 1; min-width: 0; padding: 0.65rem 1rem;
         background: transparent; color: #9be89b;
         border: 1px dashed #4a4; border-radius: 6px;
         font-size: 0.95rem; cursor: pointer; font-family: inherit;
@@ -517,10 +558,12 @@
 
       #quick-toolbar {
         position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
-        display: flex; gap: 5px; z-index: 45; opacity: .35; transition: opacity .18s;
+        display: flex; flex-wrap: wrap; justify-content: center; max-width: calc(100vw - 24px);
+        gap: 5px; z-index: 45; opacity: .35; transition: opacity .18s;
       }
       #quick-toolbar:hover, #quick-toolbar:focus-within { opacity: 1; }
       #quick-toolbar button {
+        white-space: nowrap;
         background: rgba(10,10,10,.86); color: #aaa; border: 1px solid #3a3a3a;
         border-radius: 5px; padding: 5px 8px; cursor: pointer; font: 12px inherit;
       }
@@ -707,6 +750,7 @@
               <button id="touch-color-btn" type="button">Color</button>
               <button id="touch-reset-btn" type="button">Reset ROM</button>
               <button id="touch-reset-layout" type="button">Reset layout</button>
+              <button type="button" data-open-settings aria-haspopup="dialog">All settings</button>
             </div>
             <p class="touch-settings-hint">Turn on Move buttons, then drag a dotted handle. Opacity 0 hides the play buttons but keeps this menu button available.</p>
           </div>
@@ -747,18 +791,8 @@
           <div class="key-row" data-action="rom_picker"><kbd></kbd><span class="desc">ROM Picker</span></div>
           <div class="key-row" data-action="color_mode"><kbd></kbd><span class="desc">Color Mode</span></div>
           <div class="key-row" data-action="reset"><kbd></kbd><span class="desc">Reset</span></div>
-          <div class="key-row" data-action="debug_tools"><kbd></kbd><span class="desc">Debug tools</span></div>
-          <button id="debug-tools-toggle" type="button" aria-pressed="false">Show debug tools</button>
-        </div>
-        <div class="key-group">
-          <h3>Appearance</h3>
           <div class="key-row" data-action="hide_panels"><kbd></kbd><span class="desc">Hide Panels</span></div>
-          <label><input id="show-sgb-border" data-sgb-border type="checkbox" checked /> Show SGB decorations</label>
-          <label for="sgb-user-palette">SGB palette</label>
-          <select id="sgb-user-palette"><option value="game">Game palette</option><option value="warm">Warm</option><option value="cool">Cool</option><option value="gray">Grayscale</option></select>
-          <p class="hint">Games can request their own colors.</p>
-          <p id="controller-status" class="hint" role="status">Player 1: keyboard / touch. Connect a standard gamepad and press a button.</p>
-          <p class="hint">Up to four pads for SGB multiplayer. East = A, south = B; D-pad / left stick, Start / Select.</p>
+          <button class="ui-button" type="button" data-open-settings aria-haspopup="dialog">Settings <span aria-hidden="true">›</span></button>
         </div>
         <div class="key-group debug-tools hidden">
           <h3>Debug</h3>
@@ -796,6 +830,7 @@
       <button id="quick-mute" title="Mute audio">🔊</button>
       <button id="quick-fullscreen" title="Fullscreen">⛶</button>
       <button id="quick-saves" title="Save states and save data">Saves</button>
+      <button type="button" data-open-settings aria-haspopup="dialog">Settings</button>
     </div>
     <div id="toast-stack" aria-live="polite"></div>
 
@@ -831,32 +866,47 @@
       <ul id="rom-list"></ul>
       <div id="upload-area">
         <button id="upload-btn">📂 Upload ROM (.gb/.gbc)</button>
+        <button class="ui-button" type="button" data-open-settings aria-haspopup="dialog">Settings</button>
         <input type="file" id="rom-file-input" accept=".gb,.gbc,.bin" style="display:none" />
-      </div>
-      <details id="sgb-audio-settings">
-        <summary>SGB audio (optional firmware override)</summary>
-        <p class="hint">RustBoy's built-in replacement plays enhanced music and effects without firmware, using original synthesized instruments.
-          You can optionally supply SGB1/SGB2 SNES firmware for the original sound driver and instruments.
-          This is a .sfc/program.rom image, not a Game Boy boot ROM. Loading it restarts an active SGB game.
-          Firmware stays in this browser; RustBoy does not distribute it.</p>
-        <button id="sgb-firmware-load" type="button">Load SGB firmware</button>
-        <button id="sgb-firmware-clear" type="button">Forget firmware</button>
-        <input id="sgb-firmware-input" type="file" accept=".sfc,.smc,.rom,.bin" hidden />
-        <p id="sgb-firmware-status" role="status" class="hint">Using RustBoy's built-in SGB audio replacement</p>
-      </details>
-      <div id="local-hardware">
-      <label for="hardware-model">Hardware for next load</label>
-      <select id="hardware-model">
-        <option value="auto">Automatic (GB/GBC/SGB)</option>
-        <option value="dmg">Game Boy</option>
-        <option value="cgb">Game Boy Color</option>
-        <option value="sgb">Super Game Boy</option>
-      </select>
-      <p id="sgb-warning" class="hint">Automatic prefers SGB enhancements when supported. Choose CGB for native CGB colors.
-        SGB supports game palettes, borders and enhanced sound; original SGB sound firmware is an optional override. SNES game programs are not implemented.</p>
       </div>
       <p class="hint">Type to search · ←→↑↓ navigate · Enter load · Esc back · Drag & drop .gb/.gbc files</p>
     </div>
+
+    <dialog id="emulator-settings" class="settings-panel" aria-labelledby="settings-title">
+      <header><h2 id="settings-title">Settings</h2><button class="ui-button" id="settings-close" type="button">Done</button></header>
+      <details class="settings-section" open>
+        <summary>Appearance</summary>
+        <label class="settings-row" for="show-sgb-border"><span>SGB decorations</span><input id="show-sgb-border" data-sgb-border type="checkbox" checked /></label>
+        <label class="settings-row" for="sgb-user-palette"><span>SGB palette</span><select id="sgb-user-palette"><option value="game">Game palette</option><option value="warm">Warm</option><option value="cool">Cool</option><option value="gray">Grayscale</option></select></label>
+        <p class="hint">Palette choices apply to Super Game Boy games. Games can request their own colors.</p>
+      </details>
+      <details class="settings-section">
+        <summary>Controllers</summary>
+        <p id="controller-status" class="hint" role="status">Player 1: keyboard / touch. Connect a standard gamepad and press a button.</p>
+        <p class="hint">Up to four pads for SGB multiplayer. East = A, south = B; D-pad or left stick, Start and Select.</p>
+      </details>
+      <details class="settings-section">
+        <summary>Hardware &amp; firmware</summary>
+        <div id="local-hardware">
+          <label class="settings-row" for="hardware-model"><span>Next game's hardware</span><select id="hardware-model"><option value="auto">Automatic (GB/GBC/SGB)</option><option value="dmg">Game Boy</option><option value="cgb">Game Boy Color</option><option value="sgb">Super Game Boy</option></select></label>
+          <p id="sgb-warning" class="hint">Automatic uses cartridge enhancements. Select Game Boy Color for native CGB colors. Changes apply to the next game you load.</p>
+        </div>
+        <details id="sgb-audio-settings">
+          <summary>Optional SGB sound firmware</summary>
+          <p class="hint">Enhanced audio works with RustBoy's built-in instruments. Supply your own SGB1/SGB2 .sfc or program.rom for the original sound driver. This is not a Game Boy boot ROM; changing it restarts an active SGB game.</p>
+          <div class="button-row"><button class="ui-button" id="sgb-firmware-load" type="button">Load firmware</button><button class="ui-button" id="sgb-firmware-clear" type="button">Forget firmware</button></div>
+          <input id="sgb-firmware-input" type="file" accept=".sfc,.smc,.rom,.bin" hidden />
+          <p id="sgb-firmware-status" role="status" class="hint">Using RustBoy's built-in SGB audio replacement</p>
+          <p class="hint">Firmware stays in this browser and is never distributed by RustBoy.</p>
+        </details>
+      </details>
+      <details class="settings-section">
+        <summary>Developer tools</summary>
+        <p class="hint">Debugging stays off unless enabled. The backtick key toggles these tools; F5 remains browser refresh.</p>
+        <div class="settings-row key-row" data-action="debug_tools"><span class="desc">Toggle shortcut</span><kbd></kbd></div>
+        <button class="ui-button" id="debug-tools-toggle" type="button" aria-pressed="false">Show debug tools</button>
+      </details>
+    </dialog>
 
     <div id="save-manager" class="hidden" role="dialog" aria-modal="true" aria-labelledby="save-manager-title">
       <div class="save-panel">
@@ -1651,6 +1701,25 @@
       const listEl = document.getElementById('rom-list');
       let pickerOpen = true, selectedIdx = 0, Module = null;
 
+      const settingsDialog = document.querySelector('#emulator-settings');
+      let settingsWasPaused = false;
+      function openSettings() {
+        if (settingsDialog.open) return;
+        settingsWasPaused = !!Module?._is_paused?.();
+        Module?._set_paused?.(true);
+        settingsDialog.showModal();
+      }
+      document.querySelectorAll('[data-open-settings]').forEach(button => button.addEventListener('click', openSettings));
+      document.querySelector('#settings-close').addEventListener('click', () => settingsDialog.close());
+      settingsDialog.addEventListener('close', () => {
+        if (romLoaded && !settingsWasPaused) Module?._set_paused?.(false);
+        updatePauseButton();
+      });
+      settingsDialog.addEventListener('click', event => {
+        const rect = settingsDialog.getBoundingClientRect();
+        if (event.target === settingsDialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) settingsDialog.close();
+      });
+
       const debugHud = document.getElementById('debug-hud');
       let debugToolsEnabled = false;
       function toggleDebugTools() {
@@ -2385,6 +2454,7 @@
 
       window.addEventListener('keydown', (e) => {
         if (e.code === 'F5' || (e.ctrlKey || e.metaKey) && e.code === 'KeyR') return;
+        if (settingsDialog.open && !rebindAction) return;
         if (e.repeat && !['up','down','left','right','btn_a','btn_b'].includes(codeToAction[e.code])) return;
         // Rebind mode: capture next key
         if (rebindAction) {
@@ -2432,6 +2502,7 @@
 
       window.addEventListener('keyup', (e) => {
         if (e.code === 'F5') return;
+        if (settingsDialog.open) return;
         if (rebindAction) { e.preventDefault(); return; }
         const action = codeToAction[e.code];
         if (!action) return;
@@ -2462,11 +2533,12 @@
           _set_vram_view: Rustboy.set_vram_view,
           _set_sgb_sound_firmware: Rustboy.set_sgb_sound_firmware && (data => {
             const restarted = Rustboy.set_sgb_sound_firmware(data);
-            if (restarted) { clearControllerInputs(); applySgbUserPalette(); }
+            if (restarted) { clearControllerInputs(); applySgbUserPalette(); if (settingsDialog.open) Rustboy.set_paused(true); }
             return restarted;
           }),
           _clear_sgb_sound_firmware: Rustboy.clear_sgb_sound_firmware && (() => {
             Rustboy.clear_sgb_sound_firmware(); clearControllerInputs(); applySgbUserPalette();
+            if (settingsDialog.open) Rustboy.set_paused(true);
           }),
           _load_rom_data: data => {
             const model = hardware.value;
