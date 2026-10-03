@@ -6,6 +6,7 @@ pub mod bus;
 pub mod cpu;
 pub mod machine;
 mod peripherals;
+mod ppu;
 pub use backend::validate_cartridge;
 pub use machine::GameBoyAdvance;
 

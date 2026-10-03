@@ -214,34 +214,7 @@ impl GameBoyAdvance {
         }
     }
     fn render_line(&mut self) {
-        let control = self.bus.io16(0);
-        let mode = control & 7;
-        let y = usize::from(self.line);
-        let page = if control & 16 != 0 { 0xa000 } else { 0 };
-        for x in 0..240 {
-            let color = if control & 128 != 0 {
-                0x7fff
-            } else if control & 0x400 == 0 {
-                self.bus.peek16(0x05000000)
-            } else {
-                match mode {
-                    3 => self.bus.peek16(0x06000000 + ((y * 240 + x) * 2) as u32),
-                    4 => self
-                        .bus
-                        .peek16(0x05000000 + u32::from(self.bus.vram[page + y * 240 + x]) * 2),
-                    5 if x < 160 && y < 128 => self
-                        .bus
-                        .peek16(0x06000000 + (page + (y * 160 + x) * 2) as u32),
-                    _ => self.bus.peek16(0x05000000),
-                }
-            };
-            let pixel = (y * 240 + x) * 4;
-            for channel in 0..3 {
-                let value = ((color >> (channel * 5)) & 31) as u8;
-                self.pixels[pixel + channel] = (value << 3) | (value >> 2);
-            }
-            self.pixels[pixel + 3] = 255;
-        }
+        crate::ppu::render_line(&self.bus, self.line, &mut self.pixels);
     }
 }
 
