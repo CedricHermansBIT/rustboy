@@ -80,6 +80,16 @@ RUSTBOY_GBA_PROFILE="path/to/game.gba" RUSTBOY_NO_BOOT=1 node tests/browser_smok
 The optional profile reports achieved startup throughput and animation callback
 latencies at a requested 8x. It is not a benchmark of completed gameplay.
 
+Local measurement (2026-10-03): the same 1,800-frame FireRed startup probe with
+`perf record -g -e cpu-clock:u` took 14.261 s before and 11.626 s after these
+changes. Both executed 505,612,801 clocks / 159,868,346 instructions and reached
+the same final CPU/display state. In rebuilt Chromium WASM, the optional short
+startup profile at requested 8x achieved 1.75x with 16.7-ms median / 18.4-ms p95
+callbacks. These host/workload-specific measurements do not guarantee gameplay
+throughput. All 272 self-contained native checks and eleven browser scenarios
+pass, including responsive 8x synthetic GBA playback; GBA Clippy and WASM checks
+also pass. The separate local GB ROM suite was not rerun in this milestone.
+
 ### Timer/DMA milestone
 
 Four timers now implement reload/start semantics, all prescalers, overflow IRQs,
