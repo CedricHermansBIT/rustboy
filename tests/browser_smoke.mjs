@@ -505,11 +505,16 @@ try {
         if (++frames < 120) requestAnimationFrame(warmup); else resolve();
       });
     })`);
+    if (process.env.RUSTBOY_GBA_CPU_PROFILE) {
+      await call('Profiler.enable');
+      await call('Profiler.setSamplingInterval',{interval:1000});
+      await call('Profiler.start');
+    }
     const metrics = await evaluate(`(async () => {
       const wasm = await import('./out/rustboy.js');
       const clocks = () => {
         const bytes = Module._export_state();
-        if (![5, 6, 7, 8].includes(bytes[4])) throw new Error('Update profile snapshot offsets');
+        if (![5, 6, 7, 8, 9, 10, 11].includes(bytes[4])) throw new Error('Update profile snapshot offsets');
         return Number(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(301, true));
       };
       Module._set_paused(true);
@@ -540,6 +545,12 @@ try {
       assert.ok(metric.achievedSpeed > 0, 'GBA continues executing');
     }
     console.log('Local GBA fast-forward profile:', JSON.stringify(metrics));
+    if (process.env.RUSTBOY_GBA_CPU_PROFILE) {
+      const {profile}=await call('Profiler.stop');
+      await fs.writeFile(path.resolve(process.env.RUSTBOY_GBA_CPU_PROFILE),JSON.stringify(profile),{flag:'wx'});
+      await call('Profiler.disable');
+      console.log('Local GBA CPU profile written (exclusive create):',process.env.RUSTBOY_GBA_CPU_PROFILE);
+    }
   }
   if (process.env.RUSTBOY_SGB_FIRMWARE) {
     const firmware = path.resolve(process.env.RUSTBOY_SGB_FIRMWARE);
