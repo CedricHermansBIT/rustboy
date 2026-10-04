@@ -57,6 +57,37 @@ backend-only milestone.
 
 ## Remaining milestones
 
+### Disabled cartridge-prefetch timing correction
+
+ROM instructions with internal cycles now force the next opcode fetch to be
+non-sequential when WAITCNT's prefetch-enable bit is clear, following the
+documented prefetch-disable bug. This covers ARM/Thumb multiply, register shifts,
+loads, block loads, swaps and stack loads through the shared internal-cycle hook.
+Branch/exception refills clear the pending restart, and failed ARM conditions
+do not execute internal cycles. RAM instructions are unaffected. The restart
+is committed to the CPU's existing sequential-fetch state at the instruction
+boundary, so snapshots need no format change or new persistent scratch state.
+The specification is
+https://rust-console.github.io/gbatek-gbaonly/#prefetch-disable-bug
+
+Five original tests cover instruction families, enabled/disabled prefetch,
+RAM execution, ARM/Thumb PC-load refills, failed conditions and exact state replay.
+All 142 GBA unit / 16 original program / 3 EEPROM tests pass (161 GBA checks),
+with 336 self-contained native checks, JS/Python checks, warnings-denied GBA
+Clippy and the root WASM check. The rebuilt GBA browser scenario passes its
+upload, audio, fast-forward, all-six-mode graphics, BIOS, DMA-capture and sprite
+fixtures. The separate GB ROM suite and full eleven-scenario browser gate were
+not rerun for this GBA-only change. The enabled cartridge-prefetch queue, exact
+pipeline and general bus arbitration remain unimplemented; this correction
+does not claim full cartridge timing accuracy.
+FireRed's 1,800-frame startup probe remains fault-free at 505,612,800 clocks,
+159,995,145 instructions and 6,958 exceptions, ending at PC 08079754h in the
+same startup loop with display 9F40h. The 55-instruction difference from the
+previous milestone is consistent with charging additional disabled-prefetch
+waits, not an independently verified hardware trace. The probe took 11.833 s
+(2.55x native clock throughput), not a controlled performance comparison or
+complete-game validation.
+
 ### Per-scanline OBJ budget baseline
 
 The sprite compositor now limits each scanline to 1,210 rendering cycles,
