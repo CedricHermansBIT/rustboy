@@ -326,7 +326,7 @@ try {
       await until('Module._export_state()[333]===2');
       await evaluate('window.stoppedGbaState=Module._export_state(); Module._import_state(stoppedGbaState)');
       await new Promise(resolve=>setTimeout(resolve,150));
-      assert.equal(await evaluate('(() => { const s=Module._export_state(); return s[4]===10 && s[333]===2 && s.every((byte,n)=>byte===stoppedGbaState[n]); })()'),true,'STOP freezes all serialized clocks/state across browser callbacks and restore');
+      assert.equal(await evaluate('(() => { const s=Module._export_state(); return s[4]===11 && s[333]===2 && s.every((byte,n)=>byte===stoppedGbaState[n]); })()'),true,'STOP freezes all serialized clocks/state across browser callbacks and restore');
       await call('Input.dispatchKeyEvent',{type:'keyDown',key:'k',code:'KeyK'});
       await until('(() => { const s=Module._export_state(); return s[333]===0 && new DataView(s.buffer,s.byteOffset).getUint32(40,true)===0x77; })()');
       await call('Input.dispatchKeyEvent',{type:'keyUp',key:'k',code:'KeyK'});
@@ -431,10 +431,10 @@ try {
     await until("Module._get_state_id()!==beforePrefetchId && (()=>{ const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset,s.byteLength).getBigUint64(309,true)>=2n; })()");
     assert.equal(await evaluate(`(() => {
       Module._set_paused(true);
-      const s=Module._export_state(), at=s.length-19;
+      const s=Module._export_state(), at=s.length-24;
       const head=new DataView(s.buffer,s.byteOffset,s.byteLength).getUint32(at,true);
       Module._import_state(s);
-      return s[4]===10 && head>=0x08000100 && head<0x08000200 && s[at+4]<=8 && s[at+5]<3
+      return s[4]===11 && head>=0x08000100 && head<0x08000200 && s[at+4]<=8 && s[at+5]<3
         && Module._export_state().every((byte,n)=>byte===s[n]);
     })()`),true,'CPU-enabled cartridge prefetch state round-trips through WASM');
     console.log('GBA browser: original WAITCNT-enabled multiply cartridge executes and replays prefetch state');
@@ -472,6 +472,27 @@ try {
       assert.ok(await evaluate('Module._export_state().every((byte,n)=>byte===greenState[n])'),'green-swap state round-trips in WASM');
     }
     console.log('GBA browser: original cartridges verify Green Swap output and state replay');
+    for (const control of [0x0e000020,0x0e000000]) {
+      const rom=new Uint8Array(512), view=new DataView(rom.buffer), code=[], literals=[];
+      const load=(reg,value)=>{ literals.push([code.length,reg,value]);code.push(0); };
+      load(0,0x04ff0800);load(1,control);code.push(0xe5801000);
+      load(0,0x02000000);load(1,0x7fe0001f);code.push(0xe5801000);
+      load(0,control&0x20?0x02000000:0x03000000);code.push(0xe5901000);
+      load(0,0x06000000);code.push(0xe5801000);
+      load(0,0x04000000);load(1,0x403);code.push(0xe1c010b0,0xeafffffe);
+      for (const [at,reg,value] of literals) {
+        code[at]=0xe59f0000|(reg<<12)|(code.length*4-at*4-8);code.push(value);
+      }
+      view.setUint32(0,0xea00003e,true);rom[0xb2]=0x96;
+      code.forEach((word,n)=>view.setUint32(0x100+n*4,word,true));
+      const file=path.join(temporary,`original-memory-control-${control.toString(16)}.gba`);await fs.writeFile(file,rom);
+      await evaluate('window.beforeMemoryId=Module._get_state_id()');
+      await call('DOM.setFileInputFiles',{nodeId,files:[file]});
+      await until("Module._get_state_id()!==beforeMemoryId && (()=>{ const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset,s.byteLength).getBigUint64(309,true)>=2n; })()");
+      assert.deepEqual(await evaluate("Array.from(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,2,1).data)"),[255,0,0,255,0,255,255,255],'original cartridge reads normal/remapped RAM');
+      assert.equal(await evaluate('(() => { Module._set_paused(true); const s=Module._export_state(); Module._import_state(s); return new DataView(s.buffer,s.byteOffset,s.byteLength).getUint32(s.length-13,true); })()'),control,'memory-control register survives WASM state replay');
+    }
+    console.log('GBA browser: original memory-control cartridges verify 64K register mirror and RAM mapping');
   }
   // Explicit opt-in only. Never copies the supplied game into public assets.
   if (process.env.RUSTBOY_GBA_PROFILE) {

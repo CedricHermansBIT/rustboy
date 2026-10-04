@@ -201,6 +201,9 @@ impl Bus {
         }
     }
     pub(crate) fn dma_unit(&mut self) -> bool {
+        if self.memory_locked {
+            return false;
+        }
         self.request_fifo_dma();
         let Some(n) = self.dma.iter().position(|d| d.active) else {
             return false;
@@ -243,6 +246,11 @@ impl Bus {
             self.write16(d.destination, value, !d.first);
         }
         self.bios_access = bios_access;
+        if self.memory_locked {
+            // The transfer did not complete: retain its counters and do not
+            // signal completion or dispatch another channel.
+            return true;
+        }
         let move_address = |a: u32, mode: u16| match mode {
             0 | 3 => a.wrapping_add(width),
             1 => a.wrapping_sub(width),

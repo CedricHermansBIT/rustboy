@@ -67,7 +67,7 @@ impl GameBoyAdvance {
             .to_owned()
     }
     pub fn step(&mut self) -> u64 {
-        if self.fault.is_some() {
+        if self.fault.is_some() || self.bus.memory_locked {
             return 0;
         }
         // STOP gates the system clock: even an already active DMA must wait.

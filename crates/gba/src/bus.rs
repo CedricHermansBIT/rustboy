@@ -2,8 +2,12 @@
 use crate::cpu::Memory;
 use crate::peripherals::{Dma, Timer};
 pub(crate) const OPEN_STATE_BYTES: usize = 5;
+pub(crate) const MEMORY_STATE_BYTES: usize = 5;
+pub(crate) const MEMORY_CONTROL_MASK: u32 = 0xff00002f;
 
 pub struct Bus {
+    pub(crate) memory_control: u32,
+    pub(crate) memory_locked: bool,
     pub(crate) bios: Vec<u8>,
     pub(crate) replacement_bios: bool,
     pub(crate) bios_access: bool,
@@ -48,6 +52,8 @@ impl Bus {
         let replacement_bios = bios.is_none();
         let backup = crate::backup::Backup::detect(&rom);
         let mut bus = Self {
+            memory_control: 0x0d000020,
+            memory_locked: false,
             bios: bios.unwrap_or_else(crate::bios::irq_firmware),
             replacement_bios,
             bios_access: !replacement_bios,
@@ -143,6 +149,12 @@ impl Bus {
     fn unused(address: u32) -> bool {
         (0x4000..0x02000000).contains(&address) || address >= 0x10000000
     }
+    fn memory_control_address(address: u32) -> bool {
+        address >> 24 == 4 && address & 0xfffc == 0x800
+    }
+    fn ram_disabled(&self, address: u32) -> bool {
+        matches!(address >> 24, 2 | 3) && self.memory_control & 1 != 0
+    }
     /// Halfwords which drive the I/O bus (some bits may still be write-only).
     /// Internal register storage remains separate for the PPU/APU/scheduler.
     fn readable_io(offset: usize) -> bool {
@@ -161,16 +173,17 @@ impl Bus {
         self.flush_sound_read(address);
         let base = address & !3;
         let offset = (base & 0xffffff) as usize;
-        let value =
-            if offset < 0x400 && (Self::readable_io(offset) || Self::readable_io(offset + 2)) {
-                // A driven word zeroes its unreadable halfword/byte lanes. A wholly
-                // write-only/unused word instead exposes the CPU prefetch value.
-                self.peek32(base)
-            } else if self.cpu_data_access {
-                self.open_value()
-            } else {
-                0
-            };
+        let value = if Self::memory_control_address(base)
+            || offset < 0x400 && (Self::readable_io(offset) || Self::readable_io(offset + 2))
+        {
+            // A driven word zeroes its unreadable halfword/byte lanes. A wholly
+            // write-only/unused word instead exposes the CPU prefetch value.
+            self.peek32(base)
+        } else if self.cpu_data_access {
+            self.open_value()
+        } else {
+            0
+        };
         self.record_data(value);
         Some(value)
     }
@@ -226,6 +239,12 @@ impl Bus {
     }
     /// Non-mutating debugger read: deliberately bypasses CPU BIOS protection.
     pub fn peek8(&self, address: u32) -> u8 {
+        if self.ram_disabled(address) {
+            return 0;
+        }
+        if Self::memory_control_address(address) {
+            return (self.memory_control >> ((address & 3) * 8)) as u8;
+        }
         if self.eeprom_address(address) {
             return if address & 1 == 0 {
                 self.backup.eeprom.peek() as u8
@@ -236,6 +255,7 @@ impl Bus {
         let index = address as usize;
         match address >> 24 {
             0 if address < 0x4000 => self.bios.get(index).copied().unwrap_or(0),
+            2 if self.memory_control & 0x20 == 0 => self.iwram[index & 0x7fff],
             2 => self.ewram[index & 0x3ffff],
             3 => self.iwram[index & 0x7fff],
             4 if index & 0xffffff < 0x400 => {
@@ -282,9 +302,13 @@ impl Bus {
     /// for I/O, serial devices, absent ROM and mirror/region boundary crossings.
     #[inline]
     fn linear_bytes<const N: usize>(&self, address: u32) -> Option<[u8; N]> {
+        if self.ram_disabled(address) {
+            return None;
+        }
         let index = address as usize;
         let (bytes, offset): (&[u8], usize) = match address >> 24 {
             0 if address < 0x4000 => (&self.bios, index),
+            2 if self.memory_control & 0x20 == 0 => (&self.iwram, index & 0x7fff),
             2 => (&self.ewram, index & 0x3ffff),
             3 => (&self.iwram, index & 0x7fff),
             5 => (&self.palette, index & 0x3ff),
@@ -306,12 +330,19 @@ impl Bus {
         bytes.get(offset..offset + N)?.try_into().ok()
     }
     fn charge(&mut self, address: u32, width: u32, sequential: bool) {
+        if self.memory_locked {
+            return;
+        }
         let clocks = match address >> 24 {
-            2 => {
-                if width == 4 {
-                    6
+            2 if self.memory_control & 0x21 == 0x20 => {
+                let setting = self.memory_control >> 24 & 15;
+                if setting == 15 {
+                    // There is no finite bus completion at this setting. Stop
+                    // at the machine boundary instead of charging zero cycles.
+                    self.memory_locked = true;
+                    1
                 } else {
-                    3
+                    u64::from(16 - setting) * if width == 4 { 2 } else { 1 }
                 }
             }
             5..=6 => {
@@ -350,8 +381,19 @@ impl Bus {
         }
     }
     fn put8(&mut self, address: u32, value: u8) {
+        if self.ram_disabled(address) || self.memory_locked {
+            return;
+        }
+        if Self::memory_control_address(address) {
+            let shift = (address & 3) * 8;
+            self.memory_control = ((self.memory_control & !(0xff << shift))
+                | (u32::from(value) << shift))
+                & MEMORY_CONTROL_MASK;
+            return;
+        }
         let index = address as usize;
         match address >> 24 {
+            2 if self.memory_control & 0x20 == 0 => self.iwram[index & 0x7fff] = value,
             2 => self.ewram[index & 0x3ffff] = value,
             3 => self.iwram[index & 0x7fff] = value,
             4 if index & 0xffffff < 0x400 => {
@@ -478,10 +520,13 @@ impl Memory for Bus {
     }
     fn read8(&mut self, address: u32) -> u8 {
         self.charge(address, 1, false);
+        if self.memory_locked {
+            return 0;
+        }
         if let Some(value) = self.io_read_word(address) {
             return (value >> ((address & 3) * 8)) as u8;
         }
-        if Self::unused(address) && self.cpu_data_access {
+        if (Self::unused(address) || self.ram_disabled(address)) && self.cpu_data_access {
             let value = self.open_value();
             self.record_data(value);
             return (value >> ((address & 3) * 8)) as u8;
@@ -498,10 +543,13 @@ impl Memory for Bus {
     }
     fn read16(&mut self, address: u32, sequential: bool) -> u16 {
         self.charge(address, 2, sequential);
+        if self.memory_locked {
+            return 0;
+        }
         if let Some(value) = self.io_read_word(address) {
             return (value >> ((address & 2) * 8)) as u16;
         }
-        if Self::unused(address) && self.cpu_data_access {
+        if (Self::unused(address) || self.ram_disabled(address)) && self.cpu_data_access {
             let value = self.open_value();
             self.record_data(value);
             return (value >> ((address & 2) * 8)) as u16;
@@ -528,10 +576,13 @@ impl Memory for Bus {
     }
     fn read32(&mut self, address: u32, sequential: bool) -> u32 {
         self.charge(address, 4, sequential);
+        if self.memory_locked {
+            return 0;
+        }
         if let Some(value) = self.io_read_word(address) {
             return value;
         }
-        if Self::unused(address) && self.cpu_data_access {
+        if (Self::unused(address) || self.ram_disabled(address)) && self.cpu_data_access {
             let value = self.open_value();
             self.record_data(value);
             return value;
@@ -553,6 +604,9 @@ impl Memory for Bus {
     }
     fn write8(&mut self, address: u32, value: u8) {
         self.charge(address, 1, false);
+        if self.memory_locked {
+            return;
+        }
         match address >> 24 {
             5 => {
                 self.put8(address & !1, value);
@@ -578,6 +632,9 @@ impl Memory for Bus {
     }
     fn write16(&mut self, address: u32, value: u16, sequential: bool) {
         self.charge(address, 2, sequential);
+        if self.memory_locked {
+            return;
+        }
         if self.eeprom_address(address) {
             self.backup.eeprom_bit(value);
             return;
@@ -597,6 +654,9 @@ impl Memory for Bus {
     }
     fn write32(&mut self, address: u32, value: u32, sequential: bool) {
         self.charge(address, 4, sequential);
+        if self.memory_locked {
+            return;
+        }
         if (14..=15).contains(&(address >> 24)) {
             self.backup
                 .write(address, value.rotate_right((address & 3) * 8) as u8);
@@ -621,6 +681,72 @@ impl Memory for Bus {
         if clocks != 0 && self.gamepak_instruction && self.io16(0x204) & 0x4000 == 0 {
             self.restart_fetch = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod memory_control_tests {
+    use super::*;
+    fn bus() -> Bus {
+        Bus::new(vec![0; 192], None).unwrap()
+    }
+    #[test]
+    fn register_reset_masks_and_all_64k_mirrors() {
+        let mut b = bus();
+        for mirror in 0..256 {
+            let address = 0x04000800 + mirror * 0x10000;
+            assert_eq!(b.read32(address, false), 0x0d000020);
+        }
+        b.write32(0x04ff0800, u32::MAX, false);
+        assert_eq!(b.peek32(0x04000800), MEMORY_CONTROL_MASK);
+        b.write16(0x04010800, 0x20, false);
+        b.write8(0x04020803, 0x0e);
+        assert_eq!(b.peek32(0x04030800), 0x0e000020);
+        assert_eq!(b.peek32(0x04000804), 0);
+        assert_eq!(b.peek32(0x04001800), 0);
+    }
+    #[test]
+    fn ewram_wait_settings_charge_both_halves_and_mapped_iwram_is_fast() {
+        let mut b = bus();
+        for setting in 0..15 {
+            b.write32(0x04000800, setting << 24 | 0x20, false);
+            b.take_cycles();
+            b.read8(0x02000000);
+            assert_eq!(b.take_cycles(), u64::from(16 - setting));
+            b.read16(0x02fffffe, true);
+            assert_eq!(b.take_cycles(), u64::from(16 - setting));
+            b.write32(0x02000000, 0x12345678, false);
+            assert_eq!(b.take_cycles(), u64::from(16 - setting) * 2);
+            b.read32(0x02000000, true);
+            assert_eq!(b.take_cycles(), u64::from(16 - setting) * 2);
+        }
+        b.write32(0x04000800, 0x0d000000, false);
+        b.take_cycles();
+        b.read32(0x02000000, false);
+        assert_eq!(b.take_cycles(), 1);
+    }
+    #[test]
+    fn ram_mapping_preserves_hidden_ewram_and_disabled_ram_uses_cpu_open_bus() {
+        let mut b = bus();
+        b.write32(0x02000000, 0x12345678, false);
+        b.write32(0x03000000, 0xabcd5678, false);
+        b.write32(0x04000800, 0x0d000000, false);
+        assert_eq!(b.peek32(0x02ff8000), 0xabcd5678);
+        b.write16(0x02008000, 0x4321, false);
+        assert_eq!(b.peek32(0x03000000), 0xabcd4321);
+        b.write32(0x04000800, 0x0d000021, false);
+        b.rom[8..12].copy_from_slice(&0xe3a01234u32.to_le_bytes());
+        b.instruction_context(0x08000000, false);
+        for address in [0x02000000, 0x03000000] {
+            assert_eq!(b.read32(address, false), 0xe3a01234);
+            assert_eq!(b.read16(address + 2, false), 0xe3a0);
+            assert_eq!(b.read8(address + 1), 0x12);
+            b.write32(address, 0, false);
+            assert_eq!(b.peek32(address), 0);
+        }
+        b.write32(0x04000800, 0x0d000020, false);
+        assert_eq!(b.peek32(0x02000000), 0x12345678);
+        assert_eq!(b.peek32(0x03000000), 0xabcd4321);
     }
 }
 

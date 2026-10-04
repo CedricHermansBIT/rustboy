@@ -40,7 +40,7 @@ impl Emulator for GameBoyAdvance {
         let ticks = GameBoyAdvance::run(self, ticks);
         RunResult {
             ticks,
-            reason: if self.fault.is_some() {
+            reason: if self.fault.is_some() || self.bus.memory_locked {
                 StopReason::Paused
             } else {
                 StopReason::BudgetExhausted
@@ -55,7 +55,7 @@ impl Emulator for GameBoyAdvance {
         }
     }
     fn paused(&self) -> bool {
-        self.paused || self.fault.is_some()
+        self.paused || self.fault.is_some() || self.bus.memory_locked
     }
     fn set_paused(&mut self, value: bool) {
         self.paused = value;
@@ -186,7 +186,7 @@ fn put(data: &mut Vec<u8>, value: u64, n: usize) {
 }
 impl GameBoyAdvance {
     fn snapshot(&self) -> Vec<u8> {
-        let mut data = b"RBGA\x0a\0\0\0".to_vec();
+        let mut data = b"RBGA\x0b\0\0\0".to_vec();
         put(&mut data, hash(&self.bus.rom), 8);
         put(&mut data, hash(&self.bus.bios), 8);
         for register in self
@@ -313,6 +313,8 @@ impl GameBoyAdvance {
         put(&mut data, u64::from(self.bus.prefetch.elapsed), 1);
         put(&mut data, u64::from(self.bus.previous_data), 4);
         put(&mut data, u64::from(self.bus.previous_data_valid), 1);
+        put(&mut data, u64::from(self.bus.memory_control), 4);
+        put(&mut data, u64::from(self.bus.memory_locked), 1);
         let checksum = hash(&data);
         put(&mut data, checksum, 8);
         data
@@ -325,7 +327,7 @@ impl GameBoyAdvance {
                     + crate::psg::STATE_BYTES
                     + 5
                     + crate::prefetch::STATE_BYTES
-                    + crate::bus::OPEN_STATE_BYTES
+                    + (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES)
                     + crate::apu::MAX_SAMPLES * 8
                     + 0x20000
         {
@@ -350,6 +352,7 @@ impl GameBoyAdvance {
             b"RBGA\x08\0\0\0" => 8,
             b"RBGA\x09\0\0\0" => 9,
             b"RBGA\x0a\0\0\0" => 10,
+            b"RBGA\x0b\0\0\0" => 11,
             _ => return Err("Unsupported GBA state version".into()),
         };
         if reader.int(8)? != hash(&self.bus.rom) || reader.int(8)? != hash(&self.bus.bios) {
@@ -604,6 +607,15 @@ impl GameBoyAdvance {
             next.bus.previous_data = reader.int(4)? as u32;
             next.bus.previous_data_valid = reader.bool()?;
         }
+        if version >= 11 {
+            next.bus.memory_control = reader.int(4)? as u32;
+            next.bus.memory_locked = reader.bool()?;
+            if next.bus.memory_control & !crate::bus::MEMORY_CONTROL_MASK != 0
+                || next.bus.memory_locked && next.bus.memory_control & 0x0f000021 != 0x0f000020
+            {
+                return Err("Invalid GBA internal memory control".into());
+            }
+        }
         if next.line >= 228
             || next.line_clocks >= 1232
             || next.bus.clocks > 1_000_000_000
@@ -624,6 +636,98 @@ mod tests {
         let mut rom = vec![0; 192];
         rom[..4].copy_from_slice(&0xeafffffeu32.to_le_bytes());
         GameBoyAdvance::new(rom, None).unwrap()
+    }
+    #[test]
+    fn memory_control_replays_and_version_ten_migrates_to_reset_mapping() {
+        use crate::cpu::Memory;
+        let mut m = machine();
+        m.bus.write32(0x04000800, 0xae000000, false);
+        m.bus.write32(0x02000000, 0x12345678, false);
+        let saved = m.export_state();
+        m.bus.write32(0x04000800, 0x0d000020, false);
+        m.import_state(&saved).unwrap();
+        assert_eq!(m.bus.peek32(0x04010800), 0xae000000);
+        assert_eq!(m.bus.peek32(0x02000000), 0x12345678);
+        m.run_frame();
+        let expected = m.export_state();
+        m.import_state(&saved).unwrap();
+        m.run_frame();
+        assert_eq!(m.export_state(), expected);
+        for (lane, value) in [(0, 0x10), (4, 2), (4, 1)] {
+            let mut invalid = saved.clone();
+            let at = invalid.len() - 8 - crate::bus::MEMORY_STATE_BYTES;
+            invalid[at + lane] = value;
+            let checksum_at = invalid.len() - 8;
+            let checksum = hash(&invalid[..checksum_at]);
+            invalid[checksum_at..].copy_from_slice(&checksum.to_le_bytes());
+            assert!(m.import_state(&invalid).is_err());
+            assert_eq!(m.export_state(), expected);
+        }
+        let mut old = saved[..saved.len() - 8 - crate::bus::MEMORY_STATE_BYTES].to_vec();
+        old[4] = 10;
+        let checksum = hash(&old);
+        put(&mut old, checksum, 8);
+        m.import_state(&old).unwrap();
+        assert_eq!(m.bus.peek32(0x04000800), 0x0d000020);
+        assert!(!m.bus.memory_locked);
+        assert_eq!(m.bus.peek32(0x03000000), 0x12345678);
+        assert_eq!(m.bus.peek32(0x02000000), 0);
+    }
+    #[test]
+    fn invalid_ewram_wait_latches_lockup_and_replays_until_reset() {
+        use crate::cpu::Memory;
+        let mut m = machine();
+        m.bus.write32(0x04000800, 0x0f000020, false);
+        assert!(!m.bus.memory_locked); // No pending EWRAM transaction yet.
+        m.bus.write32(0x02000000, 0x12345678, false);
+        assert!(m.bus.memory_locked);
+        assert!(m.paused());
+        m.set_paused(false);
+        assert!(m.paused());
+        assert_eq!(m.bus.ewram[..4], [0; 4]);
+        let saved = m.export_state();
+        assert_eq!(m.run_frame(), 0);
+        assert_eq!(m.export_state(), saved);
+        m.import_state(&saved).unwrap();
+        assert_eq!(m.run_frame(), 0);
+        assert_eq!(m.export_state(), saved);
+        m.reset();
+        assert!(!m.bus.memory_locked);
+        assert_eq!(m.bus.peek32(0x04000800), 0x0d000020);
+        assert!(m.run_frame() > 0);
+    }
+    #[test]
+    fn dma_uses_programmable_ram_timing_and_does_not_complete_locked_transfer() {
+        use crate::cpu::Memory;
+        for (control, clocks) in [(0x0d000020, 9), (0x0e000020, 7), (0x0e000000, 4)] {
+            let mut m = machine();
+            m.bus.write32(0x04000800, control, false);
+            m.bus.write32(0x02000000, 0x12345678, false);
+            m.bus.write32(0x040000b0, 0x02000000, false);
+            m.bus.write32(0x040000b4, 0x03000100, false);
+            m.bus.write32(0x040000b8, 0x84000001, false);
+            m.bus.take_cycles();
+            assert!(m.bus.dma_unit());
+            assert_eq!(m.bus.take_cycles(), clocks);
+            assert_eq!(m.bus.peek32(0x03000100), 0x12345678);
+        }
+        let mut m = machine();
+        m.bus.write32(0x040000b0, 0x02000000, false);
+        m.bus.write32(0x040000b4, 0x03000100, false);
+        m.bus.write32(0x040000b8, 0xc4000001, false);
+        m.bus.write32(0x04000800, 0x0f000020, false);
+        m.bus.take_cycles();
+        assert!(m.step() > 0);
+        assert!(m.bus.memory_locked);
+        assert_eq!(m.bus.dma[0].remaining, 1);
+        assert!(m.bus.dma[0].active);
+        assert_eq!(m.bus.io16(0x202) & 0x100, 0);
+        assert_eq!(m.bus.peek32(0x03000100), 0);
+        let state = m.export_state();
+        assert_eq!(m.step(), 0);
+        m.import_state(&state).unwrap();
+        assert_eq!(m.step(), 0);
+        assert_eq!(m.export_state(), state);
     }
     #[test]
     fn green_swap_register_and_output_replay_from_existing_state_format() {
@@ -663,14 +767,16 @@ mod tests {
         m.step();
         assert_eq!(m.export_state(), expected);
         let mut invalid = expected.clone();
-        let at = invalid.len() - 9;
+        let at = invalid.len() - 9 - crate::bus::MEMORY_STATE_BYTES;
         invalid[at] = 2;
         let checksum_at = invalid.len() - 8;
         let checksum = hash(&invalid[..checksum_at]);
         invalid[checksum_at..].copy_from_slice(&checksum.to_le_bytes());
         assert!(m.import_state(&invalid).is_err());
         assert_eq!(m.export_state(), expected);
-        let mut old = saved[..saved.len() - 8 - crate::bus::OPEN_STATE_BYTES].to_vec();
+        let mut old = saved
+            [..saved.len() - 8 - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES)]
+            .to_vec();
         old[4] = 9;
         let checksum = hash(&old);
         put(&mut old, checksum, 8);
@@ -701,8 +807,10 @@ mod tests {
             m.import_state(&saved).unwrap();
             for offset in [0, 4, 5] {
                 let mut invalid = saved.clone();
-                let at =
-                    invalid.len() - 8 - crate::prefetch::STATE_BYTES - crate::bus::OPEN_STATE_BYTES;
+                let at = invalid.len()
+                    - 8
+                    - crate::prefetch::STATE_BYTES
+                    - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES);
                 invalid[at + offset] = 255;
                 let checksum_at = invalid.len() - 8;
                 let checksum = hash(&invalid[..checksum_at]);
@@ -712,8 +820,10 @@ mod tests {
             }
         }
         let saved = m.export_state();
-        let mut old = saved
-            [..saved.len() - 8 - crate::prefetch::STATE_BYTES - crate::bus::OPEN_STATE_BYTES]
+        let mut old = saved[..saved.len()
+            - 8
+            - crate::prefetch::STATE_BYTES
+            - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES)]
             .to_vec();
         old[4] = 8;
         let checksum = hash(&old);
@@ -778,15 +888,20 @@ mod tests {
         m.bus.take_cycles();
         assert_eq!(m.export_state(), saved);
         let mut invalid = saved.clone();
-        let at = invalid.len() - 9 - crate::prefetch::STATE_BYTES - crate::bus::OPEN_STATE_BYTES;
+        let at = invalid.len()
+            - 9
+            - crate::prefetch::STATE_BYTES
+            - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES);
         invalid[at] = 2;
         let checksum_at = invalid.len() - 8;
         let checksum = hash(&invalid[..checksum_at]);
         invalid[checksum_at..].copy_from_slice(&checksum.to_le_bytes());
         assert!(m.import_state(&invalid).is_err());
         assert_eq!(m.export_state(), saved);
-        let mut old = saved
-            [..saved.len() - 13 - crate::prefetch::STATE_BYTES - crate::bus::OPEN_STATE_BYTES]
+        let mut old = saved[..saved.len()
+            - 13
+            - crate::prefetch::STATE_BYTES
+            - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES)]
             .to_vec();
         old[4] = 7;
         let checksum = hash(&old);
@@ -800,7 +915,7 @@ mod tests {
         let mut m = machine();
         m.bus.enter_low_power(0x80);
         let saved = m.export_state();
-        assert_eq!(saved[4], 10);
+        assert_eq!(saved[4], 11);
         m.bus.stopped = false;
         m.import_state(&saved).unwrap();
         assert!(m.bus.stopped);
@@ -808,8 +923,10 @@ mod tests {
         assert_eq!(m.run(crate::FRAME_CYCLES), 0);
         assert_eq!(m.export_state(), saved);
         // V6 states may only encode a boolean HALT flag, and lack BIOS state.
-        let mut old = saved
-            [..saved.len() - 13 - crate::prefetch::STATE_BYTES - crate::bus::OPEN_STATE_BYTES]
+        let mut old = saved[..saved.len()
+            - 13
+            - crate::prefetch::STATE_BYTES
+            - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES)]
             .to_vec();
         old[4] = 6;
         let checksum = hash(&old);
@@ -822,8 +939,10 @@ mod tests {
         m.bus.stopped = false;
         m.bus.halted = true;
         let current = m.export_state();
-        let mut old = current
-            [..current.len() - 13 - crate::prefetch::STATE_BYTES - crate::bus::OPEN_STATE_BYTES]
+        let mut old = current[..current.len()
+            - 13
+            - crate::prefetch::STATE_BYTES
+            - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES)]
             .to_vec();
         old[4] = 6;
         let checksum = hash(&old);
@@ -864,7 +983,7 @@ mod tests {
             - crate::psg::STATE_BYTES
             - 13
             - crate::prefetch::STATE_BYTES
-            - crate::bus::OPEN_STATE_BYTES]
+            - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES)]
             .to_vec();
         old[4] = 5;
         let checksum = hash(&old);
@@ -878,7 +997,7 @@ mod tests {
             - crate::psg::STATE_BYTES
             - 13
             - crate::prefetch::STATE_BYTES
-            - crate::bus::OPEN_STATE_BYTES;
+            - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES);
         corrupt[position + 56] = 1; // Active voice with a zero period counter.
         let length = corrupt.len();
         let checksum = hash(&corrupt[..length - 8]);
@@ -931,7 +1050,7 @@ mod tests {
             - 156
             - crate::psg::STATE_BYTES
             - crate::prefetch::STATE_BYTES
-            - crate::bus::OPEN_STATE_BYTES;
+            - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES);
         invalid[position..position + 4].copy_from_slice(&i32::MAX.to_le_bytes());
         let length = invalid.len();
         let checksum = hash(&invalid[..length - 8]);
@@ -1066,7 +1185,7 @@ mod tests {
                 + 233
                 + crate::psg::STATE_BYTES
                 + crate::prefetch::STATE_BYTES
-                + crate::bus::OPEN_STATE_BYTES
+                + (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES)
         );
         for (offset, bytes) in [
             (348, &64u64.to_le_bytes()[..]),
