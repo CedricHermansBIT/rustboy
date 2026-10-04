@@ -444,7 +444,7 @@ impl Cpu {
                     14 => (a & !b, carry, false),
                     _ => (!b, carry, false),
                 };
-                if flags && !(!(8..12).contains(&opcode) && rd == 15) {
+                if flags && rd != 15 {
                     self.nz(value);
                     self.flag(C, c);
                     if (2..=7).contains(&opcode) || opcode == 10 || opcode == 11 {
@@ -453,6 +453,14 @@ impl Cpu {
                 }
                 if !(8..12).contains(&opcode) {
                     self.write_result(bus, rd, value, flags);
+                } else if rd == 15 {
+                    // ARM7TDMI also decodes the otherwise ignored Rd on
+                    // TST/TEQ/CMP/CMN. Rd=PC restores SPSR without a PC write
+                    // or pipeline refill (legacy PSR-compare encoding).
+                    let mode = bank(self.cpsr).unwrap();
+                    if mode != 0 && self.set_cpsr(self.spsr[mode]).is_err() {
+                        self.undefined(bus);
+                    }
                 }
             }
             2 | 3 => {

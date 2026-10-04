@@ -273,7 +273,9 @@ impl Cpu {
                             self.branch(bus, pc, false);
                             bus.internal(1);
                         } else {
-                            bus.write32(base & !3, self.operand(15, 0), false);
+                            // Empty-list STM transfers PC with the store
+                            // pipeline offset (instruction address + 6).
+                            bus.write32(base & !3, self.operand(15, 2), false);
                         }
                         self.r[base_reg] = final_base;
                         return;

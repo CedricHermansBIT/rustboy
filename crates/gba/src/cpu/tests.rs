@@ -61,6 +61,50 @@ fn cpu() -> Cpu {
     c
 }
 #[test]
+fn arm_psr_compares_restore_saved_flags_and_banks_without_pipeline_refill() {
+    for opcode in 8..12 {
+        for mode in [0x11, 0x12, 0x13, 0x17, 0x1b] {
+            let mut c = cpu();
+            c.r[8] = 32;
+            c.r[13] = 0x1000;
+            c.set_cpsr(mode | N).unwrap();
+            c.r[8] = 64;
+            c.r[13] = 0x2000;
+            c.spsr[bank(mode).unwrap()] = 0x1f | C | V;
+            let op = 0xe010f000 | (opcode << 21); // Test r0,r0 with Rd=15.
+            let mut ram = Ram::arm(&[op, 0xe3a01055]);
+            c.step(&mut ram);
+            assert_eq!(c.cpsr(), 0x1f | C | V);
+            assert_eq!(c.r[15], 4);
+            assert_eq!(ram.clocks, 4, "must not refill the pipeline");
+            assert_eq!(c.r[13], 0x1000);
+            assert_eq!(c.r[8], if mode == 0x11 { 32 } else { 64 });
+            assert_eq!(c.exceptions, 0);
+            c.step(&mut ram);
+            assert_eq!(c.r[1], 0x55);
+        }
+    }
+}
+
+#[test]
+fn thumb_empty_stm_stores_pc_plus_six_and_writes_back_sixty_four_bytes() {
+    for base_register in 0..8 {
+        let mut c = cpu();
+        c.set_cpsr(0x3f).unwrap();
+        c.r[base_register] = 0x101;
+        let mut ram = Ram::thumb(&[0xc000 | ((base_register as u16) << 8), 0x46c0]);
+        c.step(&mut ram);
+        assert_eq!(c.r[base_register], 0x141);
+        assert_eq!(
+            u32::from_le_bytes(ram.data[0x100..0x104].try_into().unwrap()),
+            6
+        );
+        assert_eq!(c.r[15], 2);
+        assert_eq!(c.cpsr(), 0x3f);
+        assert_eq!(c.exceptions, 0);
+    }
+}
+#[test]
 fn arithmetic_against_wide_oracle() {
     let cases = [0, 1, 0x7fffffff, 0x80000000, 0xfffffffe, 0xffffffff];
     for a in cases {
