@@ -23,7 +23,8 @@ commercial game, or Nintendo firmware is included.
 This is not yet pipeline/bus-cycle accurate. Branch refill accesses charge wait
 states but do not cache a real pipeline. ROM prefetch now has an instruction-level
 queue baseline (below); unused-memory CPU reads now have an open-bus baseline.
-Write-only/unused I/O, DMA open bus and general bus arbitration remain pending.
+Write-only/unused I/O now has a register-readability baseline (below).
+DMA open bus and general bus arbitration remain pending.
 BIOS read protection has a functional baseline
 (below), not an exact pipeline oracle. Reserved/unpredictable
 instructions are not a complete hardware oracle. Scanline graphics and Direct
@@ -58,6 +59,61 @@ The local ROM acceptance suite is separate and has not been rerun for this
 backend-only milestone.
 
 ## Remaining milestones
+
+### CPU I/O readability and open-bus baseline
+
+CPU reads now distinguish readable I/O halfwords from write-only register
+storage and unused slots. Wholly write-only/unused 32-bit words expose the
+existing ARM/Thumb prefetch model; mixed words return readable register data
+with zero in unreadable lanes. DMA count/control pairs therefore return zero
+for the count and the control in the upper halfword. WAITCNT/IME return zero
+in their unused partner halfwords; POSTFLG does not expose the write-only
+HALTCNT byte. Normal I/O is not mirrored elsewhere in the 04h address region.
+Debugger peeks return zero for unreadable storage, while internal `io16` reads
+retain the PPU/APU/scheduler's actual written values. Sound masks/deferred reads
+and timer counters remain handled by their existing peripherals. Mapped I/O
+loads also retain the full I/O bus word for subsequent Thumb IWRAM open reads.
+
+The map and mixed-word rule follow GBATEK's I/O map and unpredictable-read
+sections:
+https://rust-console.github.io/gbatek-gbaonly/#gba-io-map
+https://rust-console.github.io/gbatek-gbaonly/#reading-from-unused-or-write-only-io-ports
+GBATEK's MOSAIC example calls it readable, contradicting its own write-only
+table and gbadoc's write-only description. This baseline follows the table for
+MOSAIC/BLDY; effect-register edge cases and all hardware read masks still need
+an independent hardware oracle. The undocumented internal-memory-control
+register and mirrors are not implemented and are not covered by this map.
+
+Three original tests cover unreadable words, byte/halfword lanes, preserved
+internal storage, mixed DMA/control and WAITCNT/IME/POSTFLG words, non-mirroring,
+Thumb retained I/O data and debugger isolation. The affine scanline test now
+inspects the internal BG2Y latch and separately verifies that its write-only
+debug read returns zero. Four additional original browser cartridges verify
+BG-offset, DMA-address and unused I/O prefetch reads plus a zero WAITCNT partner
+through CPU/WASM/Mode-3 pixels. No persistent field or snapshot version changed.
+
+All 158 GBA unit / 16 original program / 3 EEPROM tests pass (177 GBA checks),
+with 352 self-contained native checks, JS/Python checks, warnings-denied GBA
+Clippy and the root WASM check. The rebuilt GBA browser scenario passes all
+previous fixtures and all five open/zero-bus cartridges. The separate
+GB ROM suite and full eleven-scenario browser gate were not rerun for this
+GBA-only change. DMA open-bus history and exact pipeline/bus phases remain
+pending; this baseline is not a full hardware-register accuracy claim.
+FireRed's 1,800-frame startup probe remains fault-free with the previous
+505,612,801 clocks, 175,983,876 instructions, 6,956 exceptions and CPU/display
+state (PC 08079792h, display 9F40h). It took 13.989 s (2.15x native clock
+throughput), not a controlled performance comparison or complete-game validation.
+
+### Requested next major phase: browser 8x optimization
+
+After the GBA implementation goal, prioritize a substantial performance pass
+targeting smooth 8x gameplay. The user's current real-game browser observation
+is approximately 1.5x despite higher requested speeds. Profile real cartridges
+on representative browser/device combinations, distinguish achieved emulated
+clock throughput from the selected multiplier, and measure sustained gameplay
+and frame pacing rather than only startup or synthetic loops. Preserve CPU,
+peripheral and save-state correctness while optimizing; publish measured results
+and remaining host limits instead of treating an 8x setting as proof of 8x speed.
 
 ### CPU unused-memory open-bus baseline
 
