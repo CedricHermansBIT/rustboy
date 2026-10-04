@@ -55,6 +55,91 @@ const BLUE: [u8; 4] = [0, 0, 255, 255];
 const BLACK: [u8; 4] = [0, 0, 0, 255];
 
 #[test]
+fn green_swap_exchanges_only_final_green_channels_in_every_display_mode() {
+    use crate::cpu::Memory;
+    for mode in 0..=5 {
+        let mut b = bus();
+        pal(&mut b, 1, 31);
+        pal(&mut b, 2, 0x7fe0);
+        if mode <= 1 {
+            bg4(&mut b, 0, 1, 1, 0);
+            b.vram[32..64].fill(0x21);
+            b.set_io(0, 0x100 | mode);
+        } else {
+            b.set_io(0, 0x400 | mode);
+            b.set_io(0x20, 0x100);
+            b.set_io(0x26, 0x100);
+            if mode == 2 {
+                b.set_io(0xc, 28 << 8);
+                b.vram[28 * 0x800] = 1;
+                for x in 0..8 {
+                    b.vram[64 + x] = 1 + (x & 1) as u8;
+                }
+            } else if mode == 4 {
+                b.vram[0] = 1;
+                b.vram[1] = 2;
+            } else {
+                put(&mut b.vram, 0, 31);
+                put(&mut b.vram, 2, 0x7fe0);
+            }
+        }
+        assert_eq!(pixel(&b, 0, 0), RED, "mode {mode}");
+        assert_eq!(pixel(&b, 1, 0), [0, 255, 255, 255], "mode {mode}");
+        b.write16(0x04000002, 0xffff, false);
+        assert_eq!(b.peek16(0x04000002), 1);
+        assert_eq!(pixel(&b, 0, 0), [255, 255, 0, 255], "mode {mode}");
+        assert_eq!(pixel(&b, 1, 0), BLUE, "mode {mode}");
+        b.write8(0x04000003, 0xff);
+        assert_eq!(b.peek16(0x04000002), 1);
+        b.write8(0x04000002, 0xfe);
+        assert_eq!(pixel(&b, 0, 0), RED);
+        assert_eq!(pixel(&b, 1, 0), [0, 255, 255, 255]);
+    }
+}
+
+#[test]
+fn green_swap_occurs_after_window_and_brightness_and_preserves_other_rows() {
+    let mut b = bus();
+    b.set_io(0, 0x2403); // Mode 3 BG2, WIN0.
+    b.set_io(0x20, 0x100);
+    b.set_io(0x26, 0x100);
+    put(&mut b.vram, 0, 31);
+    put(&mut b.vram, 2, 0x7fe0);
+    b.set_io(0x40, 1); // Window includes only the even pixel.
+    b.set_io(0x44, 1);
+    b.set_io(0x48, 0x24); // BG2 and effects inside.
+    b.set_io(0x4a, 4); // BG2 without effects outside.
+    b.set_io(0x50, 0x84); // Brighten BG2.
+    b.set_io(0x54, 8);
+    let even = pixel(&b, 0, 0);
+    let odd = pixel(&b, 1, 0);
+    assert_ne!(even[1], odd[1]);
+    b.set_io(2, 1);
+    assert_eq!(pixel(&b, 0, 0), [even[0], odd[1], even[2], 255]);
+    assert_eq!(pixel(&b, 1, 0), [odd[0], even[1], odd[2], 255]);
+    let mut pixels = vec![0x5a; 240 * 160 * 4];
+    render_line(&b, 0, &mut pixels);
+    assert!(pixels[240 * 4..].iter().all(|&byte| byte == 0x5a));
+    b.set_io(0, 0x80);
+    render_line(&b, 0, &mut pixels);
+    assert!(pixels[..240 * 4].iter().all(|&byte| byte == 255));
+}
+
+#[test]
+fn green_swap_pairs_obj_with_backdrop_at_the_right_screen_edge() {
+    let mut b = bus();
+    pal(&mut b, 0, 0x7fe0);
+    pal(&mut b, 257, 31);
+    obj(&mut b, 0, 0, 238, 0);
+    b.vram[0x10000] = 1; // Red at x=238; transparent at x=239.
+    assert_eq!(pixel(&b, 238, 0), RED);
+    assert_eq!(pixel(&b, 239, 0), [0, 255, 255, 255]);
+    b.set_io(2, 1);
+    assert_eq!(pixel(&b, 238, 0), [255, 255, 0, 255]);
+    assert_eq!(pixel(&b, 239, 0), BLUE);
+}
+
+#[test]
 fn normal_obj_budget_is_smaller_when_hblank_is_free_and_clips_last_object() {
     let mut b = bus();
     pal(&mut b, 257, 31);

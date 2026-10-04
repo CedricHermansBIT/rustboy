@@ -455,6 +455,23 @@ try {
       assert.deepEqual(await evaluate("Array.from(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,1,1).data)"),expected, `CPU open/zero bus read at ${openAddress.toString(16)} renders correct bits`);
     }
     console.log('GBA browser: original unmapped/write-only I/O cartridges render ARM prefetch and mixed-word zero lanes');
+    for (const swap of [0,1]) {
+      const rom=new Uint8Array(512), view=new DataView(rom.buffer);
+      view.setUint32(0,0xea00003e,true);rom[0xb2]=0x96;
+      [0xe59f0014,0xe59f1014,0xe5801000,0xe59f0010,0xe59f1010,
+        0xe5801000,0xeafffffe,0x04000000,0x403|(swap<<16),
+        0x06000000,0x7fe0001f]
+        .forEach((word,n)=>view.setUint32(0x100+n*4,word,true));
+      const file=path.join(temporary,`original-green-swap-${swap}.gba`);await fs.writeFile(file,rom);
+      await evaluate('window.beforeGreenId=Module._get_state_id()');
+      await call('DOM.setFileInputFiles',{nodeId,files:[file]});
+      await until("Module._get_state_id()!==beforeGreenId && (()=>{ const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset,s.byteLength).getBigUint64(309,true)>=2n; })()");
+      const expected=swap?[255,255,0,255,0,0,255,255]:[255,0,0,255,0,255,255,255];
+      assert.deepEqual(await evaluate("Array.from(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,2,1).data)"),expected,'original cartridge controls final green swapping');
+      await evaluate('Module._set_paused(true); window.greenState=Module._export_state(); Module._import_state(greenState)');
+      assert.ok(await evaluate('Module._export_state().every((byte,n)=>byte===greenState[n])'),'green-swap state round-trips in WASM');
+    }
+    console.log('GBA browser: original cartridges verify Green Swap output and state replay');
   }
   // Explicit opt-in only. Never copies the supplied game into public assets.
   if (process.env.RUSTBOY_GBA_PROFILE) {

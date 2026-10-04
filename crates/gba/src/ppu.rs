@@ -487,6 +487,13 @@ fn render_line_origins(bus: &Bus, line: u16, pixels: &mut [u8], affine: Affine) 
         }
         row[x * 4 + 3] = 255;
     }
+    // GREEN_SWAP acts on the final LCD output, not on individual layers or
+    // palette entries. Each pair is anchored at an even screen coordinate.
+    if bus.io16(2) & 1 != 0 {
+        for pair in row.as_chunks_mut::<8>().0 {
+            pair.swap(1, 5);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -361,6 +361,8 @@ impl Bus {
                     self.apu.psg.flush(&mut self.io);
                 }
                 match offset {
+                    2 => self.io[2] = value & 1,
+                    3 => {}
                     0x202 | 0x203 => self.io[offset] &= !value,
                     6 | 7 | 0x130 | 0x131 => {}
                     4 => self.io[4] = (self.io[4] & 7) | (value & 0x38),

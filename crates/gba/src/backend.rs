@@ -626,6 +626,23 @@ mod tests {
         GameBoyAdvance::new(rom, None).unwrap()
     }
     #[test]
+    fn green_swap_register_and_output_replay_from_existing_state_format() {
+        use crate::cpu::Memory;
+        let mut m = machine();
+        m.bus.write32(0x04000000, 0x00010403, false);
+        m.bus.write32(0x06000000, 0x7fe0001f, false);
+        m.bus.take_cycles();
+        let state = m.export_state();
+        m.run_frame();
+        let expected = m.export_state();
+        assert_eq!(&m.pixels[..8], &[255, 255, 0, 255, 0, 0, 255, 255]);
+        m.bus.write16(0x04000002, 0, false);
+        m.import_state(&state).unwrap();
+        assert_eq!(m.bus.peek16(0x04000002), 1);
+        m.run_frame();
+        assert_eq!(m.export_state(), expected);
+    }
+    #[test]
     fn thumb_iwram_data_history_replays_and_v9_migrates_without_invented_history() {
         use crate::cpu::Memory;
         let mut m = machine();
