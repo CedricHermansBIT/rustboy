@@ -7,6 +7,9 @@ pub struct Bus {
     pub(crate) replacement_bios: bool,
     pub(crate) bios_access: bool,
     pub(crate) bios_latch: u32,
+    // Intra-instruction timing scratch, consumed before a snapshot boundary.
+    gamepak_instruction: bool,
+    restart_fetch: bool,
     pub(crate) rom: Vec<u8>,
     pub ewram: Vec<u8>,
     pub iwram: Vec<u8>,
@@ -41,6 +44,8 @@ impl Bus {
             replacement_bios,
             bios_access: !replacement_bios,
             bios_latch: 0,
+            gamepak_instruction: false,
+            restart_fetch: false,
             rom,
             ewram: vec![0; 0x40000],
             iwram: vec![0; 0x8000],
@@ -276,6 +281,8 @@ impl Bus {
 }
 impl Memory for Bus {
     fn instruction_context(&mut self, address: u32, thumb: bool) {
+        self.gamepak_instruction = (8..=13).contains(&(address >> 24));
+        self.restart_fetch = false;
         self.bios_access = address < 0x4000;
         if self.bios_access {
             // The interpreter represents the visible ARM/Thumb prefetch without
@@ -287,9 +294,15 @@ impl Memory for Bus {
         }
     }
     fn refill_complete(&mut self, address: u32) {
+        // The refill has already performed its N+S accesses. Internal cycles
+        // before a PC write must not restart the new instruction stream.
+        self.restart_fetch = false;
         if address < 0x4000 {
             self.bios_latch = self.peek32(address & !3);
         }
+    }
+    fn finish_instruction(&mut self) -> bool {
+        !std::mem::take(&mut self.restart_fetch)
     }
     fn fetch16(&mut self, address: u32, sequential: bool) -> u16 {
         if address < 0x4000 {
@@ -401,6 +414,12 @@ impl Memory for Bus {
     }
     fn internal(&mut self, clocks: u32) {
         self.clocks += u64::from(clocks);
+        // GBATEK's prefetch-disable bug: ROM opcodes with internal cycles
+        // turn the subsequent opcode S access into N. Enabled-prefetch queue
+        // timing is a separate, still pending feature.
+        if clocks != 0 && self.gamepak_instruction && self.io16(0x204) & 0x4000 == 0 {
+            self.restart_fetch = true;
+        }
     }
 }
 
@@ -409,6 +428,115 @@ mod tests {
     use super::*;
     fn bus() -> Bus {
         Bus::new(vec![0; 0xc0], None).unwrap()
+    }
+    #[test]
+    fn arm_internal_cycles_restart_rom_fetch_only_when_prefetch_is_disabled() {
+        use crate::cpu::Cpu;
+        for op in [
+            0xe0000190u32,
+            0xe5920000,
+            0xe1a00110,
+            0xe1020091,
+            0xe8920003,
+        ] {
+            for enabled in [false, true] {
+                let mut b = bus();
+                b.rom[..4].copy_from_slice(&op.to_le_bytes());
+                b.rom[4..8].copy_from_slice(&0xe1a00000u32.to_le_bytes());
+                b.set_io(0x204, if enabled { 0x4000 } else { 0 });
+                let mut c = Cpu::default();
+                c.set_cpsr(0x1f).unwrap();
+                c.r[0] = 2;
+                c.r[1] = 3;
+                c.r[2] = 0x03000000;
+                c.r[15] = 0x08000000;
+                c.step(&mut b);
+                assert_eq!(c.sequential, enabled, "{op:08x}");
+                b.take_cycles();
+                c.step(&mut b);
+                assert_eq!(b.take_cycles(), if enabled { 6 } else { 8 }, "{op:08x}");
+                assert!(c.sequential); // The next plain opcode has no I cycle.
+            }
+        }
+    }
+    #[test]
+    fn thumb_internal_cycles_restart_rom_fetch_but_ram_code_is_unaffected() {
+        use crate::cpu::Cpu;
+        for op in [0x4348u16, 0x6808, 0x4088, 0xca03, 0xbc01] {
+            for location in [0x08000000, 0x03000000] {
+                for enabled in [false, true] {
+                    let mut b = bus();
+                    let code = if location == 0x08000000 {
+                        &mut b.rom
+                    } else {
+                        &mut b.iwram
+                    };
+                    code[..2].copy_from_slice(&op.to_le_bytes());
+                    code[2..4].copy_from_slice(&0x46c0u16.to_le_bytes());
+                    b.set_io(0x204, if enabled { 0x4000 } else { 0 });
+                    let mut c = Cpu::default();
+                    c.set_cpsr(0x3f).unwrap();
+                    c.r[0] = 2;
+                    c.r[1] = 0x03000100;
+                    c.r[2] = 0x03000100;
+                    c.r[13] = 0x03000100;
+                    c.r[15] = location;
+                    c.step(&mut b);
+                    assert_eq!(c.sequential, enabled || location == 0x03000000);
+                    b.take_cycles();
+                    c.step(&mut b);
+                    let expected = if location == 0x03000000 {
+                        1
+                    } else if enabled {
+                        3
+                    } else {
+                        5
+                    };
+                    assert_eq!(b.take_cycles(), expected, "{op:04x}");
+                    assert!(c.sequential);
+                }
+            }
+        }
+    }
+    #[test]
+    fn rom_refills_and_failed_conditions_do_not_inherit_internal_restart() {
+        use crate::cpu::Cpu;
+        let mut b = bus();
+        b.rom[..4].copy_from_slice(&0xe592f000u32.to_le_bytes()); // LDR pc,[r2]
+        b.rom[0x40..0x44].copy_from_slice(&0xe1a00000u32.to_le_bytes());
+        b.iwram[..4].copy_from_slice(&0x08000040u32.to_le_bytes());
+        let mut c = Cpu::default();
+        c.set_cpsr(0x1f).unwrap();
+        c.r[2] = 0x03000000;
+        c.r[15] = 0x08000000;
+        c.step(&mut b);
+        assert_eq!(c.r[15], 0x08000040);
+        assert!(c.sequential);
+        b.take_cycles();
+        c.step(&mut b);
+        assert_eq!(b.take_cycles(), 6);
+        b.rom[0x44..0x48].copy_from_slice(&0x00000190u32.to_le_bytes()); // MULEQ, Z clear
+        c.step(&mut b);
+        assert!(c.sequential);
+        assert_eq!(b.take_cycles(), 6);
+    }
+    #[test]
+    fn thumb_pop_pc_refill_clears_the_load_internal_cycle_restart() {
+        use crate::cpu::Cpu;
+        let mut b = bus();
+        b.rom[..2].copy_from_slice(&0xbd00u16.to_le_bytes()); // POP {pc}
+        b.rom[0x40..0x42].copy_from_slice(&0x46c0u16.to_le_bytes());
+        b.iwram[..4].copy_from_slice(&0x08000041u32.to_le_bytes());
+        let mut c = Cpu::default();
+        c.set_cpsr(0x3f).unwrap();
+        c.r[13] = 0x03000000;
+        c.r[15] = 0x08000000;
+        c.step(&mut b);
+        assert_eq!(c.r[15], 0x08000040);
+        assert!(c.sequential);
+        b.take_cycles();
+        c.step(&mut b);
+        assert_eq!(b.take_cycles(), 3);
     }
     #[test]
     fn bios_protection_uses_opcode_lanes_and_debugger_peeks_do_not_change_it() {

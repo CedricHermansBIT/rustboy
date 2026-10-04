@@ -20,6 +20,11 @@ pub trait Memory {
         self.read32(address, sequential)
     }
     fn refill_complete(&mut self, _last_address: u32) {}
+    /// Whether the bus permits the next opcode access to remain sequential.
+    /// Called only at instruction boundaries; a branch refill may reset it.
+    fn finish_instruction(&mut self) -> bool {
+        true
+    }
     fn read8(&mut self, address: u32) -> u8;
     fn read16(&mut self, address: u32, sequential: bool) -> u16;
     fn read32(&mut self, address: u32, sequential: bool) -> u32;
@@ -223,6 +228,7 @@ impl Cpu {
                 self.execute_arm(bus, op);
             }
         }
+        self.sequential &= bus.finish_instruction();
     }
     fn shifter<B: Memory>(&self, bus: &mut B, op: u32) -> (u32, bool) {
         let carry = self.cpsr & C != 0;

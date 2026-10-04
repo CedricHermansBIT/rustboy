@@ -602,6 +602,23 @@ mod tests {
         GameBoyAdvance::new(rom, None).unwrap()
     }
     #[test]
+    fn disabled_prefetch_restart_survives_instruction_boundary_state_replay() {
+        let mut m = machine();
+        m.bus.rom[..4].copy_from_slice(&0xe0000190u32.to_le_bytes()); // MUL r0,r0,r1
+        m.bus.rom[4..8].copy_from_slice(&0xe1a00000u32.to_le_bytes());
+        m.cpu.r[0] = 2;
+        m.cpu.r[1] = 3;
+        m.step();
+        assert!(!m.cpu.sequential);
+        let saved = m.export_state();
+        assert_eq!(m.step(), 8);
+        let expected = m.export_state();
+        m.import_state(&saved).unwrap();
+        assert!(!m.cpu.sequential);
+        assert_eq!(m.step(), 8);
+        assert_eq!(m.export_state(), expected);
+    }
+    #[test]
     fn dma_wrap_replays_and_legacy_counter_is_masked_before_bus_access() {
         use crate::cpu::Memory;
         let mut m = machine();
