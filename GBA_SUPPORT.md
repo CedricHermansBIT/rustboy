@@ -57,6 +57,37 @@ backend-only milestone.
 
 ## Remaining milestones
 
+### DMA3 video-capture baseline
+
+DMA3's special start mode now queues capture bursts for scanlines 2-161,
+including the two capture scanlines after visible display. It reloads the
+latched count per request, retains source progression and supports destination
+increment/reload, normal nonrepeat completion and per-burst IRQs. At scanline
+162 further capture requests are disabled; an in-flight burst drains, so a row
+longer than HBlank is not silently truncated. Software must re-enable capture
+for another frame. DMA0 special mode and DMA1/2 FIFO requests remain separate.
+
+This is a functional scheduler baseline using HBlank requests. Exact capture
+request phase, shutdown latency, overruns, bus arbitration, cartridge DRQ and
+external camera hardware remain unverified/unimplemented; this is not a claim
+of hardware-cycle-exact capture. The documented scanline range and mode follow:
+https://rust-console.github.io/gbatek-gbaonly/#video-capture-mode-dma3-only
+
+Original tests cover the 160-request window, VBlank rows, enable shutdown,
+nonrepeat, destination reload, channel isolation, IRQs and pending-burst replay
+using the existing snapshot fields. An original CPU-driven cartridge captures
+and verifies every pixel in a full bitmap, including the final row. The browser
+cartridge checks distinct rendered coordinates and that last row through WASM.
+All 134 GBA unit / 16 original program / 3 EEPROM tests pass (153 GBA checks),
+with 328 self-contained native checks, JS/Python checks, warnings-denied GBA
+Clippy and the root WASM check. The rebuilt GBA browser scenario passes its
+existing regression checks and the capture fixture. The separate GB ROM suite
+and full eleven-scenario browser gate were not rerun for this GBA-only feature.
+FireRed's 1,800-frame startup probe remains fault-free at the same 505,612,800
+clocks / 159,995,200 instructions / 6,958 exceptions and CPU/display state.
+It took 11.212 s (2.69x native clock throughput), not a controlled speed
+comparison, capture hardware oracle or complete-game validation.
+
 ### DMA register and address-width corrections
 
 DMA control writes now clear unused low bits on every channel and the
@@ -75,9 +106,9 @@ https://rust-console.github.io/gbatek-gbaonly/#gba-dma-transfers
 Original tests cover channel-specific control masks, bytewise changes to a
 waiting channel, latched/programmed address separation, increment/decrement at
 each address limit, DMA0's boundary result, replay across wrap and recovery of
-older unmasked counters. This does not implement external DRQ signaling or
-video-capture DMA, and startup/arbitration phases, SRAM-side restrictions and
-invalid-source open-bus details remain accuracy work.
+older unmasked counters. External DRQ signaling, startup/arbitration phases,
+SRAM-side restrictions and invalid-source open-bus details remain accuracy work.
+Video-capture scheduling has the functional baseline described above.
 
 Validation: 130 GBA unit / 15 original program / 3 EEPROM tests pass (148 GBA
 checks), together with 323 self-contained native checks, JS/Python checks,
@@ -362,7 +393,7 @@ All four DMA channels latch addresses/count on enable, arbitrate by priority,
 stall CPU execution per transfer unit, and implement immediate/VBlank/visible
 HBlank starts, transfer widths, address modes, repeat/reload and completion IRQs.
 Video and timers continue during DMA. Ten new tests cover these interactions.
-DMA startup phases, exact CPU register-write timing, cartridge DRQ/video capture,
+DMA startup phases, exact CPU register-write timing, cartridge DRQ/capture phases,
 and precise Direct Sound request-edge timing still need work; this is not
 cycle-exact DMA yet.
 
