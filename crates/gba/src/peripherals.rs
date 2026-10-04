@@ -206,6 +206,9 @@ impl Bus {
             return false;
         };
         let mut d = self.dma[n];
+        // DMA takes ownership of the bus. Do not let its setup/internal RAM
+        // cycles manufacture prefetched CPU opcodes while the CPU is stopped.
+        self.prefetch = crate::prefetch::Prefetch::default();
         let source_mask = if n == 0 { 0x07ffffff } else { 0x0fffffff };
         let destination_mask = if n == 3 { 0x0fffffff } else { 0x07ffffff };
         // Apply the physical address width to every transfer, not just enable.
@@ -296,6 +299,21 @@ mod tests {
     use super::*;
     fn bus() -> Bus {
         Bus::new(vec![0; 192], None).unwrap()
+    }
+    #[test]
+    fn dma_discards_cpu_prefetch_without_refilling_it_on_ram_transfers() {
+        let mut b = bus();
+        b.write16(0x04000204, 0x4000, false);
+        b.fetch16(0x08000000, false);
+        b.internal(30);
+        assert_eq!(b.prefetch.count, 8);
+        configure(&mut b, 0, 0x03000000, 0x02000000, 2, 0x8000);
+        while b.dma_unit() {
+            assert_eq!(b.prefetch, crate::prefetch::Prefetch::default());
+        }
+        b.take_cycles();
+        b.fetch16(0x08000002, true);
+        assert_eq!(b.take_cycles(), 3);
     }
     #[test]
     fn capture_copies_exactly_160_rows_including_vblank_and_then_disables() {

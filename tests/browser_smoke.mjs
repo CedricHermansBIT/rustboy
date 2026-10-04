@@ -326,7 +326,7 @@ try {
       await until('Module._export_state()[333]===2');
       await evaluate('window.stoppedGbaState=Module._export_state(); Module._import_state(stoppedGbaState)');
       await new Promise(resolve=>setTimeout(resolve,150));
-      assert.equal(await evaluate('(() => { const s=Module._export_state(); return s[4]===8 && s[333]===2 && s.every((byte,n)=>byte===stoppedGbaState[n]); })()'),true,'STOP freezes all serialized clocks/state across browser callbacks and restore');
+      assert.equal(await evaluate('(() => { const s=Module._export_state(); return s[4]===9 && s[333]===2 && s.every((byte,n)=>byte===stoppedGbaState[n]); })()'),true,'STOP freezes all serialized clocks/state across browser callbacks and restore');
       await call('Input.dispatchKeyEvent',{type:'keyDown',key:'k',code:'KeyK'});
       await until('(() => { const s=Module._export_state(); return s[333]===0 && new DataView(s.buffer,s.byteOffset).getUint32(40,true)===0x77; })()');
       await call('Input.dispatchKeyEvent',{type:'keyUp',key:'k',code:'KeyK'});
@@ -418,6 +418,26 @@ try {
         [[255,0,0,255],hblankFree?[0,0,0,255]:[255,0,0,255],hblankFree?[0,0,0,255]:[255,0,0,255]],'offscreen OBJ work consumes HBlank-free rendering budget');
     }
     console.log('GBA browser: CPU-driven sprite crowd exercises both OBJ budgets and partial-object clipping');
+    // An original ARM cartridge enables WAITCNT prefetch and supplies four
+    // internal multiply clocks per instruction, exercising queued/partial state.
+    const prefetchRom=new Uint8Array(512), prefetchView=new DataView(prefetchRom.buffer);
+    prefetchView.setUint32(0,0xea00003e,true);prefetchRom[0xb2]=0x96;
+    [0xe59f001c,0xe59f101c,0xe1c010b0,0xe3a00001,0xe3a01401,
+      0xe0000190,0xe0000190,0xe0000190,0xeafffffb,0x04000204,0x4000]
+      .forEach((word,n)=>prefetchView.setUint32(0x100+n*4,word,true));
+    const prefetchPath=path.join(temporary,'original-prefetch.gba');await fs.writeFile(prefetchPath,prefetchRom);
+    await evaluate('window.beforePrefetchId=Module._get_state_id()');
+    await call('DOM.setFileInputFiles',{nodeId,files:[prefetchPath]});
+    await until("Module._get_state_id()!==beforePrefetchId && (()=>{ const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset,s.byteLength).getBigUint64(309,true)>=2n; })()");
+    assert.equal(await evaluate(`(() => {
+      Module._set_paused(true);
+      const s=Module._export_state(), at=s.length-14;
+      const head=new DataView(s.buffer,s.byteOffset,s.byteLength).getUint32(at,true);
+      Module._import_state(s);
+      return s[4]===9 && head>=0x08000100 && head<0x08000200 && s[at+4]<=8 && s[at+5]<3
+        && Module._export_state().every((byte,n)=>byte===s[n]);
+    })()`),true,'CPU-enabled cartridge prefetch state round-trips through WASM');
+    console.log('GBA browser: original WAITCNT-enabled multiply cartridge executes and replays prefetch state');
   }
   // Explicit opt-in only. Never copies the supplied game into public assets.
   if (process.env.RUSTBOY_GBA_PROFILE) {

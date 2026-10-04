@@ -7,6 +7,7 @@ pub struct Bus {
     pub(crate) replacement_bios: bool,
     pub(crate) bios_access: bool,
     pub(crate) bios_latch: u32,
+    pub(crate) prefetch: crate::prefetch::Prefetch,
     // Intra-instruction timing scratch, consumed before a snapshot boundary.
     gamepak_instruction: bool,
     restart_fetch: bool,
@@ -44,6 +45,7 @@ impl Bus {
             replacement_bios,
             bios_access: !replacement_bios,
             bios_latch: 0,
+            prefetch: crate::prefetch::Prefetch::default(),
             gamepak_instruction: false,
             restart_fetch: false,
             rom,
@@ -245,6 +247,13 @@ impl Bus {
             _ => 1,
         };
         self.clocks += clocks;
+        if (8..=15).contains(&(address >> 24)) {
+            // Data accesses share the cartridge bus; queued opcode timing
+            // cannot survive a ROM, EEPROM or backup-memory transaction.
+            self.prefetch = crate::prefetch::Prefetch::default();
+        } else if self.io16(0x204) & 0x4000 != 0 {
+            self.prefetch.idle(clocks as u32, self.io16(0x204));
+        }
     }
     fn put8(&mut self, address: u32, value: u8) {
         let index = address as usize;
@@ -270,6 +279,9 @@ impl Bus {
                 self.peripheral_write(offset, old);
                 self.sound_write(offset, old);
                 self.affine_write(offset);
+                if matches!(offset, 0x204 | 0x205) && self.io[offset] != old {
+                    self.prefetch = crate::prefetch::Prefetch::default();
+                }
             }
             5 => self.palette[index & 0x3ff] = value,
             6 => self.vram[Self::vram_index(address)] = value,
@@ -282,6 +294,9 @@ impl Bus {
 impl Memory for Bus {
     fn instruction_context(&mut self, address: u32, thumb: bool) {
         self.gamepak_instruction = (8..=13).contains(&(address >> 24));
+        if !self.gamepak_instruction {
+            self.prefetch = crate::prefetch::Prefetch::default();
+        }
         self.restart_fetch = false;
         self.bios_access = address < 0x4000;
         if self.bios_access {
@@ -305,6 +320,18 @@ impl Memory for Bus {
         !std::mem::take(&mut self.restart_fetch)
     }
     fn fetch16(&mut self, address: u32, sequential: bool) -> u16 {
+        if (8..=13).contains(&(address >> 24))
+            && self.io16(0x204) & 0x4000 != 0
+            && !self.eeprom_address(address)
+        {
+            self.clocks +=
+                u64::from(
+                    self.prefetch
+                        .fetch(address & !1, 1, sequential, self.io16(0x204)),
+                );
+            return self.peek16(address & !1);
+        }
+        self.prefetch = crate::prefetch::Prefetch::default();
         if address < 0x4000 {
             self.charge(address, 2, sequential);
             self.peek16(address & !1)
@@ -313,6 +340,18 @@ impl Memory for Bus {
         }
     }
     fn fetch32(&mut self, address: u32, sequential: bool) -> u32 {
+        if (8..=13).contains(&(address >> 24))
+            && self.io16(0x204) & 0x4000 != 0
+            && !self.eeprom_address(address)
+        {
+            self.clocks +=
+                u64::from(
+                    self.prefetch
+                        .fetch(address & !3, 2, sequential, self.io16(0x204)),
+                );
+            return self.peek32(address & !3);
+        }
+        self.prefetch = crate::prefetch::Prefetch::default();
         if address < 0x4000 {
             self.charge(address, 4, sequential);
             self.peek32(address & !3)
@@ -414,6 +453,9 @@ impl Memory for Bus {
     }
     fn internal(&mut self, clocks: u32) {
         self.clocks += u64::from(clocks);
+        if self.io16(0x204) & 0x4000 != 0 {
+            self.prefetch.idle(clocks, self.io16(0x204));
+        }
         // GBATEK's prefetch-disable bug: ROM opcodes with internal cycles
         // turn the subsequent opcode S access into N. Enabled-prefetch queue
         // timing is a separate, still pending feature.
@@ -428,6 +470,32 @@ mod tests {
     use super::*;
     fn bus() -> Bus {
         Bus::new(vec![0; 0xc0], None).unwrap()
+    }
+    #[test]
+    fn prefetch_uses_idle_bus_clocks_but_not_cartridge_data_accesses() {
+        let mut b = bus();
+        b.write16(0x04000204, 0x4000, false);
+        b.take_cycles();
+        assert_eq!(b.fetch16(0x08000000, false), 0);
+        assert_eq!(b.take_cycles(), 5);
+        b.read32(0x02000000, false); // Six idle Game Pak clocks: two halfwords.
+        assert_eq!((b.prefetch.count, b.prefetch.elapsed), (2, 0));
+        b.take_cycles();
+        b.fetch32(0x08000002, true); // Physical word alignment is 08000000.
+        assert_eq!(b.take_cycles(), 8); // Discontinuity, including page restart.
+        b.internal(30);
+        assert_eq!(b.prefetch.count, 8);
+        b.take_cycles();
+        b.fetch32(0x08000004, true);
+        assert_eq!(b.take_cycles(), 1);
+        b.read16(0x08000040, false);
+        assert_eq!(b.prefetch, crate::prefetch::Prefetch::default());
+        b.take_cycles();
+        b.fetch16(0x08000008, true);
+        assert_eq!(b.take_cycles(), 3);
+        b.internal(8);
+        b.write8(0x04000205, 0); // Disable via the high WAITCNT byte.
+        assert_eq!(b.prefetch, crate::prefetch::Prefetch::default());
     }
     #[test]
     fn arm_internal_cycles_restart_rom_fetch_only_when_prefetch_is_disabled() {
@@ -454,7 +522,18 @@ mod tests {
                 assert_eq!(c.sequential, enabled, "{op:08x}");
                 b.take_cycles();
                 c.step(&mut b);
-                assert_eq!(b.take_cycles(), if enabled { 6 } else { 8 }, "{op:08x}");
+                // With prefetch enabled, I cycles and RAM bus cycles fill the
+                // following opcode: MUL/shift supply 1 clock, LDR 2, SWP/LDM 3.
+                let buffered = match op {
+                    0xe0000190 | 0xe1a00110 => 5,
+                    0xe5920000 => 4,
+                    _ => 3,
+                };
+                assert_eq!(
+                    b.take_cycles(),
+                    if enabled { buffered } else { 8 },
+                    "{op:08x}"
+                );
                 assert!(c.sequential); // The next plain opcode has no I cycle.
             }
         }
@@ -488,7 +567,11 @@ mod tests {
                     let expected = if location == 0x03000000 {
                         1
                     } else if enabled {
-                        3
+                        if op == 0x4088 {
+                            2
+                        } else {
+                            1
+                        }
                     } else {
                         5
                     };
