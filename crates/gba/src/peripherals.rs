@@ -44,14 +44,22 @@ impl Bus {
             }
             self.refresh_timer_schedule();
         }
-        if (0xb0..0xe0).contains(&offset) && (offset - 0xb0) % 12 == 11 {
+        if (0xb0..0xe0).contains(&offset) && (offset - 0xb0) % 12 >= 10 {
             let n = (offset - 0xb0) / 12;
             let base = 0xb0 + n * 12;
+            self.io[offset] &= if offset == base + 10 {
+                0xe0 // Bits 0-4 are unused on every channel.
+            } else if n == 3 {
+                0xff // Only DMA3 implements the Game Pak DRQ bit.
+            } else {
+                0xf7
+            };
             let control = self.io16(base + 10);
+            let enabled_before = self.dma[n].control & 0x8000 != 0;
             if control & 0x8000 == 0 {
                 self.dma[n].active = false;
                 self.dma[n].control = control;
-            } else if old & 0x80 == 0 {
+            } else if !enabled_before {
                 let read_reg =
                     |index| u32::from_le_bytes(self.io[index..index + 4].try_into().unwrap());
                 let sound = (n == 1 || n == 2) && control >> 12 & 3 == 3;
@@ -174,6 +182,12 @@ impl Bus {
             return false;
         };
         let mut d = self.dma[n];
+        let source_mask = if n == 0 { 0x07ffffff } else { 0x0fffffff };
+        let destination_mask = if n == 3 { 0x0fffffff } else { 0x07ffffff };
+        // Apply the physical address width to every transfer, not just enable.
+        // This also handles older snapshots whose counters crossed the limit.
+        d.source &= source_mask;
+        d.destination &= destination_mask;
         let sound = (n == 1 || n == 2) && d.control >> 12 & 3 == 3;
         let width = if sound || d.control & 0x400 != 0 {
             4
@@ -207,9 +221,9 @@ impl Bus {
             1 => a.wrapping_sub(width),
             _ => a,
         };
-        d.source = move_address(d.source, d.control >> 7 & 3);
+        d.source = move_address(d.source, d.control >> 7 & 3) & source_mask;
         if !sound {
-            d.destination = move_address(d.destination, d.control >> 5 & 3);
+            d.destination = move_address(d.destination, d.control >> 5 & 3) & destination_mask;
         }
         d.first = false;
         d.remaining -= 1;
@@ -222,7 +236,7 @@ impl Bus {
                 d.control &= !0x8000;
                 self.set_io(0xba + n * 12, d.control);
             } else if d.control >> 5 & 3 == 3 {
-                d.destination = d.initial_destination;
+                d.destination = d.initial_destination & destination_mask;
             }
         }
         self.dma[n] = d;
@@ -258,6 +272,75 @@ mod tests {
     use super::*;
     fn bus() -> Bus {
         Bus::new(vec![0; 192], None).unwrap()
+    }
+    #[test]
+    fn dma_control_masks_reserved_bits_and_only_dma3_has_drq() {
+        let mut b = bus();
+        for n in 0..4 {
+            let base = 0xb0 + n * 12;
+            b.write16(0x04000000 + base as u32 + 10, 0x7fff, false);
+            assert_eq!(b.io16(base + 10), if n == 3 { 0x7fe0 } else { 0x77e0 });
+            b.write8(0x04000000 + base as u32 + 10, 0xff);
+            assert_eq!(b.io[base + 10], 0xe0);
+            assert_eq!(b.dma[n].control, b.io16(base + 10));
+        }
+    }
+    #[test]
+    fn dma_low_control_byte_updates_waiting_channel_without_relatching() {
+        let mut b = bus();
+        b.write16(0x03000000, 0x1234, false);
+        b.write16(0x03000002, 0x5678, false);
+        configure(&mut b, 0, 0x03000000, 0x02000000, 2, 0xa000);
+        // Change destination to fixed through STRB while waiting for HBlank.
+        b.write8(0x040000ba, 0x40);
+        b.write32(0x040000b0, 0x03000100, false); // Programmed, not latched.
+        b.trigger_dma(2);
+        while b.dma_unit() {}
+        assert_eq!(b.peek16(0x02000000), 0x5678);
+        assert_eq!(b.peek16(0x02000002), 0);
+        assert_eq!(b.dma[0].source, 0x03000004);
+        assert_eq!(b.dma[0].destination, 0x02000000);
+    }
+    #[test]
+    fn dma_counters_wrap_to_each_channels_physical_address_width() {
+        let mut b = bus();
+        for n in 0..4 {
+            let source_mask = if n == 0 { 0x07ffffff } else { 0x0fffffff };
+            let destination_mask = if n == 3 { 0x0fffffff } else { 0x07ffffff };
+            for decrement in [false, true] {
+                let source = if decrement { 0 } else { source_mask & !3 };
+                let destination = if decrement { 0 } else { destination_mask & !3 };
+                configure(
+                    &mut b,
+                    n,
+                    source,
+                    destination,
+                    1,
+                    if decrement { 0x84a0 } else { 0x8400 },
+                );
+                assert!(b.dma_unit());
+                assert_eq!(
+                    b.dma[n].source,
+                    if decrement { source_mask & !3 } else { 0 }
+                );
+                assert_eq!(
+                    b.dma[n].destination,
+                    if decrement { destination_mask & !3 } else { 0 }
+                );
+            }
+        }
+    }
+    #[test]
+    fn dma0_wrap_does_not_escape_into_cartridge_rom() {
+        let mut b = bus();
+        b.rom[..4].copy_from_slice(&0xdeadbeefu32.to_le_bytes());
+        b.write32(0x070003fc, 0x12345678, false);
+        configure(&mut b, 0, 0x07fffffc, 0x02000000, 2, 0x8400);
+        assert!(b.dma_unit());
+        assert_eq!(b.dma[0].source, 0);
+        assert!(b.dma_unit());
+        assert_eq!(b.peek32(0x02000000), 0x12345678);
+        assert_eq!(b.peek32(0x02000004), 0); // Protected BIOS latch, not ROM.
     }
     fn configure(b: &mut Bus, n: usize, source: u32, dest: u32, count: u16, control: u16) {
         let base = 0x040000b0 + n as u32 * 12;

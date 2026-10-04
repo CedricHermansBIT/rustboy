@@ -602,6 +602,34 @@ mod tests {
         GameBoyAdvance::new(rom, None).unwrap()
     }
     #[test]
+    fn dma_wrap_replays_and_legacy_counter_is_masked_before_bus_access() {
+        use crate::cpu::Memory;
+        let mut m = machine();
+        m.bus.write32(0x070003fc, 0x12345678, false);
+        m.bus.write32(0x040000b0, 0x07fffffc, false);
+        m.bus.write32(0x040000b4, 0x02000000, false);
+        m.bus.write32(0x040000b8, 0x84000002, false);
+        m.bus.take_cycles();
+        m.step();
+        assert_eq!(m.bus.dma[0].source, 0);
+        assert_eq!(m.cpu.instructions, 0);
+        let saved = m.export_state();
+        m.step();
+        let expected = m.export_state();
+        assert_eq!(m.bus.peek32(0x02000000), 0x12345678);
+        assert_eq!(m.bus.peek32(0x02000004), 0);
+        m.import_state(&saved).unwrap();
+        m.step();
+        assert_eq!(m.export_state(), expected);
+        m.import_state(&saved).unwrap();
+        // Old states could contain an unmasked internal counter after wrap.
+        m.bus.dma[0].source = 0x08000000;
+        let legacy = m.export_state();
+        m.import_state(&legacy).unwrap();
+        m.step();
+        assert_eq!(m.export_state(), expected);
+    }
+    #[test]
     fn bios_latch_replays_migrates_v7_and_invalid_access_rejects_atomically() {
         use crate::cpu::Memory;
         let mut m = machine();
