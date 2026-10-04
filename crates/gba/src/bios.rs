@@ -229,12 +229,14 @@ fn reset_memory(bus: &mut Bus, flags: u8) {
         bus.timers = [Default::default(); 4];
         bus.refresh_timer_schedule();
         bus.dma = [Default::default(); 4];
+        bus.refresh_dma_schedule();
         for address in [0x20, 0x26, 0x30, 0x36] {
             bus.set_io(address, 0x100);
         }
         bus.reload_affine();
     }
     bus.set_io(0, 0x80);
+    bus.refresh_fifo_requests();
 }
 fn integer_sqrt(value: u32) -> u32 {
     let mut remainder = u64::from(value);

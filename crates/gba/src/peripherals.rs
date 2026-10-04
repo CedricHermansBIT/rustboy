@@ -94,6 +94,7 @@ impl Bus {
             } else {
                 self.dma[n].control = control;
             }
+            self.refresh_dma_channel(n);
         }
     }
     /// Advance by arithmetic, not one host iteration per hardware clock. Return
@@ -188,7 +189,7 @@ impl Bus {
     /// 1=VBlank, 2=HBlank. Repeated DMA reloads count, and destination only in
     /// increment/reload mode; source continues from its internal latched address.
     pub(crate) fn trigger_dma(&mut self, event: u16) {
-        for channel in &mut self.dma {
+        for (n, channel) in self.dma.iter_mut().enumerate() {
             if channel.control & 0x8000 != 0
                 && channel.control >> 12 & 3 == event
                 && !channel.active
@@ -196,6 +197,7 @@ impl Bus {
                 channel.remaining = channel.count;
                 channel.active = true;
                 channel.first = true;
+                self.dma_active |= 1 << n;
             }
         }
     }
@@ -211,6 +213,7 @@ impl Bus {
             d.remaining = d.count;
             d.active = true;
             d.first = true;
+            self.dma_active |= 8;
         }
     }
     pub(crate) fn finish_capture_dma(&mut self) {
@@ -224,13 +227,14 @@ impl Bus {
         }
     }
     pub(crate) fn dma_unit(&mut self) -> bool {
-        if self.memory_locked {
+        if self.memory_locked || self.dma_active | self.dma_ready == 0 {
             return false;
         }
         self.request_fifo_dma();
-        let Some(n) = self.dma.iter().position(|d| d.active) else {
+        if self.dma_active == 0 {
             return false;
-        };
+        }
+        let n = self.dma_active.trailing_zeros() as usize;
         let mut d = self.dma[n];
         // DMA takes ownership of the bus. Do not let its setup/internal RAM
         // cycles manufacture prefetched CPU opcodes while the CPU is stopped.
@@ -298,29 +302,52 @@ impl Bus {
             }
         }
         self.dma[n] = d;
+        self.refresh_dma_channel(n);
         true
     }
-    fn request_fifo_dma(&mut self) {
-        if self.io16(0x84) & 0x80 == 0 {
+    fn refresh_dma_channel(&mut self, n: usize) {
+        let bit = 1 << n;
+        self.dma_active = (self.dma_active & !bit) | if self.dma[n].active { bit } else { 0 };
+        for mask in &mut self.dma_fifo {
+            *mask &= !bit;
+        }
+        let d = self.dma[n];
+        if (n == 1 || n == 2) && d.control & 0xb000 == 0xb000 {
+            match d.destination {
+                0x040000a0 => self.dma_fifo[0] |= bit,
+                0x040000a4 => self.dma_fifo[1] |= bit,
+                _ => {}
+            }
+        }
+        self.refresh_fifo_requests();
+    }
+    pub(crate) fn refresh_dma_schedule(&mut self) {
+        for n in 0..4 {
+            self.refresh_dma_channel(n);
+        }
+    }
+    pub(crate) fn refresh_fifo_requests(&mut self) {
+        self.dma_ready = 0;
+        if self.io[0x84] & 0x80 == 0 {
             return;
         }
-        for n in 1..=2 {
-            let d = &mut self.dma[n];
-            let fifo = match d.destination {
-                0x040000a0 => 0,
-                0x040000a4 => 1,
-                _ => continue,
-            };
-            if d.control & 0x8000 != 0
-                && d.control >> 12 & 3 == 3
-                && !d.active
-                && self.apu.fifo[fifo].len <= 16
-            {
-                d.count = 4;
-                d.remaining = 4;
-                d.active = true;
-                d.first = true;
+        for fifo in 0..2 {
+            if self.apu.fifo[fifo].len <= 16 {
+                self.dma_ready |= self.dma_fifo[fifo];
             }
+        }
+    }
+    fn request_fifo_dma(&mut self) {
+        let mut channels = self.dma_ready & !self.dma_active;
+        while channels != 0 {
+            let n = channels.trailing_zeros() as usize;
+            channels &= channels - 1;
+            let d = &mut self.dma[n];
+            d.count = 4;
+            d.remaining = 4;
+            d.active = true;
+            d.first = true;
+            self.dma_active |= 1 << n;
         }
     }
 }
@@ -328,6 +355,96 @@ impl Bus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fifo_request_cache_tracks_sound_reset_master_and_bios_dma_reset() {
+        let mut b = bus();
+        configure(&mut b, 1, 0x03000000, 0x040000a0, 1, 0xb200);
+        assert_eq!(b.dma_ready, 0);
+        b.write16(0x04000084, 0x80, false);
+        assert_eq!(b.dma_ready, 2);
+        for _ in 0..5 {
+            b.write32(0x040000a0, 0, false);
+        }
+        assert_eq!(b.dma_ready, 0);
+        b.write16(0x04000082, 0x0800, false); // FIFO A reset.
+        assert_eq!(b.dma_ready, 2);
+        b.write16(0x04000084, 0, false);
+        assert_eq!(b.dma_ready, 0);
+        b.write16(0x04000084, 0x80, false);
+        let mut cpu = crate::cpu::Cpu::default();
+        cpu.r[0] = 0x40;
+        crate::bios::service(1, &mut cpu, &mut b).unwrap();
+        assert_eq!(b.dma_ready, 0);
+        assert!(!b.dma_unit());
+        b.write16(0x04000084, 0x80, false);
+        assert_eq!(b.dma_ready, 2);
+        configure(&mut b, 0, 0x03000000, 0x02000000, 1, 0x8000);
+        assert_eq!(b.dma_active, 1);
+        cpu.r[0] = 0x80;
+        crate::bios::service(1, &mut cpu, &mut b).unwrap();
+        assert_eq!(b.dma_active, 0);
+        assert_eq!(b.dma_fifo, [0; 2]);
+        assert_eq!(b.dma_ready, 0);
+        assert!(!b.dma_unit());
+    }
+    #[test]
+    fn dma_derived_masks_track_enable_fifo_thresholds_completion_and_disable() {
+        let mut b = bus();
+        let check = |b: &Bus| {
+            let active = b
+                .dma
+                .iter()
+                .enumerate()
+                .fold(0, |mask, (n, d)| mask | (u8::from(d.active) << n));
+            assert_eq!(b.dma_active, active);
+            for fifo in 0..2 {
+                let expected = (1..=2).fold(0, |mask, n| {
+                    let d = b.dma[n];
+                    mask | (u8::from(
+                        d.control & 0x8000 != 0
+                            && d.control >> 12 & 3 == 3
+                            && d.destination == 0x040000a0 + fifo as u32 * 4,
+                    ) << n)
+                });
+                assert_eq!(b.dma_fifo[fifo], expected);
+            }
+        };
+        check(&b);
+        b.write16(0x04000084, 0x80, false);
+        b.apu.fifo[0].len = 32;
+        b.apu.fifo[1].len = 32;
+        configure(&mut b, 0, 0x03000000, 0x02000000, 2, 0x8000);
+        configure(&mut b, 1, 0x03000000, 0x040000a0, 1, 0xb200);
+        configure(&mut b, 2, 0x03000000, 0x040000a4, 1, 0xb200);
+        check(&b);
+        while b.dma_unit() {
+            check(&b);
+        }
+        assert_eq!(b.dma_active, 0);
+        b.apu.fifo[0].len = 16;
+        b.refresh_fifo_requests();
+        b.request_fifo_dma();
+        assert_eq!(b.dma_active, 2);
+        check(&b);
+        while b.dma_unit() {
+            check(&b);
+        }
+        assert_eq!(b.apu.fifo[0].len, 32);
+        configure(&mut b, 3, 0x03000000, 0x02000000, 1, 0xb200);
+        b.trigger_capture_dma(2);
+        check(&b);
+        assert_eq!(b.dma_active, 8);
+        for n in 0..4 {
+            b.write16(0x040000ba + n * 12, 0, false);
+            check(&b);
+        }
+        assert_eq!(b.dma_active, 0);
+        assert_eq!(b.dma_fifo, [0; 2]);
+        b.dma_active = 15;
+        b.dma_fifo = [15; 2];
+        b.refresh_dma_schedule();
+        check(&b);
+    }
     #[test]
     fn timer_deadline_fast_path_matches_full_overflow_path_at_each_boundary() {
         for controls in [
@@ -548,7 +665,7 @@ mod tests {
         assert_eq!(b.apu.fifo[0].data, std::array::from_fn(|i| i as i8));
         assert_eq!(b.dma[1].source, 0x02000020);
         assert_eq!(b.dma[1].destination, 0x040000a0);
-        b.apu.fifo[0].len = 16;
+        b.clock_direct_sound([16, 0, 0, 0]);
         for _ in 0..4 {
             assert!(b.dma_unit());
         }

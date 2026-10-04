@@ -625,6 +625,7 @@ impl GameBoyAdvance {
         }
         next.bus.set_keys(0);
         next.bus.refresh_timer_schedule();
+        next.bus.refresh_dma_schedule();
         *self = next;
         Ok(())
     }

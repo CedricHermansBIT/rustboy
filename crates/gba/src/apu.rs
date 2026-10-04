@@ -118,6 +118,9 @@ impl Bus {
             }
             _ => {}
         }
+        if matches!(offset, 0x83 | 0x84 | 0xa0..=0xa7) {
+            self.refresh_fifo_requests();
+        }
     }
     pub(crate) fn clock_direct_sound(&mut self, overflows: [u64; 4]) {
         if self.io16(0x84) & 0x80 == 0 {
@@ -128,6 +131,7 @@ impl Bus {
             let timer = (control >> (10 + n * 4) & 1) as usize;
             self.apu.fifo[n].clock(overflows[timer]);
         }
+        self.refresh_fifo_requests();
     }
     pub(crate) fn clock_audio(&mut self, clocks: u64) {
         // Scheduler bounds this at the next output deadline, preserving each
