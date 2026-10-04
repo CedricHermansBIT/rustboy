@@ -165,12 +165,75 @@ try {
   assert.equal(await evaluate('audioWorkletNode.numberOfOutputs'), 1);
   assert.equal(await evaluate('audioWorkletNode.channelCountMode'), 'max');
   const {root: document} = await call('DOM.getDocument');
-  const {nodeId} = await call('DOM.querySelector', {nodeId: document.nodeId, selector: '#rom-file-input'});
+  let {nodeId} = await call('DOM.querySelector', {nodeId: document.nodeId, selector: '#rom-file-input'});
   const invalidRom = path.join(temporary, 'truncated.gb');
   await fs.writeFile(invalidRom, new Uint8Array(8));
   await call('DOM.setFileInputFiles', {nodeId, files: [invalidRom]});
   await until("document.body.textContent.includes('ROM is truncated')");
   assert.deepEqual(exceptions, [], 'unhandled browser errors');
+  if (process.env.RUSTBOY_GBA_CONTROLS) {
+    const inputRom = new Uint8Array(32768);
+    // Display KEYINPUT as a pixel, exercising browser input through the real GBA backend.
+    const words = [0xe59f0018,0xe59f1018,0xe1c010b0,0xe59f2014,0xe59f3014,
+      0xe1d210b0,0xe1c310b0,0xeafffffc,0x04000000,0x403,0x04000130,0x06000000];
+    words.forEach((word,n) => new DataView(inputRom.buffer).setUint32(n*4,word,true));
+    inputRom[0xb2]=0x96;
+    const inputPath=path.join(temporary,'original-shoulder-input.gba');
+    await fs.writeFile(inputPath,inputRom);
+    await call('DOM.setFileInputFiles',{nodeId,files:[inputPath]});
+    await until("controlConsole === 'gba' && !pickerOpen && !Module._is_paused()");
+    assert.equal(await evaluate("document.querySelector('#panel-left [data-action=btn_l]').hidden"),false);
+    assert.equal(await evaluate("document.querySelector('#panel-right [data-action=color_mode]').hidden"),true);
+    const green = "document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,1,1).data[1]";
+    await until(`${green} === 255`);
+    const key = async (type,code) => call('Input.dispatchKeyEvent',{type,code,key:code.slice(3).toLowerCase()});
+    await key('keyDown','KeyQ'); await until(`${green} === 123`);
+    await key('keyUp','KeyQ'); await until(`${green} === 255`);
+    await key('keyDown','KeyE'); await until(`${green} === 189`);
+    await key('keyUp','KeyE'); await until(`${green} === 255`);
+    await evaluate("openSettings(); document.querySelector('#settings-game-bindings').closest('details').open=true; document.querySelector('#settings-game-bindings [data-action=btn_l] kbd').click()");
+    await key('keyDown','KeyT'); await key('keyUp','KeyT');
+    assert.equal(await evaluate("bindings.btn_l"),'KeyT');
+    assert.equal(await evaluate("document.querySelector('#panel-left [data-action=btn_l] kbd').textContent"),'T');
+    await evaluate("document.querySelector('#settings-close').click()");
+    await until('!Module._is_paused()');
+    await key('keyDown','KeyT'); await until(`${green} === 123`);
+    await key('keyUp','KeyT'); await until(`${green} === 255`);
+    await call('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
+    await call('Emulation.setTouchEmulationEnabled',{enabled:true,maxTouchPoints:5});
+    await evaluate('renderTouchControls()');
+    assert.ok(await evaluate("document.querySelector('[data-group=shoulder_l]').getBoundingClientRect().width > 0"),'GBA touch shoulder appears on mobile');
+    const shoulderPoint=await evaluate("(() => { const r=document.querySelector('.touch-btn[data-action=btn_l]').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()");
+    await call('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[shoulderPoint]});
+    await until(`${green} === 123`);
+    await call('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    await until(`${green} === 255`);
+    await evaluate("window.testPad={index:0,id:'Shoulder test',connected:true,mapping:'standard',axes:[0,0],buttons:Array.from({length:16},(_,i)=>({pressed:i===5}))}; navigator.getGamepads=()=>[window.testPad]; pollControllers()");
+    await until(`${green} === 189`);
+    await evaluate("window.testPad.buttons[5].pressed=false; pollControllers()");
+    await until(`${green} === 255`);
+    await evaluate("navigator.getGamepads=()=>[]; pollControllers(); Module._load_rom_data(new Uint8Array(32768),'original.gb')");
+    await until("controlConsole === 'gb'");
+    assert.equal(await evaluate("document.querySelector('#panel-left [data-action=btn_l]').hidden && document.querySelector('[data-group=shoulder_l]').hidden"),true,'GB hides shoulder controls');
+    assert.equal(await evaluate("bindings.btn_l"),'KeyQ','GB keeps its own bindings');
+    await call('DOM.setFileInputFiles',{nodeId,files:[inputPath]});
+    await until("controlConsole === 'gba' && !Module._is_paused()");
+    assert.equal(await evaluate("bindings.btn_l"),'KeyT','GBA binding restored when switching back');
+    await evaluate('window.controlsReloadToken=true');
+    await call('Page.reload');
+    await until("typeof window.controlsReloadToken === 'undefined' && typeof Module?._load_rom_data === 'function'");
+    const reloaded = await call('DOM.getDocument');
+    const upload = await call('DOM.querySelector',{nodeId:reloaded.root.nodeId,selector:'#rom-file-input'});
+    nodeId = upload.nodeId;
+    await call('DOM.setFileInputFiles',{nodeId:upload.nodeId,files:[inputPath]});
+    await until("controlConsole === 'gba'");
+    assert.equal(await evaluate("bindings.btn_l"),'KeyT','GBA binding survives page reload');
+    await evaluate("openSettings(); document.querySelector('#settings-reset-bindings').click(); document.querySelector('#settings-close').click()");
+    assert.equal(await evaluate("bindings.btn_l"),'KeyQ');
+    await call('Emulation.clearDeviceMetricsOverride');
+    await call('Emulation.setTouchEmulationEnabled',{enabled:false});
+    console.log('Console controls: GBA keyboard/touch/gamepad shoulders, Settings rebinding, console switching, persistence and reset passed');
+  }
   if (process.env.RUSTBOY_GBA_UPLOAD) {
     const gba=new Uint8Array(32*1024*1024);
     const words=[0xe59f0020,0xe59f1020,0xe1c010b0,0xe59f201c,0xe59f301c,

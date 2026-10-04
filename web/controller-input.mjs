@@ -1,5 +1,5 @@
-export const BUTTONS = ['up', 'down', 'left', 'right', 'a', 'b', 'start', 'select'];
-export const ACTION_BUTTON = {up:'up', down:'down', left:'left', right:'right', btn_a:'a', btn_b:'b', start:'start', select:'select'};
+export const BUTTONS = ['up', 'down', 'left', 'right', 'a', 'b', 'start', 'select', 'l', 'r'];
+export const ACTION_BUTTON = {up:'up', down:'down', left:'left', right:'right', btn_a:'a', btn_b:'b', start:'start', select:'select', btn_l:'l', btn_r:'r'};
 
 // Standard Gamepad layout: east is GB A, south is GB B.
 export function gamepadButtons(pad) {
@@ -9,6 +9,7 @@ export function gamepadButtons(pad) {
     up: pressed(12) || y < -0.5, down: pressed(13) || y > 0.5,
     left: pressed(14) || x < -0.5, right: pressed(15) || x > 0.5,
     a: pressed(1), b: pressed(0), start: pressed(9), select: pressed(8),
+    l: pressed(4), r: pressed(5),
   })[button]));
 }
 

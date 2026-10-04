@@ -132,13 +132,17 @@ existing title-only battery saves are copied forward without deleting the old
 copy. Small cartridge RAM saves use their actual size, with older padded saves
 still accepted.
 
-- Arrow keys: D-pad
-- A: A button
-- B: B button
+- W/A/S/D: D-pad
+- K: A button
+- J: B button
 - Enter: Start button
 - Shift: Select button
+- Q/E: GBA L/R shoulder buttons (standard gamepads use their shoulder buttons)
 
-Bindings and touch layouts can be customized in the UI. Pause, reset, speed,
+Controls follow the loaded console; GBA also shows draggable L/R touch buttons.
+Change keyboard bindings in **Settings → Controls** or the side panels.
+GB/GBC/SGB share one binding profile; GBA has a separate saved profile.
+Touch layouts can be customized in the touch menu. Pause, reset, speed,
 and save-state controls are also available on screen. Audio starts after a
 browser user gesture; the larger queue trades approximately 186 ms of startup
 buffering at 44.1 kHz for more scheduling headroom.

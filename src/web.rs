@@ -10,12 +10,13 @@ use crate::session::Session;
 lazy_static::lazy_static! {
     static ref KEYS: Mutex<[bool; 256]> = Mutex::new([false; 256]);
     static ref PREVIOUS_KEYS: Mutex<[bool; 256]> = Mutex::new([false; 256]);
-    static ref CONTROLLER_BUTTONS: Mutex<[[bool; 8]; 4]> = Mutex::new([[false; 8]; 4]);
+    static ref CONTROLLER_BUTTONS: Mutex<[[bool; 10]; 4]> = Mutex::new([[false; 10]; 4]);
 }
 
-const CONTROLLER_MAPPING: [(usize, Button); 8] = [
+const CONTROLLER_MAPPING: [(usize, Button); 10] = [
     (38, Button::Up), (40, Button::Down), (37, Button::Left), (39, Button::Right),
     (65, Button::A), (66, Button::B), (13, Button::Start), (16, Button::Select),
+    (81, Button::L), (69, Button::R),
 ];
 
 #[wasm_bindgen]
@@ -183,6 +184,7 @@ pub fn set_controller_button(port: u32, button: &str, pressed: bool) -> Result<(
     let index = match button {
         "up" => 0, "down" => 1, "left" => 2, "right" => 3,
         "a" => 4, "b" => 5, "start" => 6, "select" => 7,
+        "l" => 8, "r" => 9,
         _ => return Err(JsValue::from_str("Unknown controller button")),
     };
     let mut controllers = CONTROLLER_BUTTONS.lock().unwrap();
@@ -194,7 +196,7 @@ pub fn set_controller_button(port: u32, button: &str, pressed: bool) -> Result<(
 
 #[wasm_bindgen]
 pub fn release_controller_inputs() {
-    *CONTROLLER_BUTTONS.lock().unwrap() = [[false; 8]; 4];
+    *CONTROLLER_BUTTONS.lock().unwrap() = [[false; 10]; 4];
     *KEYS.lock().unwrap() = [false; 256];
     *PREVIOUS_KEYS.lock().unwrap() = [false; 256];
     with_session_mut(|session| {
@@ -297,7 +299,7 @@ fn install_backend(backend: Box<dyn Emulator>) {
     session.set_speed(previous_speed);
     *KEYS.lock().unwrap() = [false; 256];
     *PREVIOUS_KEYS.lock().unwrap() = [false; 256];
-    *CONTROLLER_BUTTONS.lock().unwrap() = [[false; 8]; 4];
+    *CONTROLLER_BUTTONS.lock().unwrap() = [[false; 10]; 4];
     SESSION.with(|slot| *slot.borrow_mut() = Some(Rc::new(RefCell::new(session))));
     EMULATION_RUNNING.with(|running| {
         if !*running.borrow() {
@@ -568,7 +570,7 @@ fn check_keys(session: &mut Session) {
     if keys[32] && !previous[32] {
         session.backend.set_paused(!session.backend.paused());
         if session.backend.paused() {
-            *CONTROLLER_BUTTONS.lock().unwrap() = [[false; 8]; 4];
+            *CONTROLLER_BUTTONS.lock().unwrap() = [[false; 10]; 4];
             for (key, _) in CONTROLLER_MAPPING { keys[key] = false; }
         }
     }
