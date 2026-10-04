@@ -56,6 +56,20 @@ backend-only milestone.
 
 ## Remaining milestones
 
+### Display-mode coverage and direct entry
+
+All six display modes are implemented: text/tiled modes 0-2 and bitmap modes
+3-5. New patterned tests exercise each mode through scheduled native rendering
+and CPU-driven browser cartridges, checking distinct horizontal and vertical
+coordinates. This is stronger coverage than the previous uniform-red fixture.
+
+The investigation found a direct-entry initialization gap: zero affine matrices
+made every bitmap pixel sample the same VRAM coordinate. BIOS-free cartridge
+entry now initializes BG2/BG3 to identity, consistent with our reset service.
+User-supplied BIOS execution still starts from raw reset state, and software can
+explicitly select a zero transform. This fixes a demonstrated synthetic case,
+not a claim to reproduce the user's earlier-version issue or all raster effects.
+
 ### PSG synthesis milestone
 
 Our original GBA PSG now provides both pulse channels (duty, length, envelopes

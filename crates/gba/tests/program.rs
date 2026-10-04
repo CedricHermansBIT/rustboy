@@ -10,6 +10,68 @@ fn put_words(machine: &mut GameBoyAdvance, address: u32, words: &[u32]) {
 }
 
 #[test]
+fn direct_boot_all_display_modes_keep_distinct_horizontal_and_vertical_pixels() {
+    for mode in [3, 4, 5, 1, 2, 0] {
+        let mut rom = vec![0; 192];
+        rom[..4].copy_from_slice(&0xeafffffeu32.to_le_bytes());
+        let mut m = GameBoyAdvance::new(rom, None).unwrap();
+        for (index, color) in [(0, 0x7fff), (1, 31), (2, 31 << 5), (3, 31 << 10)] {
+            m.bus.write16(0x05000000 + index * 2, color, false);
+        }
+        let layer = if mode == 0 {
+            0x100
+        } else if mode == 2 {
+            0x800
+        } else {
+            0x400
+        };
+        if mode <= 2 {
+            let control = if mode == 0 {
+                0x04000008
+            } else if mode == 1 {
+                0x0400000c
+            } else {
+                0x0400000e
+            };
+            m.bus
+                .write16(control, if mode == 0 { 0x1c80 } else { 0x1c00 }, false);
+            m.bus.vram[0] = 1;
+            m.bus.vram[1] = 2;
+            m.bus.vram[8] = 3;
+        } else if mode == 4 {
+            m.bus.vram[0] = 1;
+            m.bus.vram[1] = 2;
+            m.bus.vram[240] = 3;
+        } else {
+            m.bus.write16(0x06000000, 31, false);
+            m.bus.write16(0x06000002, 31 << 5, false);
+            m.bus.write16(
+                0x06000000 + if mode == 5 { 320 } else { 480 },
+                31 << 10,
+                false,
+            );
+        }
+        // No matrix writes or BIOS reset service: direct entry must supply the
+        // post-boot identity transform, not collapse all pixels to coordinate 0.
+        m.bus.write16(0x04000000, layer | mode, false);
+        m.bus.take_cycles();
+        m.run(FRAME_CYCLES * 2);
+        let frame = m.video_frame();
+        assert_eq!(&frame.pixels[..4], &[255, 0, 0, 255], "mode {mode}: origin");
+        assert_eq!(
+            &frame.pixels[4..8],
+            &[0, 255, 0, 255],
+            "mode {mode}: horizontal coordinate"
+        );
+        assert_eq!(
+            &frame.pixels[960..964],
+            &[0, 0, 255, 255],
+            "mode {mode}: vertical coordinate"
+        );
+    }
+}
+
+#[test]
 fn original_arm_cartridge_starts_all_psg_channels_and_replays_pcm() {
     use rustboy_emulator_api::Emulator;
     // ARM literal loads and halfword stores perform every register write on the

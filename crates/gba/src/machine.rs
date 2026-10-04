@@ -30,9 +30,16 @@ pub struct GameBoyAdvance {
 impl GameBoyAdvance {
     pub fn new(rom: Vec<u8>, bios: Option<Vec<u8>>) -> Result<Self, String> {
         let boot = bios.is_some();
-        let bus = Bus::new(rom, bios)?;
+        let mut bus = Bus::new(rom, bios)?;
         let mut cpu = Cpu::default();
         if !boot {
+            // Direct entry skips BIOS display initialization. Supply identity
+            // affine matrices, as our RegisterRamReset service does; zero PA/PD
+            // otherwise samples one VRAM coordinate across an entire bitmap.
+            // User-supplied BIOS execution still begins with raw reset state.
+            for offset in [0x20, 0x26, 0x30, 0x36] {
+                bus.set_io(offset, 0x100);
+            }
             cpu.set_cpsr(0xd2).unwrap();
             cpu.r[13] = 0x03007fa0;
             cpu.set_cpsr(0xd3).unwrap();
@@ -299,6 +306,7 @@ mod tests {
     #[test]
     fn affine_register_halves_axes_fraction_and_signed_wrap() {
         let mut m = machine();
+        m.bus.write16(0x04000026, 0, false); // Isolate X stepping from post-boot PD=1.
         m.bus.write32(0x04000028, 0x07ffff80, false);
         m.bus.write16(0x04000022, 0x100, false);
         m.bus.write32(0x04000038, (-256i32) as u32, false);
@@ -322,6 +330,24 @@ mod tests {
         assert!((FRAME_CYCLES..FRAME_CYCLES + 32).contains(&elapsed));
         assert_eq!(m.frames, 1);
         assert_eq!(m.cpu.exceptions, 0);
+    }
+    #[test]
+    fn identity_matrices_only_apply_to_direct_entry_not_user_bios_or_explicit_zero() {
+        let mut m = machine();
+        for offset in [0x20, 0x26, 0x30, 0x36] {
+            assert_eq!(m.bus.io16(offset), 0x100);
+        }
+        m.bus.write16(0x04000020, 0, false);
+        assert_eq!(
+            m.bus.io16(0x20),
+            0,
+            "software can intentionally collapse the transform"
+        );
+        let raw = GameBoyAdvance::new(vec![0; 192], Some(vec![0; 0x4000])).unwrap();
+        assert_eq!(raw.cpu.r[15], 0);
+        for offset in [0x20, 0x26, 0x30, 0x36] {
+            assert_eq!(raw.bus.io16(offset), 0);
+        }
     }
     #[test]
     fn video_deadlines_and_interrupts() {

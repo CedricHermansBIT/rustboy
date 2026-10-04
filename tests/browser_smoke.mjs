@@ -244,6 +244,37 @@ try {
     await until("document.body.textContent.includes('Could not read ROM: ROM size must')");
     assert.equal(await evaluate("Module._get_state_id()===gbaUploadedId"),true);
     console.log('GBA browser: 32 MiB upload, real WASM bitmap/PSG audio, Flash persistence, checked states, measured fast-forward and oversized-load preservation passed', speedChecks);
+    // Differently colored neighboring pixels catch a zero affine matrix that
+    // the preceding uniform-red bitmap could not detect. Every fixture writes
+    // its registers/data through executable ARM stores, without a BIOS SWI.
+    for (let mode=0;mode<6;mode++) {
+      const settings=[[0x05000000,0x7fff],[0x05000002,31],[0x05000004,31<<5],[0x05000006,31<<10]];
+      const layer=mode===0?0x100:mode===2?0x800:0x400;
+      if (mode<=2) {
+        settings.push([mode===0?0x04000008:mode===1?0x0400000c:0x0400000e,mode===0?0x1c80:0x1c00],
+          [0x06000000,0x0201],[0x06000008,3]);
+      } else if (mode===4) settings.push([0x06000000,0x0201],[0x060000f0,3]);
+      else settings.push([0x06000000,31],[0x06000002,31<<5],[0x06000000+(mode===5?320:480),31<<10]);
+      settings.push([0x04000000,layer|mode]);
+      const words=[];
+      for (const _ of settings) words.push(0,0,0xe1c010b0);
+      words.push(0xeafffffe);
+      settings.forEach(([address,value],n)=>{
+        const at=n*3;
+        words[at]=0xe59f0000|(words.length*4-(at*4+8));words.push(address);
+        words[at+1]=0xe59f1000|(words.length*4-((at+1)*4+8));words.push(value);
+      });
+      const fixture=new Uint8Array(2048);const image=new DataView(fixture.buffer);
+      words.forEach((word,n)=>image.setUint32(n*4,word,true));fixture[0xb2]=0x96;
+      const file=path.join(temporary,`original-mode-${mode}.gba`);await fs.writeFile(file,fixture);
+      const previous=await evaluate("Module._get_state_id()");
+      await call('DOM.setFileInputFiles',{nodeId,files:[file]});
+      await until(`Module._get_state_id()!==${JSON.stringify(previous)} && Module._get_state_id().startsWith('gba-')`);
+      await until("(() => { const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset).getBigUint64(309,true)>=2n; })()");
+      assert.deepEqual(await evaluate("(() => { const c=document.querySelector('#rustboy-canvas').getContext('2d'); return [[0,0],[1,0],[0,1]].map(([x,y])=>Array.from(c.getImageData(x,y,1,1).data)); })()"),
+        [[255,0,0,255],[0,255,0,255],[0,0,255,255]],`mode ${mode} preserves distinct source coordinates`);
+    }
+    console.log('GBA browser: patterned CPU-driven rendering in all six display modes passed');
   }
   // Explicit opt-in only. Never copies the supplied game into public assets.
   if (process.env.RUSTBOY_GBA_PROFILE) {
