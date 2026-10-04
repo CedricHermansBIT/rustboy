@@ -14,6 +14,7 @@ pub struct Bus {
     pub(crate) io: Vec<u8>,
     pub(crate) clocks: u64,
     pub halted: bool,
+    pub stopped: bool,
     pub(crate) timers: [Timer; 4],
     // Derived scheduling caches: rebuilt after register writes/state restore.
     pub(crate) timer_enabled: u8,
@@ -45,6 +46,7 @@ impl Bus {
             io: vec![0; 0x400],
             clocks: 0,
             halted: false,
+            stopped: false,
             timers: [Timer::default(); 4],
             timer_enabled: 0,
             timer_next: u64::MAX,
@@ -78,6 +80,33 @@ impl Bus {
     }
     pub fn set_keys(&mut self, pressed: u16) {
         self.set_io(0x130, !pressed & 0x3ff);
+        self.check_key_irq();
+    }
+    fn check_key_irq(&mut self) {
+        let control = self.io16(0x132);
+        let selected = control & 0x3ff;
+        let pressed = !self.io16(0x130) & selected;
+        let matched = if control & 0x8000 != 0 {
+            pressed == selected
+        } else {
+            pressed != 0
+        };
+        if control & 0x4000 != 0 && matched {
+            self.request_irq(1 << 12);
+        }
+    }
+    pub(crate) fn enter_low_power(&mut self, value: u8) {
+        self.stopped = value & 0x80 != 0;
+        self.halted = !self.stopped;
+    }
+    pub(crate) fn stop_wake_pending(&self) -> bool {
+        let sources = 0x3000
+            | if self.io16(0x134) & 0xc000 == 0x8000 {
+                0x80 // Serial IRQ wakes only in general-purpose SIO mode.
+            } else {
+                0
+            };
+        self.io16(0x200) & self.io16(0x202) & sources != 0
     }
     fn vram_index(address: u32) -> usize {
         let index = address as usize & 0x1ffff;
@@ -215,7 +244,8 @@ impl Bus {
                     0x202 | 0x203 => self.io[offset] &= !value,
                     6 | 7 | 0x130 | 0x131 => {}
                     4 => self.io[4] = (self.io[4] & 7) | (value & 0x38),
-                    0x301 => self.halted = true,
+                    0x301 => self.enter_low_power(value),
+                    0x133 => self.io[offset] = value & 0xc3,
                     _ => self.io[offset] = value,
                 }
                 self.peripheral_write(offset, old);
@@ -276,6 +306,9 @@ impl Memory for Bus {
             7 => {}
             _ => self.put8(address, value),
         }
+        if matches!(address, 0x04000132 | 0x04000133) {
+            self.check_key_irq();
+        }
     }
     fn write16(&mut self, address: u32, value: u16, sequential: bool) {
         self.charge(address, 2, sequential);
@@ -292,6 +325,9 @@ impl Memory for Bus {
         for (i, byte) in value.to_le_bytes().into_iter().enumerate() {
             self.put8(address + i as u32, byte);
         }
+        if address == 0x04000132 {
+            self.check_key_irq();
+        }
     }
     fn write32(&mut self, address: u32, value: u32, sequential: bool) {
         self.charge(address, 4, sequential);
@@ -304,6 +340,9 @@ impl Memory for Bus {
         for (i, byte) in value.to_le_bytes().into_iter().enumerate() {
             self.put8(address + i as u32, byte);
         }
+        if address == 0x04000130 {
+            self.check_key_irq();
+        }
     }
     fn internal(&mut self, clocks: u32) {
         self.clocks += u64::from(clocks);
@@ -315,6 +354,42 @@ mod tests {
     use super::*;
     fn bus() -> Bus {
         Bus::new(vec![0; 0xc0], None).unwrap()
+    }
+    #[test]
+    fn keypad_irq_or_and_enable_masks_and_control_writes() {
+        let mut b = bus();
+        b.set_keys(1);
+        assert_eq!(b.io16(0x202), 0);
+        b.write16(0x04000132, 0x4003, false);
+        assert_eq!(b.io16(0x202), 0x1000);
+        b.write16(0x04000202, 0x1000, false);
+        b.write16(0x04000132, 0xc003, false);
+        assert_eq!(b.io16(0x202), 0);
+        b.set_keys(3);
+        assert_eq!(b.io16(0x202), 0x1000);
+        b.write16(0x04000202, 0x1000, false);
+        b.set_keys(1);
+        assert_eq!(b.io16(0x202), 0);
+        b.write8(0x04000133, 0x40);
+        assert_eq!(b.io16(0x202), 0x1000);
+        b.write16(0x04000202, 0x1000, false);
+        b.write32(0x04000130, 0x40020000, false);
+        assert_eq!(b.io16(0x202), 0);
+        assert_eq!(b.io16(0x130), 0x3fe); // KEYINPUT is read-only.
+        b.write16(0x04000132, 0xffff, false);
+        assert_eq!(b.io16(0x132), 0xc3ff);
+        b.set_keys(0xffff);
+        assert_eq!(b.io16(0x130), 0);
+        assert_eq!(b.io16(0x202), 0x1000);
+    }
+    #[test]
+    fn halfword_key_control_write_has_no_transient_low_byte_match() {
+        let mut b = bus();
+        b.set_keys(1);
+        b.write16(0x04000132, 0x4002, false);
+        // New low byte matches A, but the same halfword disables interrupts.
+        b.write16(0x04000132, 1, false);
+        assert_eq!(b.io16(0x202), 0);
     }
     #[test]
     fn backup_is_an_eight_bit_bus_not_consecutive_wide_accesses() {

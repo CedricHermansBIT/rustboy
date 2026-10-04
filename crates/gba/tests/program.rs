@@ -8,6 +8,56 @@ fn put_words(machine: &mut GameBoyAdvance, address: u32, words: &[u32]) {
     }
     machine.bus.take_cycles();
 }
+#[test]
+fn arm_and_thumb_stop_services_resume_at_the_next_instruction() {
+    use rustboy_emulator_api::Emulator;
+    for thumb in [false, true] {
+        for service in [3, 0x27] {
+            let mut rom = vec![0; 192];
+            if thumb {
+                for (n, op) in [0xdf00u16 | service, 0x2477, 0xe7fe]
+                    .into_iter()
+                    .enumerate()
+                {
+                    rom[n * 2..n * 2 + 2].copy_from_slice(&op.to_le_bytes());
+                }
+            } else {
+                for (n, op) in [
+                    0xef000000u32 | (u32::from(service) << 16),
+                    0xe3a04077,
+                    0xeafffffe,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    rom[n * 4..n * 4 + 4].copy_from_slice(&op.to_le_bytes());
+                }
+            }
+            let mut m = GameBoyAdvance::new(rom, None).unwrap();
+            m.cpu.r[2] = 0x80;
+            if thumb {
+                m.cpu.set_cpsr(m.cpu.cpsr() | 0x20).unwrap();
+            }
+            m.run(FRAME_CYCLES);
+            assert!(m.fault.is_none());
+            assert!(m.bus.stopped);
+            assert_eq!(m.cpu.r[4], 0);
+            assert_eq!(m.cpu.instructions, 1);
+            assert_eq!(m.cpu.exceptions, 1);
+            let before = m.export_state();
+            assert_eq!(m.run(FRAME_CYCLES * 100), 0);
+            assert_eq!(m.export_state(), before);
+            m.bus.write16(0x04000200, 0x1000, false);
+            m.bus.write16(0x04000132, 0x4001, false);
+            m.bus.set_keys(1);
+            m.bus.take_cycles();
+            m.run(100);
+            assert!(!m.bus.stopped);
+            assert_eq!(m.cpu.r[4], 0x77);
+            assert_eq!(m.cpu.cpsr() & 0x3f, if thumb { 0x3f } else { 0x1f });
+        }
+    }
+}
 
 #[test]
 fn original_cartridges_dispatch_data_services_in_arm_and_thumb() {

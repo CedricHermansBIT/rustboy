@@ -307,6 +307,31 @@ try {
       assert.deepEqual(await evaluate("(() => { const c=document.querySelector('#rustboy-canvas').getContext('2d'); return [0,1].map(x=>Array.from(c.getImageData(x,0,1,1).data)); })()"),pixels,`SWI ${service.toString(16)} output reaches display`);
     }
     console.log('GBA browser: five original BIOS data services execute through cartridge SWIs and render their output');
+    {
+      const settings=[[0x04000200,0x1000],[0x04000132,0x4001]];
+      const words=[];
+      for (const _ of settings) words.push(0,0,0xe1c010b0);
+      words.push(0xef030000,0xe3a04077,0xeafffffe);
+      settings.forEach(([address,value],n)=>{
+        const at=n*3;
+        words[at]=0xe59f0000|(words.length*4-(at*4+8));words.push(address);
+        words[at+1]=0xe59f1000|(words.length*4-((at+1)*4+8));words.push(value);
+      });
+      const fixture=new Uint8Array(512);const image=new DataView(fixture.buffer);
+      words.forEach((word,n)=>image.setUint32(n*4,word,true));fixture[0xb2]=0x96;
+      const file=path.join(temporary,'original-stop.gba');await fs.writeFile(file,fixture);
+      const previous=await evaluate('Module._get_state_id()');
+      await call('DOM.setFileInputFiles',{nodeId,files:[file]});
+      await until(`Module._get_state_id()!==${JSON.stringify(previous)} && Module._get_state_id().startsWith('gba-')`);
+      await until('Module._export_state()[333]===2');
+      await evaluate('window.stoppedGbaState=Module._export_state(); Module._import_state(stoppedGbaState)');
+      await new Promise(resolve=>setTimeout(resolve,150));
+      assert.equal(await evaluate('(() => { const s=Module._export_state(); return s[4]===7 && s[333]===2 && s.every((byte,n)=>byte===stoppedGbaState[n]); })()'),true,'STOP freezes all serialized clocks/state across browser callbacks and restore');
+      await call('Input.dispatchKeyEvent',{type:'keyDown',key:'k',code:'KeyK'});
+      await until('(() => { const s=Module._export_state(); return s[333]===0 && new DataView(s.buffer,s.byteOffset).getUint32(40,true)===0x77; })()');
+      await call('Input.dispatchKeyEvent',{type:'keyUp',key:'k',code:'KeyK'});
+      console.log('GBA browser: STOP freezes hardware, replays state and wakes through keyboard keypad IRQ');
+    }
   }
   // Explicit opt-in only. Never copies the supplied game into public assets.
   if (process.env.RUSTBOY_GBA_PROFILE) {
@@ -323,7 +348,7 @@ try {
       const wasm = await import('./out/rustboy.js');
       const clocks = () => {
         const bytes = Module._export_state();
-        if (![5, 6].includes(bytes[4])) throw new Error('Update profile snapshot offsets');
+        if (![5, 6, 7].includes(bytes[4])) throw new Error('Update profile snapshot offsets');
         return Number(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(301, true));
       };
       Module._set_paused(true);

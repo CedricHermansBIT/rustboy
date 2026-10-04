@@ -32,6 +32,7 @@ pub(crate) fn irq_firmware() -> Vec<u8> {
 pub(crate) enum Effect {
     Return,
     Halt,
+    Stop,
     Wait { mask: u16, discard: bool },
     Reset,
 }
@@ -63,6 +64,14 @@ pub(crate) fn service(number: u8, cpu: &mut Cpu, bus: &mut Bus) -> Result<Effect
         }
         1 => reset_memory(bus, cpu.r[0] as u8),
         2 => return Ok(Effect::Halt),
+        3 => return Ok(Effect::Stop),
+        0x27 => {
+            return Ok(if cpu.r[2] & 0x80 != 0 {
+                Effect::Stop
+            } else {
+                Effect::Halt
+            })
+        }
         4 => {
             return Ok(Effect::Wait {
                 mask: cpu.r[1] as u16,

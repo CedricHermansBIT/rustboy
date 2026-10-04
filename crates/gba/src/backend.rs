@@ -186,7 +186,7 @@ fn put(data: &mut Vec<u8>, value: u64, n: usize) {
 }
 impl GameBoyAdvance {
     fn snapshot(&self) -> Vec<u8> {
-        let mut data = b"RBGA\x06\0\0\0".to_vec();
+        let mut data = b"RBGA\x07\0\0\0".to_vec();
         put(&mut data, hash(&self.bus.rom), 8);
         put(&mut data, hash(&self.bus.bios), 8);
         for register in self
@@ -214,7 +214,15 @@ impl GameBoyAdvance {
         put(&mut data, u64::from(self.wait_mask.is_some()), 1);
         put(&mut data, u64::from(self.wait_mask.unwrap_or(0)), 2);
         put(&mut data, u64::from(self.paused), 1);
-        put(&mut data, u64::from(self.bus.halted), 1);
+        put(
+            &mut data,
+            if self.bus.stopped {
+                2
+            } else {
+                u64::from(self.bus.halted)
+            },
+            1,
+        );
         put(&mut data, u64::from(self.fault.is_some()), 1);
         put(
             &mut data,
@@ -328,6 +336,7 @@ impl GameBoyAdvance {
             b"RBGA\x04\0\0\0" => 4,
             b"RBGA\x05\0\0\0" => 5,
             b"RBGA\x06\0\0\0" => 6,
+            b"RBGA\x07\0\0\0" => 7,
             _ => return Err("Unsupported GBA state version".into()),
         };
         if reader.int(8)? != hash(&self.bus.rom) || reader.int(8)? != hash(&self.bus.bios) {
@@ -364,7 +373,12 @@ impl GameBoyAdvance {
         let mask = reader.int(2)? as u16;
         next.wait_mask = waiting.then_some(mask);
         next.paused = reader.bool()?;
-        next.bus.halted = reader.bool()?;
+        match reader.int(1)? {
+            0 => {}
+            1 => next.bus.halted = true,
+            2 if version >= 7 => next.bus.stopped = true,
+            _ => return Err("Invalid GBA low-power state".into()),
+        }
         let fault = reader.bool()?;
         let address = reader.int(4)? as u32;
         let vector = reader.int(4)? as u32;
@@ -573,6 +587,39 @@ mod tests {
         let mut rom = vec![0; 192];
         rom[..4].copy_from_slice(&0xeafffffeu32.to_le_bytes());
         GameBoyAdvance::new(rom, None).unwrap()
+    }
+    #[test]
+    fn stopped_states_replay_and_legacy_halt_states_remain_readable() {
+        let mut m = machine();
+        m.bus.enter_low_power(0x80);
+        let saved = m.export_state();
+        assert_eq!(saved[4], 7);
+        m.bus.stopped = false;
+        m.import_state(&saved).unwrap();
+        assert!(m.bus.stopped);
+        assert!(!m.bus.halted);
+        assert_eq!(m.run(crate::FRAME_CYCLES), 0);
+        assert_eq!(m.export_state(), saved);
+        // Same-length V6 states may only encode a boolean HALT flag.
+        let mut old = saved.clone();
+        old[4] = 6;
+        let checksum_at = old.len() - 8;
+        let checksum = hash(&old[..checksum_at]);
+        old[checksum_at..].copy_from_slice(&checksum.to_le_bytes());
+        assert!(m.import_state(&old).is_err());
+        assert_eq!(m.export_state(), saved);
+        m.bus.stopped = false;
+        m.bus.halted = true;
+        let mut old = m.export_state();
+        old[4] = 6;
+        let checksum = hash(&old[..checksum_at]);
+        old[checksum_at..].copy_from_slice(&checksum.to_le_bytes());
+        m.import_state(&old).unwrap();
+        assert!(m.bus.halted);
+        assert!(!m.bus.stopped);
+        m.bus.enter_low_power(0x80);
+        Emulator::reset(&mut m);
+        assert!(!m.bus.stopped);
     }
     #[test]
     fn snapshot_rebuilds_derived_timer_deadlines() {

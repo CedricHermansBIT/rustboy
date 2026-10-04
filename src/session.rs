@@ -66,6 +66,9 @@ impl Session {
             total.ticks += result.ticks;
             total.reason = result.reason;
             if result.reason != StopReason::BudgetExhausted || result.ticks == 0 {
+                // A hardware sleep (or another non-running state) must not
+                // accumulate wall-clock work to execute after it wakes up.
+                self.clock.drop_backlog();
                 break;
             }
             if now() - started >= max_work_ms {
@@ -196,6 +199,29 @@ mod tests {
             paused: false,
             pixels: vec![0; 320 * 200 * 4],
         }))
+    }
+
+    #[test]
+    fn gba_stop_drops_sleep_time_instead_of_catching_up_after_key_wake() {
+        use rustboy_gba::cpu::Memory;
+        let mut rom = vec![0; 192];
+        for (n, op) in [0xef030000u32, 0xeafffffe].into_iter().enumerate() {
+            rom[n * 4..n * 4 + 4].copy_from_slice(&op.to_le_bytes());
+        }
+        let mut gba = rustboy_gba::GameBoyAdvance::new(rom, None).unwrap();
+        gba.bus.write16(0x04000200, 0x1000, false);
+        gba.bus.write16(0x04000132, 0x4001, false);
+        gba.bus.take_cycles();
+        let mut session = Session::new(Box::new(gba));
+        assert_eq!(session.tick(0.0).ticks, 0);
+        assert!(session.tick(10.0).ticks > 0);
+        assert!(!session.backend.paused()); // Hardware sleep is not user pause.
+        for frame in 2..=100 {
+            assert_eq!(session.tick(frame as f64 * 10.0).ticks, 0);
+        }
+        session.backend.set_button(0, Button::A, true).unwrap();
+        let result = session.tick(1010.0);
+        assert!((167_770..=167_900).contains(&result.ticks));
     }
 
     #[test]

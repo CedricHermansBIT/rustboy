@@ -70,6 +70,14 @@ impl GameBoyAdvance {
         if self.fault.is_some() {
             return 0;
         }
+        // STOP gates the system clock: even an already active DMA must wait.
+        // Wake sources are independent of IME and the CPU's interrupt mask.
+        if self.bus.stopped {
+            if !self.bus.stop_wake_pending() {
+                return 0;
+            }
+            self.bus.stopped = false;
+        }
         if self.bus.dma_unit() {
             let clocks = self.bus.take_cycles();
             self.advance_video(clocks);
@@ -120,7 +128,8 @@ impl GameBoyAdvance {
                             self.cpu.return_swi(&mut self.bus);
                         }
                         match effect {
-                            crate::bios::Effect::Halt => self.bus.halted = true,
+                            crate::bios::Effect::Halt => self.bus.enter_low_power(0),
+                            crate::bios::Effect::Stop => self.bus.enter_low_power(0x80),
                             crate::bios::Effect::Wait { mask, discard } => {
                                 self.bus.set_io(0x208, 1);
                                 if discard {
@@ -157,7 +166,9 @@ impl GameBoyAdvance {
     pub fn run(&mut self, budget: u64) -> u64 {
         let start = self.clocks;
         while self.clocks.wrapping_sub(start) < budget && self.fault.is_none() {
-            self.step();
+            if self.step() == 0 {
+                break;
+            }
         }
         self.clocks.wrapping_sub(start)
     }
@@ -246,6 +257,56 @@ mod tests {
         let mut rom = vec![0; 192];
         rom[..4].copy_from_slice(&0xeafffffeu32.to_le_bytes());
         GameBoyAdvance::new(rom, None).unwrap()
+    }
+    #[test]
+    fn stop_freezes_cpu_video_audio_timers_and_pending_dma() {
+        use rustboy_emulator_api::Emulator;
+        let mut m = machine();
+        m.bus.write32(0x04000100, 0x0080ff00, false);
+        m.bus.write32(0x03000000, 0xdeadbeef, false);
+        m.bus.write32(0x040000d4, 0x03000000, false);
+        m.bus.write32(0x040000d8, 0x02000000, false);
+        m.bus.write32(0x040000dc, 0x84000001, false);
+        m.bus.write8(0x04000301, 0x80);
+        m.bus.take_cycles();
+        let before = m.export_state();
+        assert_eq!(m.run(FRAME_CYCLES * 60), 0);
+        assert_eq!(m.step(), 0);
+        assert_eq!(m.export_state(), before);
+        m.bus.set_io(0x200, 0x1000);
+        m.bus.write16(0x04000132, 0x4001, false);
+        m.bus.set_keys(1);
+        m.bus.take_cycles();
+        assert!(m.step() > 0);
+        assert!(!m.bus.stopped);
+        assert_eq!(m.cpu.instructions, 0); // The queued DMA wins after wake.
+        assert_eq!(m.bus.peek32(0x02000000), 0xdeadbeef);
+        assert!(m.bus.peek16(0x04000100) > 0xff00);
+    }
+    #[test]
+    fn stop_only_wakes_from_enabled_external_sources_without_ime() {
+        for source in 0..14 {
+            let mut m = machine();
+            m.bus.enter_low_power(0x80);
+            m.bus.request_irq(1 << source);
+            assert_eq!(m.step(), 0); // Disabled in IE.
+            m.bus.set_io(0x200, 1 << source);
+            m.bus.set_io(0x208, 0);
+            if source == 7 {
+                assert_eq!(m.step(), 0); // Ordinary serial mode cannot wake.
+                m.bus.set_io(0x134, 0x8000);
+            }
+            m.cpu.set_cpsr(m.cpu.cpsr() | 0x80).unwrap();
+            if matches!(source, 7 | 12 | 13) {
+                assert!(m.step() > 0);
+                assert!(!m.bus.stopped);
+                assert_eq!(m.cpu.instructions, 1);
+                assert_eq!(m.cpu.exceptions, 0);
+            } else {
+                assert_eq!(m.run(FRAME_CYCLES), 0);
+                assert!(m.bus.stopped);
+            }
+        }
     }
     #[test]
     fn affine_scanline_steps_and_reference_writes_do_not_recompute_past_lines() {
