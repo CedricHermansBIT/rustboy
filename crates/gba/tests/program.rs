@@ -9,6 +9,59 @@ fn put_words(machine: &mut GameBoyAdvance, address: u32, words: &[u32]) {
     machine.bus.take_cycles();
 }
 #[test]
+fn original_cartridge_captures_a_bitmap_in_160_dma3_scanline_bursts() {
+    use rustboy_emulator_api::Emulator;
+    // CPU stores configure display and DMA3. Every pixel comes from scheduled
+    // DMA, not host VRAM writes or another emulator's graphics/firmware code.
+    let settings = [
+        (0x04000000u32, 0x403u32),
+        (0x040000d4, 0x08001000),
+        (0x040000d8, 0x06000000),
+        (0x040000dc, 0xb20000f0),
+    ];
+    let mut words = vec![];
+    for _ in settings {
+        words.extend_from_slice(&[0, 0, 0xe5801000]);
+    }
+    words.push(0xeafffffe);
+    for (n, (address, value)) in settings.into_iter().enumerate() {
+        let at = n * 3;
+        words[at] = 0xe59f0000 | (words.len() as u32 * 4 - (at as u32 * 4 + 8));
+        words.push(address);
+        words[at + 1] = 0xe59f1000 | (words.len() as u32 * 4 - ((at + 1) as u32 * 4 + 8));
+        words.push(value);
+    }
+    let mut rom = vec![0; 0x14000];
+    for (n, word) in words.into_iter().enumerate() {
+        rom[n * 4..n * 4 + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    for row in 0..160usize {
+        for col in 0..240usize {
+            let color = ((row as u16 & 31) << 10) | (col as u16 & 31);
+            let at = 0x1000 + (row * 240 + col) * 2;
+            rom[at..at + 2].copy_from_slice(&color.to_le_bytes());
+        }
+    }
+    let mut m = GameBoyAdvance::new(rom, None).unwrap();
+    m.run(FRAME_CYCLES * 2);
+    assert!(m.fault.is_none());
+    assert_eq!(m.bus.peek16(0x040000de) & 0x8000, 0);
+    for row in 0..160u32 {
+        for col in 0..240u32 {
+            let color = ((row as u16 & 31) << 10) | (col as u16 & 31);
+            assert_eq!(m.bus.peek16(0x06000000 + (row * 240 + col) * 2), color);
+        }
+    }
+    let last = (159 * 240 + 239) * 4;
+    assert_eq!(&m.video_frame().pixels[last..last + 4], &[123, 0, 255, 255]);
+    let saved = m.export_state();
+    m.run(FRAME_CYCLES);
+    let after = m.export_state();
+    m.import_state(&saved).unwrap();
+    m.run(FRAME_CYCLES);
+    assert_eq!(m.export_state(), after);
+}
+#[test]
 fn arm_and_thumb_angle_services_return_signed_and_wrapped_results() {
     use rustboy_emulator_api::Emulator;
     for thumb in [false, true] {

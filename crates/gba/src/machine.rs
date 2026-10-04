@@ -218,6 +218,7 @@ impl GameBoyAdvance {
                 if self.line < 160 {
                     self.bus.trigger_dma(2);
                 }
+                self.bus.trigger_capture_dma(self.line);
             } else if self.line_clocks == 1232 {
                 self.line_clocks = 0;
                 self.line = (self.line + 1) % 228;
@@ -227,6 +228,9 @@ impl GameBoyAdvance {
                     self.bus.advance_affine(self.line);
                 }
                 self.bus.set_io(6, self.line);
+                if self.line == 162 {
+                    self.bus.finish_capture_dma();
+                }
                 let old = self.bus.io16(4);
                 let matched = self.line == old >> 8;
                 let stat = (old & !7)
@@ -259,6 +263,42 @@ mod tests {
         let mut rom = vec![0; 192];
         rom[..4].copy_from_slice(&0xeafffffeu32.to_le_bytes());
         GameBoyAdvance::new(rom, None).unwrap()
+    }
+    #[test]
+    fn capture_is_queued_at_scanline_hblank_and_replays_without_extra_state() {
+        use rustboy_emulator_api::Emulator;
+        let mut m = machine();
+        m.bus.write32(0x03000000, 0x56781234, false);
+        m.bus.write32(0x040000d4, 0x03000000, false);
+        m.bus.write32(0x040000d8, 0x06000000, false);
+        m.bus.write32(0x040000dc, 0xb2000001, false);
+        m.bus.take_cycles();
+        m.advance_video(2 * 1232 + 1005);
+        assert_eq!((m.line, m.line_clocks), (2, 1005));
+        assert!(!m.bus.dma[3].active);
+        m.advance_video(1);
+        assert!(m.bus.dma[3].active);
+        let saved = m.export_state();
+        m.step();
+        assert_eq!(m.cpu.instructions, 0);
+        assert_eq!(m.bus.peek16(0x06000000), 0x1234);
+        let after = m.export_state();
+        m.import_state(&saved).unwrap();
+        m.step();
+        assert_eq!(m.export_state(), after);
+        m.advance_video(u64::from(1232 - m.line_clocks));
+        assert_eq!(m.line, 3);
+        assert!(!m.bus.dma[3].active);
+        m.advance_video(1006);
+        assert!(m.bus.dma[3].active);
+        m.step();
+        assert_eq!(m.bus.peek16(0x06000002), 0x5678);
+        m.advance_video(159 * 1232 - u64::from(m.line_clocks));
+        assert_eq!(m.line, 162);
+        assert_eq!(m.bus.io16(0xde) & 0x8000, 0);
+        assert!(m.bus.dma[3].active);
+        m.step();
+        assert!(!m.bus.dma[3].active);
     }
     #[test]
     fn stop_freezes_cpu_video_audio_timers_and_pending_dma() {

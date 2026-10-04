@@ -368,6 +368,30 @@ try {
       assert.deepEqual(await evaluate("Array.from(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,1,1).data)"),pixel,'angle SWI result is rendered by cartridge');
     }
     console.log('GBA browser: original ArcTan/ArcTan2 cartridges return signed/quadrant results and render them');
+    {
+      const settings=[[0x04000000,0x403],[0x040000d4,0x08001000],
+        [0x040000d8,0x06000000],[0x040000dc,0xb20000f0]];
+      const words=[];
+      for (const _ of settings) words.push(0,0,0xe5801000);
+      words.push(0xeafffffe);
+      settings.forEach(([address,value],n)=>{
+        const at=n*3;
+        words[at]=0xe59f0000|(words.length*4-(at*4+8));words.push(address);
+        words[at+1]=0xe59f1000|(words.length*4-((at+1)*4+8));words.push(value);
+      });
+      const fixture=new Uint8Array(0x14000);const image=new DataView(fixture.buffer);
+      words.forEach((word,n)=>image.setUint32(n*4,word,true));fixture[0xb2]=0x96;
+      for(let y=0;y<160;y++) for(let x=0;x<240;x++)
+        image.setUint16(0x1000+(y*240+x)*2,((y&31)<<10)|(x&31),true);
+      const file=path.join(temporary,'original-video-capture.gba');await fs.writeFile(file,fixture);
+      const previous=await evaluate('Module._get_state_id()');
+      await call('DOM.setFileInputFiles',{nodeId,files:[file]});
+      await until(`Module._get_state_id()!==${JSON.stringify(previous)} && Module._get_state_id().startsWith('gba-')`);
+      await until('(() => { const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset).getBigUint64(309,true)>=2n; })()');
+      assert.deepEqual(await evaluate("(() => { const c=document.querySelector('#rustboy-canvas').getContext('2d'); return [[1,0],[0,1],[239,159]].map(([x,y])=>Array.from(c.getImageData(x,y,1,1).data)); })()"),
+        [[8,0,0,255],[0,0,8,255],[123,0,255,255]],'DMA3 capture renders distinct pixels, including the completed last row');
+      console.log('GBA browser: original cartridge captures a complete bitmap through 160 scheduled DMA3 bursts');
+    }
   }
   // Explicit opt-in only. Never copies the supplied game into public assets.
   if (process.env.RUSTBOY_GBA_PROFILE) {

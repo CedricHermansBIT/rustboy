@@ -176,6 +176,30 @@ impl Bus {
             }
         }
     }
+    /// DMA3 special timing captures 160 scanlines, including the two lines
+    /// after visible display. Functional HBlank scheduling; exact request phase
+    /// and camera/DRQ electrical timing are not yet modeled.
+    pub(crate) fn trigger_capture_dma(&mut self, line: u16) {
+        if !(2..162).contains(&line) {
+            return;
+        }
+        let d = &mut self.dma[3];
+        if d.control & 0xb000 == 0xb000 && !d.active {
+            d.remaining = d.count;
+            d.active = true;
+            d.first = true;
+        }
+    }
+    pub(crate) fn finish_capture_dma(&mut self) {
+        let d = &mut self.dma[3];
+        if d.control & 0xb000 == 0xb000 {
+            // Prevent another scanline request, but let the last burst drain.
+            // A row may legitimately require more than the HBlank interval.
+            d.control &= !0x8000;
+            let control = d.control;
+            self.set_io(0xde, control);
+        }
+    }
     pub(crate) fn dma_unit(&mut self) -> bool {
         self.request_fifo_dma();
         let Some(n) = self.dma.iter().position(|d| d.active) else {
@@ -272,6 +296,81 @@ mod tests {
     use super::*;
     fn bus() -> Bus {
         Bus::new(vec![0; 192], None).unwrap()
+    }
+    #[test]
+    fn capture_copies_exactly_160_rows_including_vblank_and_then_disables() {
+        let mut b = bus();
+        for row in 0..160 {
+            b.write16(0x03000000 + row * 2, (0x100 + row) as u16, false);
+        }
+        configure(&mut b, 3, 0x03000000, 0x06000000, 1, 0xf200);
+        for line in 0..162 {
+            b.trigger_capture_dma(line);
+            if line < 2 {
+                assert!(!b.dma_unit());
+            } else {
+                assert!(b.dma_unit());
+                assert!(!b.dma[3].active);
+                assert_eq!(
+                    b.peek16(0x06000000 + u32::from(line - 2) * 2),
+                    0x100 + line - 2
+                );
+                assert_eq!(b.io16(0x202) & 0x800, 0x800);
+                b.write16(0x04000202, 0x800, false);
+            }
+        }
+        assert_eq!(b.dma[3].source, 0x03000140);
+        assert_eq!(b.dma[3].destination, 0x06000140);
+        b.finish_capture_dma();
+        assert_eq!(b.io16(0xde), 0x7200);
+        assert_eq!(b.io16(0x202) & 0x800, 0); // No additional completion IRQ.
+        for line in 162..228 {
+            b.trigger_capture_dma(line);
+            assert!(!b.dma_unit());
+        }
+        b.trigger_capture_dma(2);
+        assert!(!b.dma_unit()); // Software must re-enable capture next frame.
+    }
+    #[test]
+    fn capture_obeys_nonrepeat_and_destination_reload() {
+        let mut b = bus();
+        for (n, value) in [10u16, 11, 12, 13].into_iter().enumerate() {
+            b.write16(0x03000000 + n as u32 * 2, value, false);
+        }
+        configure(&mut b, 3, 0x03000000, 0x06000000, 2, 0xb000);
+        b.trigger_capture_dma(2);
+        while b.dma_unit() {}
+        assert_eq!(b.io16(0xde) & 0x8000, 0);
+        b.trigger_capture_dma(3);
+        assert!(!b.dma_unit());
+        assert_eq!(b.peek16(0x06000004), 0);
+        configure(&mut b, 3, 0x03000000, 0x06000000, 2, 0xb260);
+        for line in [2, 3] {
+            b.trigger_capture_dma(line);
+            while b.dma_unit() {}
+            assert_eq!(b.dma[3].destination, 0x06000000);
+        }
+        assert_eq!(b.peek32(0x06000000), 0x000d000c);
+        assert_eq!(b.dma[3].source, 0x03000008);
+    }
+    #[test]
+    fn capture_trigger_and_shutdown_only_affect_dma3_special_mode() {
+        let mut b = bus();
+        for n in 0..4 {
+            configure(&mut b, n, 0x03000000, 0x06000000, 2, 0xb200);
+        }
+        b.trigger_capture_dma(2);
+        assert_eq!(b.dma.map(|d| d.active), [false, false, false, true]);
+        b.finish_capture_dma(); // Stop requests, but drain the queued burst.
+        assert!(b.dma[3].active);
+        assert!(b.dma_unit());
+        assert!(b.dma_unit());
+        assert!(b.dma.iter().all(|d| !d.active));
+        assert_eq!(b.io16(0xde), 0x3200);
+        assert_eq!(b.dma[0].control, 0xb200);
+        configure(&mut b, 3, 0x03000000, 0x06000000, 2, 0x9200);
+        b.finish_capture_dma();
+        assert_eq!(b.dma[3].control, 0x9200); // Don't disable VBlank DMA3.
     }
     #[test]
     fn dma_control_masks_reserved_bits_and_only_dma3_has_drq() {
