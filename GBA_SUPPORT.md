@@ -57,6 +57,33 @@ backend-only milestone.
 
 ## Remaining milestones
 
+### Per-scanline OBJ budget baseline
+
+The sprite compositor now limits each scanline to 1,210 rendering cycles,
+or 954 when DISPCNT's HBlank-free bit is set. Normal objects cost one cycle
+per bounding-box pixel; affine objects cost ten setup cycles plus two per
+pixel, including double-size bounds. OAM order consumes the budget even for
+transparent or horizontally offscreen objects, and the last object can be
+partially rendered. Disabled objects and objects outside the current row are
+excluded in this baseline; exact fetch phases and hardware edge cases remain
+unverified. The documented costs follow
+https://rust-console.github.io/gbatek-gbaonly/#maximum-number-of-sprites-per-line
+
+Three original tests cover both budgets, partial-object clipping, transparency,
+disabled/other-row objects, independent scanlines and affine double-size costs.
+Two original CPU-driven browser cartridges verify visible pixel boundaries
+through the real WASM upload/render path. All 137 GBA unit / 16 original program /
+3 EEPROM tests pass (156 GBA checks), with 331 self-contained native checks,
+JS/Python checks, warnings-denied GBA Clippy and the root WASM check. The rebuilt
+GBA browser scenario passes all previous fixtures and both new sprite fixtures.
+The separate GB ROM suite and full eleven-scenario browser gate were not rerun
+for this GBA-only change. This does not establish raster accuracy or complete
+game compatibility.
+FireRed's 1,800-frame startup probe remains fault-free with the same
+505,612,800 clocks, 159,995,200 instructions, 6,958 exceptions and CPU/display
+state. It took 11.595 s (2.60x native clock throughput), not a controlled speed
+comparison or complete-game validation.
+
 ### DMA3 video-capture baseline
 
 DMA3's special start mode now queues capture bursts for scanlines 2-161,
@@ -431,7 +458,7 @@ sampling, regular/affine/double-size sprites, OBJ mapping and priorities,
 palettes, transparency, regular/OBJ windows, mosaic, alpha blending and
 brightness. It uses stack buffers, not per-line heap allocation. Twenty-one
 original graphics tests cover these features. Internal affine reference latches,
-mid-scanline effects, OBJ fetch budgets and window/mosaic hardware edge cases
+mid-scanline effects, precise OBJ fetch phases and window/mosaic hardware edge cases
 remain accuracy work.
 
 Direct Sound A/B now implement bounded signed-byte FIFOs, timer selection,
@@ -531,7 +558,7 @@ GBA Clippy with warnings denied and the root WASM check also pass.
    for boot-ROM-free deployments. Use local FireRed as a compatibility probe,
    never as a distributed fixture or the sole correctness oracle.
 2. Validate and refine PPU modes 0–5, especially affine reference latches,
-   raster effects, OBJ budgets and window/mosaic timing quirks.
+   raster effects, precise OBJ fetch phases and window/mosaic timing quirks.
 3. Refine GBA PSG quirks, analog response and Direct Sound request/PWM timing; validate
    audio end to end in games and browser playback.
 4. Cartridge SRAM/Flash/EEPROM, save detection and persistence, validated state
