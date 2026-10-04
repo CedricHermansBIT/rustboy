@@ -21,8 +21,9 @@ commercial game, or Nintendo firmware is included.
   frame, plus a bounded native diagnostic for local cartridges.
 
 This is not yet pipeline/bus-cycle accurate. Branch refill accesses charge wait
-states but do not cache a real pipeline. ROM prefetch, general open bus and bus
-arbitration remain unimplemented. BIOS read protection has a functional baseline
+states but do not cache a real pipeline. ROM prefetch now has an instruction-level
+queue baseline (below); general open bus and bus arbitration remain unimplemented.
+BIOS read protection has a functional baseline
 (below), not an exact pipeline oracle. Reserved/unpredictable
 instructions are not a complete hardware oracle. Scanline graphics and Direct
 Sound are now functional baselines, not claims of raster/PWM accuracy or complete
@@ -57,6 +58,46 @@ backend-only milestone.
 
 ## Remaining milestones
 
+### Enabled cartridge-prefetch queue baseline
+
+An original eight-halfword timing queue now overlaps Game Pak opcode reads with
+CPU internal cycles and non-cartridge data-bus cycles. It retains partial
+halfword progress, consumes buffered ARM/Thumb opcodes with zero waitstates,
+uses each ROM area's WAITCNT settings and restarts physical cartridge reads at
+128-KiB boundaries. Full-queue idle time is discarded, not accumulated as credit.
+Non-sequential/discontinuous fetches, cartridge data accesses, WAITCNT changes,
+RAM/BIOS instruction streams and DMA invalidate the queue. DMA RAM transfers
+cannot fill it while the CPU is stopped. Immutable ROM contents are represented
+by queued addresses rather than copied into another code cache.
+The documented capacity/idle-bus behavior follows
+https://rust-console.github.io/gbatek-gbaonly/#gba-gamepak-prefetch
+
+Snapshot V9 appends six bytes for the queue address, count and partial-cycle
+progress; malformed or disabled-but-active queues reject atomically. Versions
+1-8 remain readable and migrate with an empty queue, since their missing
+prefetch history cannot be inferred reliably. Eight new original tests cover
+partial fills, capacity, ARM consumption, discontinuities, page/cartridge ends,
+all wait settings (batched versus one-clock scheduling), data/DMA invalidation,
+checked replay and V8 migration. Existing ARM/Thumb instruction-family tests now
+also check the idle-cycle benefit rather than their old unbuffered timings.
+A CPU-driven browser cartridge enables WAITCNT, runs a multiply loop and checks
+queue-state replay through WASM; all previous GBA browser fixtures also pass.
+
+All 150 GBA unit / 16 original program / 3 EEPROM tests pass (169 GBA checks),
+with 344 self-contained native checks, JS/Python checks, warnings-denied GBA
+Clippy and the root WASM check. The browser bundle was rebuilt. The separate
+GB ROM suite and full eleven-scenario browser gate were not rerun for this
+GBA-only change. Exact CPU pipeline refill overlap, in-flight cartridge abort
+phases, HALT-time production and CPU/DMA/video arbitration remain unverified;
+this is not a hardware-cycle oracle or proof of complete game compatibility.
+FireRed's 1,800-frame startup probe remains fault-free: 505,612,801 clocks
+(one clock of instruction overshoot), 175,983,876 instructions and 6,956
+exceptions, ending in the startup loop at PC 08079792h with display 9F40h.
+The larger instruction count is consistent with reduced opcode waits, not an
+independently verified hardware trace. It took 13.349 s (2.26x native clock
+throughput); the earlier unbuffered probe did less CPU work, so this is not a
+controlled host-performance comparison or complete-game validation.
+
 ### Disabled cartridge-prefetch timing correction
 
 ROM instructions with internal cycles now force the next opcode fetch to be
@@ -77,8 +118,8 @@ with 336 self-contained native checks, JS/Python checks, warnings-denied GBA
 Clippy and the root WASM check. The rebuilt GBA browser scenario passes its
 upload, audio, fast-forward, all-six-mode graphics, BIOS, DMA-capture and sprite
 fixtures. The separate GB ROM suite and full eleven-scenario browser gate were
-not rerun for this GBA-only change. The enabled cartridge-prefetch queue, exact
-pipeline and general bus arbitration remain unimplemented; this correction
+not rerun for this GBA-only change. At this milestone the enabled cartridge-prefetch
+queue, exact pipeline and general bus arbitration remained unimplemented; this correction
 does not claim full cartridge timing accuracy.
 FireRed's 1,800-frame startup probe remains fault-free at 505,612,800 clocks,
 159,995,145 instructions and 6,958 exceptions, ending at PC 08079754h in the
