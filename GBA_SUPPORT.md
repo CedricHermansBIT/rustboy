@@ -60,6 +60,41 @@ backend-only milestone.
 
 ## Remaining milestones
 
+### Internal memory-control baseline
+
+The original bus now models `04000800h`, including its 64 KiB I/O mirrors,
+hardware reset value `0D000020h`, readable/writable masks and all access widths.
+Clearing bit 5 maps the EWRAM address region to mirrored IWRAM without destroying
+the hidden EWRAM contents. Bit 0 disables both RAM regions: writes are ignored,
+debug peeks return zero and CPU data reads use the existing open-bus baseline.
+The wait nibble programs EWRAM bus costs from 16 down to 2 clocks per halfword;
+word transactions cost two halfwords. These costs also apply to DMA and opcode
+fetches. Remapped IWRAM uses the fast 32-bit internal bus baseline.
+
+Wait setting 15 latches a nonrecoverable bus lock on an enabled EWRAM access.
+Subsequent machine execution stops; a stalled DMA neither advances counters nor
+signals completion, and reset clears the latch. The frontend reports the lock
+as paused. This is an instruction-boundary lockup model, not exact mid-instruction
+bus suspension: the triggering CPU instruction may finish its register effects,
+and precise clock/pipeline phases still need a cycle-level implementation.
+No GBA Micro-specific overclock behavior is claimed.
+
+Snapshot version 11 appends the memory register and lock latch. Versions 1–10
+remain readable and migrate to normal reset mapping. Checksum-valid illegal
+register bits, invalid booleans and inconsistent locked settings are rejected
+atomically. The specifications are the
+[GBATEK internal memory-control description](https://rust-console.github.io/gbatek-gbaonly/#4000800h---32bit---undocumented---internal-memory-control-rw).
+
+Six new original native tests cover masks/mirrors, all finite wait settings,
+RAM disable/mapping, hidden RAM preservation, DMA timing/stall, state migration
+and lockup/reset. The native gate passes 362 self-contained checks (186 GBA:
+168 unit, 16 original-program, 3 EEPROM). Clippy with warnings denied, the root
+WASM check and rebuilt browser scenario pass; two original browser cartridges
+exercise mirrored register writes and normal/remapped RAM through the real CPU,
+canvas and state replay. The separate GB ROM suite/full browser matrix were not
+rerun for this GBA-only change. DMA open-bus latches, real pipeline state and
+accurate bus arbitration remain unfinished.
+
 ### Final-output Green Swap
 
 GREEN_SWAP (`04000002h`, bit 0) now exchanges the green components of each
