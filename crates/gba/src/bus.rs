@@ -143,6 +143,37 @@ impl Bus {
     fn unused(address: u32) -> bool {
         (0x4000..0x02000000).contains(&address) || address >= 0x10000000
     }
+    /// Halfwords which drive the I/O bus (some bits may still be write-only).
+    /// Internal register storage remains separate for the PPU/APU/scheduler.
+    fn readable_io(offset: usize) -> bool {
+        matches!(offset,
+            0x00..=0x0e | 0x48 | 0x4a | 0x50 | 0x52 |
+            0x60 | 0x62 | 0x64 | 0x68 | 0x6c | 0x70 | 0x72 | 0x74 |
+            0x78 | 0x7c | 0x80 | 0x82 | 0x84 | 0x88 | 0x90..=0x9e |
+            0xba | 0xc6 | 0xd2 | 0xde | 0x100..=0x10e |
+            0x120..=0x12a | 0x130 | 0x132 | 0x134 | 0x140 |
+            0x150..=0x158 | 0x200 | 0x202 | 0x204 | 0x208 | 0x300)
+    }
+    fn io_read_word(&mut self, address: u32) -> Option<u32> {
+        if address >> 24 != 4 {
+            return None;
+        }
+        self.flush_sound_read(address);
+        let base = address & !3;
+        let offset = (base & 0xffffff) as usize;
+        let value =
+            if offset < 0x400 && (Self::readable_io(offset) || Self::readable_io(offset + 2)) {
+                // A driven word zeroes its unreadable halfword/byte lanes. A wholly
+                // write-only/unused word instead exposes the CPU prefetch value.
+                self.peek32(base)
+            } else if self.cpu_data_access {
+                self.open_value()
+            } else {
+                0
+            };
+        self.record_data(value);
+        Some(value)
+    }
     fn record_data(&mut self, value: u32) {
         if self.tracks_data() {
             self.previous_data = value;
@@ -209,15 +240,12 @@ impl Bus {
             3 => self.iwram[index & 0x7fff],
             4 if index & 0xffffff < 0x400 => {
                 let offset = index & 0x3ff;
-                if (0x60..0xa0).contains(&offset) {
+                if !Self::readable_io(offset & !1) || offset == 0x301 {
+                    0
+                } else if (0x60..0xa0).contains(&offset) {
                     self.sound_read(offset)
                 } else if (0x100..0x110).contains(&offset) && offset & 3 < 2 {
                     (self.timers[(offset - 0x100) / 4].counter >> ((offset & 1) * 8)) as u8
-                } else if ((0xb0..0xe0).contains(&offset) && (offset - 0xb0) % 12 < 10)
-                    || (0xa0..0xa8).contains(&offset)
-                    || matches!(offset, 0x206 | 0x207)
-                {
-                    0
                 } else if offset == 0x205 {
                     self.io[offset] & 0x5f
                 } else {
@@ -448,6 +476,9 @@ impl Memory for Bus {
     }
     fn read8(&mut self, address: u32) -> u8 {
         self.charge(address, 1, false);
+        if let Some(value) = self.io_read_word(address) {
+            return (value >> ((address & 3) * 8)) as u8;
+        }
         if Self::unused(address) && self.cpu_data_access {
             let value = self.open_value();
             self.record_data(value);
@@ -465,6 +496,9 @@ impl Memory for Bus {
     }
     fn read16(&mut self, address: u32, sequential: bool) -> u16 {
         self.charge(address, 2, sequential);
+        if let Some(value) = self.io_read_word(address) {
+            return (value >> ((address & 2) * 8)) as u16;
+        }
         if Self::unused(address) && self.cpu_data_access {
             let value = self.open_value();
             self.record_data(value);
@@ -492,6 +526,9 @@ impl Memory for Bus {
     }
     fn read32(&mut self, address: u32, sequential: bool) -> u32 {
         self.charge(address, 4, sequential);
+        if let Some(value) = self.io_read_word(address) {
+            return value;
+        }
         if Self::unused(address) && self.cpu_data_access {
             let value = self.open_value();
             self.record_data(value);
@@ -590,6 +627,74 @@ mod tests {
     use super::*;
     fn bus() -> Bus {
         Bus::new(vec![0; 0xc0], None).unwrap()
+    }
+    #[test]
+    fn write_only_and_unused_io_words_expose_cpu_prefetch_not_register_storage() {
+        let mut b = bus();
+        b.rom[8..12].copy_from_slice(&0x12345678u32.to_le_bytes());
+        for offset in [
+            0x10, 0x20, 0x28, 0x40, 0x4c, 0x54, 0xa0, 0xb0, 0xb4, 0xe0, 0x110, 0x12c, 0x138, 0x144,
+            0x15c, 0x20c, 0x304, 0x400,
+        ] {
+            let address = 0x04000000 + offset;
+            if offset < 0x400 {
+                b.set_io(offset as usize, 0xa55a);
+                b.set_io(offset as usize + 2, 0x5aa5);
+            }
+            b.instruction_context(0x08000000, false);
+            assert_eq!(b.read32(address, false), 0x12345678, "{offset:03x}");
+            assert_eq!(b.read16(address, false), 0x5678);
+            assert_eq!(b.read16(address + 2, false), 0x1234);
+            for (n, byte) in [0x78, 0x56, 0x34, 0x12].into_iter().enumerate() {
+                assert_eq!(b.read8(address + n as u32), byte);
+            }
+            assert_eq!(b.peek32(address), 0);
+        }
+        assert_eq!(b.read32(0x04010000, false), 0x12345678); // No normal I/O mirror.
+    }
+    #[test]
+    fn readable_io_words_zero_unreadable_partner_lanes_and_keep_internal_storage() {
+        let mut b = bus();
+        b.rom[8..12].copy_from_slice(&0x12345678u32.to_le_bytes());
+        b.instruction_context(0x08000000, false);
+        for control in [0xba, 0xc6, 0xd2, 0xde] {
+            b.set_io(control - 2, 0x1234); // Write-only DMA transfer count.
+            b.set_io(control, 0x9200);
+            let address = 0x04000000 + control as u32 - 2;
+            assert_eq!(b.read32(address, false), 0x92000000);
+            assert_eq!(b.read16(address, false), 0);
+            assert_eq!(b.read16(address + 2, false), 0x9200);
+            assert_eq!(b.io16(control - 2), 0x1234);
+        }
+        b.set_io(0x204, 0x4317);
+        b.set_io(0x206, 0xbeef);
+        assert_eq!(b.read32(0x04000204, false), 0x4317);
+        assert_eq!(b.read16(0x04000206, false), 0);
+        b.set_io(0x208, 1);
+        b.set_io(0x20a, 0xbeef);
+        assert_eq!(b.read32(0x04000208, false), 1);
+        b.io[0x300] = 1;
+        b.io[0x301] = 0x80;
+        b.set_io(0x302, 0xbeef);
+        assert_eq!(b.read32(0x04000300, false), 1);
+        assert_eq!(b.read8(0x04000301), 0);
+        b.set_io(0x20, 0x100);
+        assert_eq!(b.io16(0x20), 0x100); // PPU affine latch is not erased by reads.
+        assert_eq!(b.peek16(0x04000020), 0);
+    }
+    #[test]
+    fn thumb_io_open_bus_and_mapped_io_load_history_use_the_full_bus_word() {
+        let mut b = bus();
+        b.write32(0x03000004, 0x33332222, false);
+        b.write16(0x03000002, 0x1111, false);
+        b.set_io(0x200, 0x5678);
+        b.set_io(0x202, 0xabcd);
+        b.instruction_context(0x03000000, true);
+        assert_eq!(b.read16(0x04000200, false), 0x5678);
+        b.finish_instruction();
+        b.instruction_context(0x03000000, true);
+        assert_eq!(b.read32(0x040000e0, false), 0xabcd2222);
+        assert_eq!(b.read32(0x10000000, false), 0xabcd2222);
     }
     #[test]
     fn arm_unused_reads_expose_prefetched_word_lanes_without_changing_debug_peeks() {

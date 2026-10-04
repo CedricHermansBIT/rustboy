@@ -377,7 +377,10 @@ mod tests {
         m.bus.take_cycles();
         m.advance_video(1006);
         assert_eq!(&m.pixels[2880..2884], &[255; 4]);
-        assert_eq!(m.bus.peek32(0x0400002c), 0x600);
+        // BG2Y is write-only: inspect its internal latch, not CPU readback.
+        assert_eq!(m.bus.io16(0x2c), 0x600);
+        assert_eq!(m.bus.io16(0x2e), 0);
+        assert_eq!(m.bus.peek32(0x0400002c), 0);
     }
     #[test]
     fn affine_mosaic_keeps_group_origin_and_vblank_reloads_registers() {

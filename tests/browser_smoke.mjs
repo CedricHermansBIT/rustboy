@@ -440,18 +440,21 @@ try {
     console.log('GBA browser: original WAITCNT-enabled multiply cartridge executes and replays prefetch state');
     // LDR from unused memory must see the opcode two ARM instructions ahead,
     // not zero. Store its low halfword into Mode 3 to check the real CPU bus.
-    const openRom=new Uint8Array(512), openView=new DataView(openRom.buffer);
-    openView.setUint32(0,0xea00003e,true);openRom[0xb2]=0x96;
-    [0xe59f001c,0xe59f101c,0xe1c010b0,0xe59f0018,0xe59f1018,
-      0xe5912000,0xe1c020b0,0xe3a0401f,0xeafffffe,
-      0x04000000,0x403,0x06000000,0x10000000]
-      .forEach((word,n)=>openView.setUint32(0x100+n*4,word,true));
-    const openPath=path.join(temporary,'original-open-bus.gba');await fs.writeFile(openPath,openRom);
-    await evaluate('window.beforeOpenId=Module._get_state_id()');
-    await call('DOM.setFileInputFiles',{nodeId,files:[openPath]});
-    await until("Module._get_state_id()!==beforeOpenId && (()=>{ const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset,s.byteLength).getBigUint64(309,true)>=2n; })()");
-    assert.deepEqual(await evaluate("Array.from(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,1,1).data)"),[255,0,132,255], 'unused ARM read renders prefetched instruction bits');
-    console.log('GBA browser: original unmapped-read cartridge renders the ARM prefetch word');
+    for (const openAddress of [0x10000000,0x04000010,0x040000e0,0x040000b0,0x04000206]) {
+      const openRom=new Uint8Array(512), openView=new DataView(openRom.buffer);
+      openView.setUint32(0,0xea00003e,true);openRom[0xb2]=0x96;
+      [0xe59f001c,0xe59f101c,0xe1c010b0,0xe59f0018,0xe59f1018,
+        0xe5912000,0xe1c020b0,0xe3a0401f,0xeafffffe,
+        0x04000000,0x403,0x06000000,openAddress]
+        .forEach((word,n)=>openView.setUint32(0x100+n*4,word,true));
+      const openPath=path.join(temporary,`original-open-bus-${openAddress.toString(16)}.gba`);await fs.writeFile(openPath,openRom);
+      await evaluate('window.beforeOpenId=Module._get_state_id()');
+      await call('DOM.setFileInputFiles',{nodeId,files:[openPath]});
+      await until("Module._get_state_id()!==beforeOpenId && (()=>{ const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset,s.byteLength).getBigUint64(309,true)>=2n; })()");
+      const expected=openAddress===0x04000206?[0,0,0,255]:[255,0,132,255];
+      assert.deepEqual(await evaluate("Array.from(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,1,1).data)"),expected, `CPU open/zero bus read at ${openAddress.toString(16)} renders correct bits`);
+    }
+    console.log('GBA browser: original unmapped/write-only I/O cartridges render ARM prefetch and mixed-word zero lanes');
   }
   // Explicit opt-in only. Never copies the supplied game into public assets.
   if (process.env.RUSTBOY_GBA_PROFILE) {
