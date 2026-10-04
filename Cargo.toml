@@ -47,7 +47,8 @@ features = ["console",
 wasm-opt = ["-O3", "--enable-mutable-globals"]
 
 [profile.release]
-#debug = true
+lto = "thin"
+codegen-units = 1
 
 [dev-dependencies]
 png = "0.18.1"

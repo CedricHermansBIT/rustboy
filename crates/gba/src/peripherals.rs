@@ -103,6 +103,29 @@ impl Bus {
         if self.timer_enabled == 0 {
             return overflows;
         }
+        if clocks < self.timer_next {
+            // No independently clocked timer can overflow before the cached
+            // deadline, so cascade timers and IRQ/FIFO consumers cannot change.
+            // Advance only active counters, avoiding overflow/division work on
+            // every CPU instruction while preserving immediate register reads.
+            let mut enabled = self.timer_enabled;
+            while enabled != 0 {
+                let n = enabled.trailing_zeros() as usize;
+                enabled &= enabled - 1;
+                let timer = &mut self.timers[n];
+                if n != 0 && timer.control & 4 != 0 {
+                    continue;
+                }
+                let shift = [0, 6, 8, 10][usize::from(timer.control & 3)];
+                let elapsed = timer.phase + clocks;
+                timer.counter = timer.counter.wrapping_add((elapsed >> shift) as u16);
+                timer.phase = elapsed & ((1 << shift) - 1);
+            }
+            if self.timer_next != u64::MAX {
+                self.timer_next -= clocks;
+            }
+            return overflows;
+        }
         let mut irqs = 0;
         for n in 0..4 {
             let timer = &mut self.timers[n];
@@ -305,6 +328,37 @@ impl Bus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn timer_deadline_fast_path_matches_full_overflow_path_at_each_boundary() {
+        for controls in [
+            [0xc0, 0xc1, 0xc2, 0xc3],
+            [0xc0, 0xc4, 0xc4, 0xc4],
+            [0, 0xc4, 0xc2, 0xc4],
+        ] {
+            let make = || {
+                let mut b = Bus::new(vec![0; 192], None).unwrap();
+                for (n, control) in controls.into_iter().enumerate() {
+                    b.write16(0x04000100 + n as u32 * 4, 0xffc0 + n as u16 * 8, false);
+                    b.write16(0x04000102 + n as u32 * 4, control, false);
+                }
+                b
+            };
+            let mut fast = make();
+            let mut full = make();
+            for clocks in [1, 3, 5, 7, 17, 31, 1, 64, 128, 4096, 1, 10000] {
+                // Force the reference bus through the pre-existing generic
+                // overflow path, then let it rebuild the derived deadline.
+                full.timer_next = 0;
+                assert_eq!(fast.advance_timers(clocks), full.advance_timers(clocks));
+                for n in 0..4 {
+                    assert_eq!(fast.timers[n].counter, full.timers[n].counter);
+                    assert_eq!(fast.timers[n].phase, full.timers[n].phase);
+                }
+                assert_eq!(fast.io16(0x202), full.io16(0x202));
+                assert_eq!(fast.timer_next, full.timer_next);
+            }
+        }
+    }
     fn bus() -> Bus {
         Bus::new(vec![0; 192], None).unwrap()
     }
