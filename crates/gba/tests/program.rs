@@ -9,6 +9,45 @@ fn put_words(machine: &mut GameBoyAdvance, address: u32, words: &[u32]) {
     machine.bus.take_cycles();
 }
 #[test]
+fn arm_block_load_restarts_cartridge_waits_at_page_boundary() {
+    let mut rom = vec![0; 0x20008];
+    rom[..4].copy_from_slice(&0xe8b0001eu32.to_le_bytes()); // LDMIA r0!, {r1-r4}
+    for (n, value) in [0x12345678u32, 0xabcdef01, 0x2468ace0, 0x13579bdf]
+        .into_iter()
+        .enumerate()
+    {
+        rom[0x1fff8 + n * 4..0x1fffc + n * 4].copy_from_slice(&value.to_le_bytes());
+    }
+    let mut m = GameBoyAdvance::new(rom, None).unwrap();
+    m.cpu.r[0] = 0x0801fff8;
+    // Fetch 8 + data (8 + 6 + 8 + 6) + load's internal clock.
+    assert_eq!(m.step(), 37);
+    assert_eq!(
+        &m.cpu.r[1..5],
+        &[0x12345678, 0xabcdef01, 0x2468ace0, 0x13579bdf]
+    );
+    assert_eq!(m.cpu.r[0], 0x08020008);
+    assert_eq!(m.cpu.instructions, 1);
+    assert!(m.fault.is_none());
+}
+#[test]
+fn dma3_cartridge_to_oam_observes_page_restart_and_32bit_destination() {
+    let mut rom = vec![0; 0x20004];
+    rom[0x1fffc..0x20000].copy_from_slice(&0x12345678u32.to_le_bytes());
+    rom[0x20000..0x20004].copy_from_slice(&0xabcdef01u32.to_le_bytes());
+    let mut m = GameBoyAdvance::new(rom, None).unwrap();
+    m.bus.write32(0x040000d4, 0x0801fffc, false);
+    m.bus.write32(0x040000d8, 0x07000000, false);
+    m.bus.write32(0x040000dc, 0x84000002, false);
+    m.bus.take_cycles();
+    assert_eq!(m.step(), 11); // startup 2 + ROM N+S 8 + OAM 1.
+    assert_eq!(m.step(), 9); // next page ROM N+S 8 + OAM 1.
+    assert_eq!(m.bus.peek32(0x07000000), 0x12345678);
+    assert_eq!(m.bus.peek32(0x07000004), 0xabcdef01);
+    assert_eq!(m.cpu.instructions, 0);
+    assert!(m.fault.is_none());
+}
+#[test]
 fn arm_and_thumb_stop_services_resume_at_the_next_instruction() {
     use rustboy_emulator_api::Emulator;
     for thumb in [false, true] {

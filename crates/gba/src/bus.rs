@@ -138,8 +138,11 @@ impl Bus {
                     (self.timers[(offset - 0x100) / 4].counter >> ((offset & 1) * 8)) as u8
                 } else if ((0xb0..0xe0).contains(&offset) && (offset - 0xb0) % 12 < 10)
                     || (0xa0..0xa8).contains(&offset)
+                    || matches!(offset, 0x206 | 0x207)
                 {
                     0
+                } else if offset == 0x205 {
+                    self.io[offset] & 0x5f
                 } else {
                     self.io[offset]
                 }
@@ -206,7 +209,7 @@ impl Bus {
                     3
                 }
             }
-            5..=7 => {
+            5..=6 => {
                 if width == 4 {
                     2
                 } else {
@@ -222,6 +225,11 @@ impl Bus {
                 } else {
                     [3, 5, 9][area]
                 };
+                // Cartridge /CS restarts at each 128-KiB page even when the
+                // CPU/DMA marks this access sequential. Align to the physical
+                // bus access before testing the boundary.
+                let aligned = address & if width == 4 { !3 } else { !1 };
+                let sequential = sequential && aligned & 0x1ffff != 0;
                 (if sequential { second } else { first }) + if width == 4 { second } else { 0 }
             }
             14 | 15 => [4, 3, 2, 8][(self.io16(0x204) & 3) as usize] + 1,
@@ -246,6 +254,8 @@ impl Bus {
                     4 => self.io[4] = (self.io[4] & 7) | (value & 0x38),
                     0x301 => self.enter_low_power(value),
                     0x133 => self.io[offset] = value & 0xc3,
+                    0x205 => self.io[offset] = value & 0x5f,
+                    0x206 | 0x207 => {}
                     _ => self.io[offset] = value,
                 }
                 self.peripheral_write(offset, old);
@@ -354,6 +364,81 @@ mod tests {
     use super::*;
     fn bus() -> Bus {
         Bus::new(vec![0; 0xc0], None).unwrap()
+    }
+    #[test]
+    fn gamepak_boundaries_restart_nonsequential_in_all_wait_areas() {
+        let mut b = bus();
+        for area in 0..3u32 {
+            let base = 0x08000000 + (area << 25);
+            let sequential_cost = [3, 5, 9][area as usize];
+            for boundary in [0, 0x20000, 0x1000000, 0x1fe0000] {
+                b.read16(base + boundary, true);
+                assert_eq!(b.take_cycles(), 5, "area {area} boundary {boundary:x}");
+                b.read32(base + boundary, true);
+                assert_eq!(b.take_cycles(), 5 + sequential_cost);
+                b.read16(base + boundary + 2, true);
+                assert_eq!(b.take_cycles(), sequential_cost);
+            }
+        }
+    }
+    #[test]
+    fn oam_has_a_32_bit_bus_unlike_palette_and_video_ram() {
+        let mut b = bus();
+        for (base, word_cost) in [(0x05000000, 2), (0x06000000, 2), (0x07000000, 1)] {
+            b.write32(base, 0x12345678, false);
+            assert_eq!(b.take_cycles(), word_cost);
+            assert_eq!(b.read32(base, false), 0x12345678);
+            assert_eq!(b.take_cycles(), word_cost);
+            b.read16(base, false);
+            assert_eq!(b.take_cycles(), 1);
+        }
+    }
+    #[test]
+    fn waitcnt_reserved_bits_and_gamepak_type_are_not_writable() {
+        let mut b = bus();
+        b.write32(0x04000204, u32::MAX, false);
+        assert_eq!(b.peek32(0x04000204), 0x5fff);
+        b.write8(0x04000205, 0xff);
+        assert_eq!(b.peek16(0x04000204), 0x5fff);
+    }
+    #[test]
+    fn all_waitcnt_selections_keep_boundary_and_bus_width_costs() {
+        let mut b = bus();
+        for area in 0..3u32 {
+            for first_setting in 0..4u16 {
+                for second_setting in 0..2u16 {
+                    let wait =
+                        (first_setting << (2 + area * 3)) | (second_setting << (4 + area * 3));
+                    b.write16(0x04000204, wait, false);
+                    b.take_cycles();
+                    let first = [5, 4, 3, 9][first_setting as usize];
+                    let second = if second_setting == 1 {
+                        2
+                    } else {
+                        [3, 5, 9][area as usize]
+                    };
+                    let base = 0x08020000 + (area << 25);
+                    for sequential in [false, true] {
+                        for width in [1, 2, 4] {
+                            for offset in [0, 1, 2, 3, 4, 8] {
+                                let address = base + offset;
+                                let alignment = if width == 4 { 3 } else { 1 };
+                                let first_part = if sequential && offset & !alignment != 0 {
+                                    second
+                                } else {
+                                    first
+                                };
+                                b.charge(address, width, sequential);
+                                assert_eq!(
+                                    b.take_cycles(),
+                                    first_part + if width == 4 { second } else { 0 }
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     #[test]
     fn keypad_irq_or_and_enable_masks_and_control_writes() {
