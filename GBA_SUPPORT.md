@@ -22,7 +22,8 @@ commercial game, or Nintendo firmware is included.
 
 This is not yet pipeline/bus-cycle accurate. Branch refill accesses charge wait
 states but do not cache a real pipeline. ROM prefetch now has an instruction-level
-queue baseline (below); general open bus and bus arbitration remain unimplemented.
+queue baseline (below); unused-memory CPU reads now have an open-bus baseline.
+Write-only/unused I/O, DMA open bus and general bus arbitration remain pending.
 BIOS read protection has a functional baseline
 (below), not an exact pipeline oracle. Reserved/unpredictable
 instructions are not a complete hardware oracle. Scanline graphics and Direct
@@ -57,6 +58,47 @@ The local ROM acceptance suite is separate and has not been rerun for this
 backend-only milestone.
 
 ## Remaining milestones
+
+### CPU unused-memory open-bus baseline
+
+CPU reads at 00004000h-01FFFFFFh and 10000000h-FFFFFFFFh now expose predicted
+ARM7 prefetch data instead of zero. ARM uses the word at instruction PC+8.
+Thumb ROM/EWRAM/palette/VRAM duplicate the halfword at PC+4; BIOS/OAM return
+the corresponding aligned word. Thumb IWRAM combines the next prefetched
+halfword with a retained data-bus halfword from a preceding load, or the usual
+PC+2 halfword when no load history exists. Branch refills discard load history.
+Byte/halfword lanes and CPU unaligned-word rotation retain their normal rules.
+Opcode fetches and debugger peeks do not create data-load history; debugger
+unused-memory peeks remain zero. Prefetch contents are computed lazily only
+for unused reads, not by adding a second ROM lookup to every instruction.
+Load-history tracking is restricted to Thumb IWRAM execution: entering that
+region via a branch has already discarded prior history. Normal RAM/ROM opcode
+fetches use their direct memory path rather than running data-read tracking.
+The documented region/alignment behavior follows
+https://rust-console.github.io/gbatek-gbaonly/#reading-from-unused-memory-00004000-01ffffff10000000-ffffffff
+
+Snapshot V10 appends the preceding data word and its validity flag. Versions
+1-9 migrate without invented read history; malformed flags reject atomically.
+Five original tests cover ARM word/halfword/byte lanes, Thumb memory regions and
+alignments, retained load data, refill reset, real ARM unaligned LDR execution,
+real Thumb load-to-unused execution, checked replay and V9 migration. An original
+browser cartridge stores an unused ARM read into a Mode-3 pixel and checks its
+prefetched opcode bits through the actual CPU/WASM/canvas path.
+
+All 155 GBA unit / 16 original program / 3 EEPROM tests pass (174 GBA checks),
+with 349 self-contained native checks, JS/Python checks, warnings-denied GBA
+Clippy and the root WASM check. The rebuilt GBA browser scenario passes all
+previous fixtures and the new open-bus fixture. The separate GB ROM suite and
+full eleven-scenario browser gate were not rerun for this GBA-only change.
+Write-only/unused I/O, RAM-disable behavior, DMA bus history, exact narrow-load
+lane retention and real pipeline/bus-phase behavior still need hardware checks
+or implementation; this baseline is not a complete open-bus hardware oracle.
+FireRed's 1,800-frame startup probe remains fault-free with the previous
+505,612,801 clocks, 175,983,876 instructions, 6,956 exceptions and CPU/display
+state (PC 08079792h, display 9F40h). The final optimized probe took 13.337 s
+(2.26x native clock throughput). An earlier version tracking irrelevant ROM
+load history took 15.868 s; that work was removed before committing. These
+single runs are not a controlled benchmark or complete-game validation.
 
 ### Enabled cartridge-prefetch queue baseline
 
