@@ -56,6 +56,38 @@ backend-only milestone.
 
 ## Remaining milestones
 
+### STOP mode and keypad wake
+
+HALTCNT now distinguishes HALT from STOP. STOP gates CPU execution, video,
+timers, audio and even queued DMA transfers; it does not simulate elapsed sleep
+as emulated clocks. BIOS Stop (03h) and CustomHalt (27h) use this same path.
+Keypad IRQs now evaluate KEYCNT's enable, selected keys and OR/AND condition
+when input or control changes, including atomic halfword/word control writes.
+Wake requires an enabled keypad, Game Pak or general-purpose SIO request,
+independently of IME and CPSR's IRQ mask. This recognizes external wake requests;
+it does not implement a link cable or cartridge peripheral generating them.
+
+Version-7 snapshots preserve STOP without changing existing field offsets or
+lengths, and versions 1-6 remain readable. Invalid low-power codes reject
+atomically. Hardware sleep is separate from user pause; the frontend drops
+unexecuted wall-clock budget so waking cannot trigger a sleep-time catch-up job.
+Timing within the instruction entering STOP and physical wake latency remain
+approximations, not a hardware-cycle oracle. Documentation used:
+https://rust-console.github.io/gbatek-gbaonly/#swi-03h-gba---stop
+
+Validation: 114 GBA unit tests, 11 original program tests and 3 EEPROM tests
+(128 GBA checks) pass; the self-contained gate passes 303 native checks and
+JS/Python checks. GBA Clippy with warnings denied and the root WASM check pass.
+Original ARM/Thumb cartridges verify Stop/CustomHalt return state. Tests check
+peripheral freeze, queued DMA resumption, enabled/masked wake sources, keypad
+conditions, snapshot migration/replay and frontend pacing after sleep.
+The rebuilt GBA browser scenario checks exact serialized-state freeze across
+callbacks and restore, followed by keyboard-driven keypad wake, alongside its
+existing upload/audio/save/fast-forward, six-mode and BIOS-data checks.
+The full eleven-scenario browser gate passes, including GB/CGB, SGB
+border/palette/audio/multiplayer and local GBA picker regressions. The separate
+local GB ROM acceptance suite was not rerun for this milestone.
+
 ### BIOS data-service compatibility
 
 Original implementations now add BitUnPack (10h), Huffman decoding (13h), and
