@@ -57,6 +57,40 @@ backend-only milestone.
 
 ## Remaining milestones
 
+### Replacement BIOS angle services
+
+ArcTan (09h) and ArcTan2 (0Ah) now execute rather than stopping as unsupported.
+Our original integer vectoring implementation uses shifts/additions and
+mathematically generated rotation constants; no Nintendo table or other
+emulator implementation was copied. ArcTan accepts a signed Q14 tangent and
+returns a signed angle; ArcTan2 returns a wrapped counterclockwise 16-bit turn.
+Axes, quadrants, diagonals and the zero vector are handled explicitly. Runtime
+math is integer-only, including safe full-width signed magnitudes.
+
+This is a functional mathematical replacement, **not Nintendo's polynomial
+approximation**. Its particular rounding, out-of-range behavior, register
+clobbers and exact instruction timing remain compatibility/accuracy work.
+Tests compare against mathematics, not a physical-firmware oracle, and cannot
+prove bit-exact firmware results. Service interface documentation:
+https://rust-console.github.io/gbatek-gbaonly/#bios-arithmetic-functions
+
+Validation: every documented 16-bit tangent is tested for mathematical accuracy,
+monotonicity and odd symmetry; angle tests cover a signed grid, scale invariance,
+axes/diagonals, i32 extremes and 8,192 deterministic full-width vectors.
+Original ARM/Thumb cartridges verify SWI dispatch, signed/wrapped results,
+return state and checked replay. All 125 GBA unit / 15 original program / 3
+EEPROM tests pass (143 GBA checks), alongside 318 self-contained native checks,
+JS/Python checks, warnings-denied GBA Clippy and the root WASM check.
+The rebuilt GBA browser scenario passes its existing checks and four new
+CPU-driven angle-service cartridges, verifying returned register values and
+rendered output for signed ArcTan and ArcTan2 quadrants. The separate GB ROM
+acceptance suite and full eleven-scenario browser gate were not rerun for these
+GBA-only service additions.
+FireRed's local 1,800-frame startup probe remains fault-free at the same clocks,
+instruction/exception counts and CPU/display state as the preceding milestone.
+It took 11.178 s (2.70x native clock throughput), not a controlled speed
+comparison, angle-service oracle or complete-game validation.
+
 ### Protected BIOS reads
 
 CPU instruction fetches are now distinct from data accesses. Only instructions
@@ -174,7 +208,8 @@ stop explicitly; decoded output is buffered before destination writes. Invalid
 input behavior is defensive, not a reproduction of firmware hangs or overflow.
 Odd-length Diff8 VRAM output is zero-padded, like our LZ/RL VRAM services. Exact
 firmware instruction timing and register clobbers remain unsupported. Other
-BIOS services, including ArcTan/ArcTan2 and the sound-driver helpers, remain work.
+BIOS services such as the sound-driver helpers remain work. ArcTan/ArcTan2 now
+have the functional mathematical replacement described above.
 
 Validation (2026-10-04): 109 GBA unit tests, 10 original cartridge-program tests
 and 3 EEPROM tests pass (122 GBA checks / 296 self-contained native checks),
