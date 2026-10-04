@@ -275,6 +275,38 @@ try {
         [[255,0,0,255],[0,255,0,255],[0,0,255,255]],`mode ${mode} preserves distinct source coordinates`);
     }
     console.log('GBA browser: patterned CPU-driven rendering in all six display modes passed');
+    const dataServices=[
+      [0x10,[0xa5],[3,3,0x30,0x30]],
+      [0x13,[0x28,4,0,0,3,0x80,102,0xc0,72,117,0,0,0,0,0,0xb0],[72,117,102,102]],
+      [0x16,[0x81,4,0,0,250,10,255,2],[250,4,3,5]],
+      [0x17,[0x81,4,0,0,250,10,255,2],[250,4,3,5]],
+      [0x18,[0x82,8,0,0,255,255,2,0,255,255,0,128],[255,255,1,0]],
+    ];
+    for (const [service,data,expected] of dataServices) {
+      const fixture=new Uint8Array(512);const image=new DataView(fixture.buffer);
+      // SWI 16h is byte-writing WRAM only; copy its result to video with LDR/STR.
+      const destination=service===0x16?0x03000000:0x06000000;
+      const words=[0xe59f0018,0xe59f1018,0xe59f2018,0xef000000|(service<<16),
+        0xe59f0014,0xe59f1014,0xe1c010b0,0xea000005,
+        0x08000080,destination,0x080000a0,0x04000000,0x403,0];
+      if (service===0x16) words.push(0xe59f0010,0xe5902000,0xe59f100c,0xe5812000,0xeafffffe,0,0x03000000,0x06000000);
+      else words.push(0xeafffffe);
+      // Branch at 1Ch lands at the continuation at 38h.
+      words.forEach((word,n)=>image.setUint32(n*4,word,true));
+      fixture.set(data,128);fixture.set([1,0,1,4,2,0,0,0],160);fixture[0xb2]=0x96;
+      const file=path.join(temporary,`original-swi-${service.toString(16)}.gba`);await fs.writeFile(file,fixture);
+      const previous=await evaluate('Module._get_state_id()');
+      await call('DOM.setFileInputFiles',{nodeId,files:[file]});
+      await until(`Module._get_state_id()!==${JSON.stringify(previous)} && Module._get_state_id().startsWith('gba-')`);
+      await until('(() => { const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset).getBigUint64(309,true)>=2n; })()');
+      const pixels=[];
+      for (let n=0;n<4;n+=2) {
+        const color=expected[n]|expected[n+1]<<8;
+        pixels.push([0,5,10].map(shift=>{const v=(color>>shift)&31;return (v<<3)|(v>>2);}).concat(255));
+      }
+      assert.deepEqual(await evaluate("(() => { const c=document.querySelector('#rustboy-canvas').getContext('2d'); return [0,1].map(x=>Array.from(c.getImageData(x,0,1,1).data)); })()"),pixels,`SWI ${service.toString(16)} output reaches display`);
+    }
+    console.log('GBA browser: five original BIOS data services execute through cartridge SWIs and render their output');
   }
   // Explicit opt-in only. Never copies the supplied game into public assets.
   if (process.env.RUSTBOY_GBA_PROFILE) {

@@ -10,6 +10,87 @@ fn put_words(machine: &mut GameBoyAdvance, address: u32, words: &[u32]) {
 }
 
 #[test]
+fn original_cartridges_dispatch_data_services_in_arm_and_thumb() {
+    let cases: &[(u8, &[u8], &[u8])] = &[
+        (0x10, &[0xa5], &[0x03, 0x03, 0x30, 0x30]),
+        (
+            0x13,
+            &[
+                0x28, 4, 0, 0, 3, 0x80, b'f', 0xc0, b'H', b'u', 0, 0, 0, 0, 0, 0xb0,
+            ],
+            b"Huff",
+        ),
+        (0x16, &[0x81, 4, 0, 0, 250, 10, 255, 2], &[250, 4, 3, 5]),
+        (0x17, &[0x81, 4, 0, 0, 250, 10, 255, 2], &[250, 4, 3, 5]),
+        (
+            0x18,
+            &[0x82, 8, 0, 0, 255, 255, 2, 0, 255, 255, 0, 128],
+            &[255, 255, 1, 0, 0, 0, 0, 128],
+        ),
+    ];
+    for thumb in [false, true] {
+        for &(service, data, expected) in cases {
+            let destination = if service == 0x16 {
+                0x03000000u32
+            } else {
+                0x06000000
+            };
+            let mut rom = vec![0; 256];
+            if thumb {
+                for (n, op) in [
+                    0x4802u16,
+                    0x4903,
+                    0x4a03,
+                    0xdf00 | u16::from(service),
+                    0x2477,
+                    0xe7fe,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    rom[n * 2..n * 2 + 2].copy_from_slice(&op.to_le_bytes());
+                }
+            } else {
+                for (n, op) in [
+                    0xe59f0010u32,
+                    0xe59f1010,
+                    0xe59f2010,
+                    0xef000000 | (u32::from(service) << 16),
+                    0xe3a04077,
+                    0xeafffffe,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    rom[n * 4..n * 4 + 4].copy_from_slice(&op.to_le_bytes());
+                }
+            }
+            let pool = if thumb { 12 } else { 24 };
+            for (n, value) in [0x08000040u32, destination, 0x08000060]
+                .into_iter()
+                .enumerate()
+            {
+                rom[pool + n * 4..pool + n * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            rom[64..64 + data.len()].copy_from_slice(data);
+            rom[96..104].copy_from_slice(&[1, 0, 1, 4, 2, 0, 0, 0]);
+            let mut m = GameBoyAdvance::new(rom, None).unwrap();
+            if thumb {
+                m.cpu.set_cpsr(m.cpu.cpsr() | 0x20).unwrap();
+            }
+            m.run(2000);
+            assert!(m.fault.is_none(), "service {service:x}, thumb {thumb}");
+            assert_eq!(m.cpu.r[4], 0x77, "must return to cartridge after SWI");
+            assert_eq!(m.cpu.cpsr() & 0x3f, if thumb { 0x3f } else { 0x1f });
+            for (n, byte) in expected.iter().enumerate() {
+                assert_eq!(m.bus.peek8(destination + n as u32), *byte);
+            }
+            assert_eq!(m.cpu.exceptions, 1);
+        }
+    }
+}
+
+#[test]
 fn direct_boot_all_display_modes_keep_distinct_horizontal_and_vertical_pixels() {
     for mode in [3, 4, 5, 1, 2, 0] {
         let mut rom = vec![0; 192];

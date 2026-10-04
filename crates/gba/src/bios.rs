@@ -4,6 +4,8 @@ use crate::{
     bus::Bus,
     cpu::{Cpu, Memory},
 };
+#[path = "bios_data.rs"]
+mod data;
 
 /// Our tiny ARM IRQ dispatcher executes on the emulated CPU, so handlers may be
 /// ARM/Thumb, run for arbitrary time, use peripherals and return normally.
@@ -96,7 +98,10 @@ pub(crate) fn service(number: u8, cpu: &mut Cpu, bus: &mut Bus) -> Result<Effect
         }
         0xb | 0xc => copy(bus, cpu.r[0], cpu.r[1], cpu.r[2], number == 0xc),
         0xe | 0xf => affine_set(bus, cpu.r[0], cpu.r[1], cpu.r[2], cpu.r[3], number == 0xe)?,
+        0x10 => data::unpack(bus, cpu.r[0], cpu.r[1], cpu.r[2])?,
+        0x13 => data::huffman(bus, cpu.r[0], cpu.r[1])?,
         0x11 | 0x12 | 0x14 | 0x15 => decompress(bus, cpu.r[0], cpu.r[1], number)?,
+        0x16..=0x18 => data::differential(bus, cpu.r[0], cpu.r[1], number)?,
         0x19 => bus.write16(0x04000088, if cpu.r[0] == 0 { 0 } else { 0x200 }, false),
         _ => return Err("BIOS service not implemented yet"),
     }
