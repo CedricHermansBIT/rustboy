@@ -236,6 +236,27 @@ JS/Python gate, warnings-denied GBA Clippy, root WASM check, the independent
 ARM/Thumb/memory ROMs and the rebuilt GBA browser scenario pass. The independent
 BIOS firmware-latch mismatch remains unchanged and reported separately.
 
+Second batch: DMA dispatch uses derived active-channel and FIFO eligibility
+masks instead of scanning four descriptors on every CPU instruction. FIFO
+request readiness is updated on DMA control changes, FIFO pushes/consumption,
+FIFO reset, sound master changes and BIOS resets. Active bursts still execute
+one transfer unit at a time with the existing priorities, startup costs,
+counter behavior and interrupt timing. Caches are rebuilt after state restore;
+no snapshot format change or hardware frame/audio skipping is involved.
+Two original tests cover cache invariants, threshold requests, completion,
+disable, master/FIFO resets and BIOS DMA resets. The self-contained gate passes
+367 native checks (192 GBA), GBA Clippy, the root WASM check and independent
+ARM/Thumb/memory ROMs. The isolated rebuilt GBA browser scenario also passes.
+
+FireRed's latest browser sample is 1.74x at requested 4x and 1.80x at requested
+8x, with median callbacks around 34 ms. These do **not** establish an additional
+end-to-end speed gain over the first batch; saved-state-controlled A/B testing
+is still needed. Remaining CPU dispatch/rendering costs dominate the next work.
+This build was measured in an isolated worktree to preserve concurrent
+UI/controller edits and their modified browser bundle in the shared directory.
+The backend source changes are committed separately; shared `out/` artifacts
+are not overwritten or committed as part of this batch.
+
 ### CPU unused-memory open-bus baseline
 
 CPU reads at 00004000h-01FFFFFFh and 10000000h-FFFFFFFFh now expose predicted
