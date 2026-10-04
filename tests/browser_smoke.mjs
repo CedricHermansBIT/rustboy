@@ -392,6 +392,32 @@ try {
         [[8,0,0,255],[0,0,8,255],[123,0,255,255]],'DMA3 capture renders distinct pixels, including the completed last row');
       console.log('GBA browser: original cartridge captures a complete bitmap through 160 scheduled DMA3 bursts');
     }
+    for (const hblankFree of [false,true]) {
+      const settings=[];
+      for(let n=0;n<128;n++) settings.push([0x07000000+n*8,n<15?0:0x200]);
+      for(let n=0;n<15;n++) settings.push([0x07000002+n*8,n<14?0xc0f0:0xc000]);
+      for(let tile=0;tile<8;tile++) settings.push([0x06010000+tile*32,0x1111],[0x06010002+tile*32,0x1111]);
+      settings.push([0x05000202,31],[0x04000000,0x1000|(hblankFree?0x20:0)]);
+      const words=[];
+      for(const _ of settings) words.push(0,0,0xe1c010b0);
+      words.push(0xeafffffe);
+      settings.forEach(([address,value],n)=>{
+        const at=n*3;
+        words[at]=0xe59f0000|(words.length*4-(at*4+8));words.push(address);
+        words[at+1]=0xe59f1000|(words.length*4-((at+1)*4+8));words.push(value);
+      });
+      const fixture=new Uint8Array(4096);const image=new DataView(fixture.buffer);
+      image.setUint32(0,0xea00003e,true); // Branch past cartridge header to 100h.
+      fixture[0xb2]=0x96;words.forEach((word,n)=>image.setUint32(0x100+n*4,word,true));
+      const file=path.join(temporary,`original-obj-budget-${hblankFree}.gba`);await fs.writeFile(file,fixture);
+      const previous=await evaluate('Module._get_state_id()');
+      await call('DOM.setFileInputFiles',{nodeId,files:[file]});
+      await until(`Module._get_state_id()!==${JSON.stringify(previous)} && Module._get_state_id().startsWith('gba-')`);
+      await until('(() => { const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset).getBigUint64(309,true)>=2n; })()');
+      assert.deepEqual(await evaluate("(() => { const c=document.querySelector('#rustboy-canvas').getContext('2d'); return [57,58,63].map(x=>Array.from(c.getImageData(x,0,1,1).data)); })()"),
+        [[255,0,0,255],hblankFree?[0,0,0,255]:[255,0,0,255],hblankFree?[0,0,0,255]:[255,0,0,255]],'offscreen OBJ work consumes HBlank-free rendering budget');
+    }
+    console.log('GBA browser: CPU-driven sprite crowd exercises both OBJ budgets and partial-object clipping');
   }
   // Explicit opt-in only. Never copies the supplied game into public assets.
   if (process.env.RUSTBOY_GBA_PROFILE) {

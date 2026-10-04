@@ -1,5 +1,5 @@
 //! Original scanline GBA display compositor, derived from register and VRAM
-//! formats in GBATEK. Raster-time register latching and OBJ fetch budgets belong
+//! formats in GBATEK. Raster-time register latching and precise OBJ fetch phases belong
 //! to the video scheduler, rather than this color compositor.
 use crate::bus::Bus;
 
@@ -227,6 +227,7 @@ fn objects(bus: &Bus, line: usize, dots: &mut [Option<Dot>; 240], window: &mut [
         return;
     }
     let mosaic = bus.io16(0x4c);
+    let mut budget: i32 = if display & 0x20 != 0 { 954 } else { 1210 };
     const SIZES: [[(i32, i32); 4]; 3] = [
         [(8, 8), (16, 16), (32, 32), (64, 64)],
         [(16, 8), (32, 8), (32, 16), (64, 32)],
@@ -257,6 +258,16 @@ fn objects(bus: &Bus, line: usize, dots: &mut [Option<Dot>; 240], window: &mut [
         if row < 0 || row >= bound_h {
             continue;
         }
+        // OAM order consumes a finite rendering budget, even for transparent
+        // or horizontally offscreen objects. A final object may be partial.
+        // This is a scanline budget, not a cycle-by-cycle OBJ fetch pipeline.
+        let overhead = if affine { 10 } else { 0 };
+        let per_pixel = if affine { 2 } else { 1 };
+        let rendered_width = ((budget - overhead).max(0) / per_pixel).min(bound_w);
+        budget = (budget - overhead - bound_w * per_pixel).max(0);
+        if rendered_width == 0 {
+            break;
+        }
         let eight = a0 & 0x2000 != 0;
         let unit = if eight { 2 } else { 1 };
         let base = (a2 & 1023) as usize
@@ -279,7 +290,7 @@ fn objects(bus: &Bus, line: usize, dots: &mut [Option<Dot>; 240], window: &mut [
         } else {
             (0, 0, 0, 0)
         };
-        for screen_x in ox.max(0)..(ox + bound_w).min(240) {
+        for screen_x in ox.max(0)..(ox + rendered_width).min(240) {
             let mut local_x = screen_x - ox;
             let mut local_y = row;
             if a0 & 0x1000 != 0 {

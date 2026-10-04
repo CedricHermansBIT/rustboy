@@ -55,6 +55,74 @@ const BLUE: [u8; 4] = [0, 0, 255, 255];
 const BLACK: [u8; 4] = [0, 0, 0, 255];
 
 #[test]
+fn normal_obj_budget_is_smaller_when_hblank_is_free_and_clips_last_object() {
+    let mut b = bus();
+    pal(&mut b, 257, 31);
+    b.vram[0x10000..0x18000].fill(0x11);
+    // Fourteen fully offscreen 64-wide objects cost 896 cycles. The next
+    // visible 64-wide object has 58 pixels left with HBlank free, or all 64.
+    for index in 0..14 {
+        obj(&mut b, index, 0, 0xc0f0, 0);
+    }
+    obj(&mut b, 14, 0, 0xc000, 0);
+    b.set_io(0, 0x1020);
+    assert_eq!(pixel(&b, 57, 0), RED);
+    assert_eq!(pixel(&b, 58, 0), BLACK);
+    b.set_io(0, 0x1000);
+    assert_eq!(pixel(&b, 63, 0), RED);
+}
+
+#[test]
+fn transparent_objs_consume_budget_but_disabled_and_other_rows_do_not() {
+    let mut b = bus();
+    pal(&mut b, 257, 31);
+    b.vram[0x10000..0x10020].fill(0x11);
+    // Nineteen transparent 64-wide objects exhaust the normal 1210 cycles.
+    for index in 0..19 {
+        obj(&mut b, index, 0, 0xc000, 128);
+    }
+    obj(&mut b, 19, 0, 0, 0);
+    assert_eq!(pixel(&b, 0, 0), BLACK);
+    assert_eq!(pixel(&b, 0, 1), BLACK); // Budget is reset for every scanline.
+    for index in 0..19 {
+        obj(&mut b, index, 1, 0xc000, 128);
+    }
+    assert_eq!(pixel(&b, 0, 0), RED);
+    assert_eq!(pixel(&b, 0, 1), BLACK);
+    assert_eq!(pixel(&b, 0, 0), RED);
+    for index in 0..19 {
+        obj(&mut b, index, 0x200, 0xc000, 128);
+    }
+    assert_eq!(pixel(&b, 0, 0), RED);
+    for index in 0..19 {
+        obj(&mut b, index, 80, 0xc000, 128);
+    }
+    assert_eq!(pixel(&b, 0, 0), RED);
+}
+
+#[test]
+fn affine_obj_budget_includes_setup_and_double_size_screen_width() {
+    let mut b = bus();
+    pal(&mut b, 257, 31);
+    b.vram[0x10000..0x18000].fill(0x11);
+    put(&mut b.oam, 6, 256);
+    put(&mut b.oam, 14, 0);
+    put(&mut b.oam, 22, 0);
+    put(&mut b.oam, 30, 256);
+    // Each double-size affine 64x64 object costs 10+128*2=266. Four
+    // offscreen entries leave 146 cycles: setup + 68 pixels of entry four.
+    for index in 0..4 {
+        obj(&mut b, index, 0x300, 0xc0f0, 0);
+    }
+    obj(&mut b, 4, 0x300, 0xc000, 0);
+    assert_eq!(pixel(&b, 32, 32), RED);
+    assert_eq!(pixel(&b, 67, 32), RED);
+    assert_eq!(pixel(&b, 68, 32), BLACK);
+    b.set_io(0, 0x1020); // Four offscreen objects already exceed 954.
+    assert_eq!(pixel(&b, 32, 32), BLACK);
+}
+
+#[test]
 fn backdrop_does_not_alpha_blend_with_itself() {
     let mut bus = bus();
     pal(&mut bus, 0, 31);
