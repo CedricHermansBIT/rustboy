@@ -196,9 +196,9 @@ FireRed's 1,800-frame startup probe remains fault-free with the previous
 state (PC 08079792h, display 9F40h). It took 13.989 s (2.15x native clock
 throughput), not a controlled performance comparison or complete-game validation.
 
-### Requested next major phase: browser 8x optimization
+### Active major phase: browser 8x optimization
 
-After the GBA implementation goal, prioritize a substantial performance pass
+The user moved this phase ahead of the remaining GBA implementation work. Prioritize a substantial performance pass
 targeting smooth 8x gameplay. The user's current real-game browser observation
 is approximately 1.5x despite higher requested speeds. Profile real cartridges
 on representative browser/device combinations, distinguish achieved emulated
@@ -206,6 +206,35 @@ clock throughput from the selected multiplier, and measure sustained gameplay
 and frame pacing rather than only startup or synthetic loops. Preserve CPU,
 peripheral and save-state correctness while optimizing; publish measured results
 and remaining host limits instead of treating an 8x setting as proof of 8x speed.
+
+First measured batch (2026-10-04): Chromium sampling on the local FireRed ROM
+identified CPU/machine dispatch, per-instruction timer updates, rendering and
+DMA polling as major costs. The profile runner now understands version-11
+states and can write a DevTools CPU profile through
+`RUSTBOY_GBA_CPU_PROFILE=<new-file.cpuprofile>` (exclusive creation, not overwrite).
+The ROM and profiles are local diagnostic inputs/artifacts, not public assets.
+
+Release builds now use thin cross-crate LTO and one code-generation unit.
+The timer path advances only enabled independent counters before its cached
+overflow deadline, avoiding generic overflow/cascade/IRQ work on each instruction.
+It still updates readable counters and prescaler phases immediately; it does not
+defer interrupts, change timer clock rates, skip hardware or drop audio. An
+original differential test forces the old generic path and compares counters,
+phases, overflows, IRQ flags and derived deadlines across event boundaries.
+
+The same browser startup profiling procedure measured requested 8x at **1.29x
+before and 1.75x after**; requested 4x measured **1.31x before and 1.82x after**.
+Median fast-forward callbacks remain about **34–35 ms**, so smooth 8x is not
+achieved. These are initial samples from this machine's headless Chromium,
+not matched persistent-state A/B measurements, sustained gameplay validation
+or a promise for other devices. CPU dispatch, graphics and DMA polling remain
+optimization targets, as do better reproducible gameplay benchmarks. The major
+pass remains in progress; full GBA accuracy work is also still outstanding.
+
+Validation for this batch: 365 self-contained native checks (190 GBA), the
+JS/Python gate, warnings-denied GBA Clippy, root WASM check, the independent
+ARM/Thumb/memory ROMs and the rebuilt GBA browser scenario pass. The independent
+BIOS firmware-latch mismatch remains unchanged and reported separately.
 
 ### CPU unused-memory open-bus baseline
 
