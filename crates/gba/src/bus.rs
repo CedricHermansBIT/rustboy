@@ -1,6 +1,7 @@
 //! GBA address decoding and instruction-granular wait states. No BIOS is bundled.
 use crate::cpu::Memory;
 use crate::peripherals::{Dma, Timer};
+pub(crate) const OPEN_STATE_BYTES: usize = 5;
 
 pub struct Bus {
     pub(crate) bios: Vec<u8>,
@@ -8,6 +9,12 @@ pub struct Bus {
     pub(crate) bios_access: bool,
     pub(crate) bios_latch: u32,
     pub(crate) prefetch: crate::prefetch::Prefetch,
+    pub(crate) previous_data: u32,
+    pub(crate) previous_data_valid: bool,
+    instruction_address: u32,
+    instruction_thumb: bool,
+    context_data: Option<u32>,
+    cpu_data_access: bool,
     // Intra-instruction timing scratch, consumed before a snapshot boundary.
     gamepak_instruction: bool,
     restart_fetch: bool,
@@ -46,6 +53,12 @@ impl Bus {
             bios_access: !replacement_bios,
             bios_latch: 0,
             prefetch: crate::prefetch::Prefetch::default(),
+            previous_data: 0,
+            previous_data_valid: false,
+            instruction_address: 0,
+            instruction_thumb: false,
+            context_data: None,
+            cpu_data_access: false,
             gamepak_instruction: false,
             restart_fetch: false,
             rom,
@@ -125,6 +138,59 @@ impl Bus {
             index - 0x8000
         } else {
             index
+        }
+    }
+    fn unused(address: u32) -> bool {
+        (0x4000..0x02000000).contains(&address) || address >= 0x10000000
+    }
+    fn record_data(&mut self, value: u32) {
+        if self.tracks_data() {
+            self.previous_data = value;
+            self.previous_data_valid = true;
+        }
+    }
+    fn tracks_data(&self) -> bool {
+        // Only sequential Thumb IWRAM instructions can observe retained data
+        // lanes. Entering IWRAM via a branch has already discarded the history.
+        self.cpu_data_access && self.instruction_thumb && self.instruction_address >> 24 == 3
+    }
+    fn record_narrow(&mut self, address: u32, value: u16) {
+        if !self.tracks_data() {
+            return;
+        }
+        let word = if address < 0x4000 && !self.bios_access {
+            self.bios_latch
+        } else if self.eeprom_address(address) {
+            u32::from(value) * 0x10001
+        } else {
+            match address >> 24 {
+                0 | 3 | 7 => self.peek32(address & !3),
+                14 | 15 => u32::from(value as u8) * 0x01010101,
+                _ => u32::from(self.peek16(address & !1)) * 0x10001,
+            }
+        };
+        self.record_data(word);
+    }
+    fn open_value(&self) -> u32 {
+        let address = self.instruction_address;
+        if !self.instruction_thumb {
+            return self.peek32(address.wrapping_add(8));
+        }
+        let ahead = address.wrapping_add(4);
+        match address >> 24 {
+            0 | 7 => self.peek32(ahead & !3),
+            3 => {
+                let old = self
+                    .context_data
+                    .unwrap_or_else(|| u32::from(self.peek16(address.wrapping_add(2))) * 0x10001);
+                let next = u32::from(self.peek16(ahead));
+                if address & 2 == 0 {
+                    (old & 0xffff0000) | next
+                } else {
+                    (old & 0xffff) | (next << 16)
+                }
+            }
+            _ => u32::from(self.peek16(ahead)) * 0x10001,
         }
     }
     /// Non-mutating debugger read: deliberately bypasses CPU BIOS protection.
@@ -293,6 +359,13 @@ impl Bus {
 }
 impl Memory for Bus {
     fn instruction_context(&mut self, address: u32, thumb: bool) {
+        // Predict the ARM7-visible prefetch, distinct from the Game Pak FIFO.
+        // Thumb IWRAM retains the other half of the preceding data-bus word.
+        self.instruction_address = address;
+        self.instruction_thumb = thumb;
+        self.context_data = self.previous_data_valid.then_some(self.previous_data);
+        self.previous_data_valid = false;
+        self.cpu_data_access = true;
         self.gamepak_instruction = (8..=13).contains(&(address >> 24));
         if !self.gamepak_instruction {
             self.prefetch = crate::prefetch::Prefetch::default();
@@ -309,6 +382,7 @@ impl Memory for Bus {
         }
     }
     fn refill_complete(&mut self, address: u32) {
+        self.previous_data_valid = false;
         // The refill has already performed its N+S accesses. Internal cycles
         // before a PC write must not restart the new instruction stream.
         self.restart_fetch = false;
@@ -317,6 +391,7 @@ impl Memory for Bus {
         }
     }
     fn finish_instruction(&mut self) -> bool {
+        self.cpu_data_access = false;
         !std::mem::take(&mut self.restart_fetch)
     }
     fn fetch16(&mut self, address: u32, sequential: bool) -> u16 {
@@ -332,11 +407,17 @@ impl Memory for Bus {
             return self.peek16(address & !1);
         }
         self.prefetch = crate::prefetch::Prefetch::default();
-        if address < 0x4000 {
+        if address < 0x4000
+            || ((matches!(address >> 24, 2 | 3 | 5..=13)) && !self.eeprom_address(address))
+        {
             self.charge(address, 2, sequential);
             self.peek16(address & !1)
         } else {
-            self.read16(address, sequential)
+            let data_access = self.cpu_data_access;
+            self.cpu_data_access = false;
+            let value = self.read16(address, sequential);
+            self.cpu_data_access = data_access;
+            value
         }
     }
     fn fetch32(&mut self, address: u32, sequential: bool) -> u32 {
@@ -352,45 +433,84 @@ impl Memory for Bus {
             return self.peek32(address & !3);
         }
         self.prefetch = crate::prefetch::Prefetch::default();
-        if address < 0x4000 {
+        if address < 0x4000
+            || ((matches!(address >> 24, 2 | 3 | 5..=13)) && !self.eeprom_address(address))
+        {
             self.charge(address, 4, sequential);
             self.peek32(address & !3)
         } else {
-            self.read32(address, sequential)
+            let data_access = self.cpu_data_access;
+            self.cpu_data_access = false;
+            let value = self.read32(address, sequential);
+            self.cpu_data_access = data_access;
+            value
         }
     }
     fn read8(&mut self, address: u32) -> u8 {
         self.charge(address, 1, false);
+        if Self::unused(address) && self.cpu_data_access {
+            let value = self.open_value();
+            self.record_data(value);
+            return (value >> ((address & 3) * 8)) as u8;
+        }
         if address < 0x4000 && !self.bios_access {
-            return (self.bios_latch >> ((address & 3) * 8)) as u8;
+            let value = (self.bios_latch >> ((address & 3) * 8)) as u8;
+            self.record_narrow(address, u16::from(value));
+            return value;
         }
         self.flush_sound_read(address);
-        self.peek8(address)
+        let value = self.peek8(address);
+        self.record_narrow(address, u16::from(value));
+        value
     }
     fn read16(&mut self, address: u32, sequential: bool) -> u16 {
         self.charge(address, 2, sequential);
+        if Self::unused(address) && self.cpu_data_access {
+            let value = self.open_value();
+            self.record_data(value);
+            return (value >> ((address & 2) * 8)) as u16;
+        }
         if address < 0x4000 && !self.bios_access {
-            return (self.bios_latch >> ((address & 2) * 8)) as u16;
+            let value = (self.bios_latch >> ((address & 2) * 8)) as u16;
+            self.record_narrow(address, value);
+            return value;
         }
         self.flush_sound_read(address);
         if self.eeprom_address(address) {
-            return self.backup.eeprom.read();
+            let value = self.backup.eeprom.read();
+            self.record_narrow(address, value);
+            return value;
         }
         if (14..=15).contains(&(address >> 24)) {
-            return u16::from(self.backup.read(address)) * 0x101;
+            let value = u16::from(self.backup.read(address)) * 0x101;
+            self.record_narrow(address, value);
+            return value;
         }
-        self.peek16(address & !1)
+        let value = self.peek16(address & !1);
+        self.record_narrow(address, value);
+        value
     }
     fn read32(&mut self, address: u32, sequential: bool) -> u32 {
         self.charge(address, 4, sequential);
+        if Self::unused(address) && self.cpu_data_access {
+            let value = self.open_value();
+            self.record_data(value);
+            return value;
+        }
         if address < 0x4000 && !self.bios_access {
-            return self.bios_latch;
+            let value = self.bios_latch;
+            self.record_data(value);
+            return value;
         }
         self.flush_sound_read(address);
         if (14..=15).contains(&(address >> 24)) {
-            return u32::from(self.backup.read(address)) * 0x01010101;
+            let value = u32::from(self.backup.read(address)) * 0x01010101;
+            self.record_data(value);
+            return value;
         }
-        self.peek32(address & !3)
+        let value = self.peek32(address & !3);
+        self.record_data(value);
+        value
     }
     fn write8(&mut self, address: u32, value: u8) {
         self.charge(address, 1, false);
@@ -470,6 +590,89 @@ mod tests {
     use super::*;
     fn bus() -> Bus {
         Bus::new(vec![0; 0xc0], None).unwrap()
+    }
+    #[test]
+    fn arm_unused_reads_expose_prefetched_word_lanes_without_changing_debug_peeks() {
+        let mut b = bus();
+        b.rom[8..12].copy_from_slice(&0x12345678u32.to_le_bytes());
+        b.instruction_context(0x08000000, false);
+        for address in [0x4000, 0x01000000, 0x10000000, 0xfffffffc] {
+            assert_eq!(b.read32(address, false), 0x12345678);
+            assert_eq!(b.read16(address, false), 0x5678);
+            assert_eq!(b.read16(address + 2, false), 0x1234);
+            for (n, byte) in [0x78, 0x56, 0x34, 0x12].into_iter().enumerate() {
+                assert_eq!(b.read8(address + n as u32), byte);
+            }
+            assert_eq!(b.peek32(address), 0);
+        }
+        b.finish_instruction();
+        assert_eq!(b.read32(0x10000000, false), 0); // No invented DMA latch.
+    }
+    #[test]
+    fn thumb_unused_reads_follow_memory_bus_width_and_opcode_alignment() {
+        let mut b = bus();
+        for area in [2, 3, 5, 6, 7, 8] {
+            let address = area << 24;
+            for (offset, value) in [(2, 0x1111u16), (4, 0x2222), (6, 0x3333)] {
+                if area == 8 {
+                    b.rom[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+                } else {
+                    b.write16(address + offset as u32, value, false);
+                }
+            }
+            b.previous_data_valid = false;
+            b.instruction_context(address, true);
+            let expected = match area {
+                3 => 0x11112222,
+                7 => 0x33332222,
+                _ => 0x22222222,
+            };
+            assert_eq!(b.read32(0x10000000, false), expected);
+            b.previous_data_valid = false;
+            b.instruction_context(address + 2, true);
+            let expected = match area {
+                3 | 7 => 0x33332222,
+                _ => 0x33333333,
+            };
+            assert_eq!(b.read32(0x10000000, false), expected);
+        }
+        b.bios[4..8].copy_from_slice(&0xabcd5678u32.to_le_bytes());
+        for address in [0, 2] {
+            b.instruction_context(address, true);
+            assert_eq!(b.read32(0x10000000, false), 0xabcd5678);
+        }
+    }
+    #[test]
+    fn thumb_iwram_retains_loaded_word_half_but_refills_discard_read_history() {
+        let mut b = bus();
+        b.write32(0x03000100, 0xabcd5678, false);
+        b.write32(0x03000004, 0x33332222, false);
+        b.write16(0x03000002, 0x1111, false);
+        for aligned in [true, false] {
+            b.instruction_context(0x03000000, true);
+            assert_eq!(b.read32(0x03000100, false), 0xabcd5678);
+            b.finish_instruction();
+            b.instruction_context(if aligned { 0x03000000 } else { 0x03000002 }, true);
+            assert_eq!(
+                b.read32(0x10000000, false),
+                if aligned { 0xabcd2222 } else { 0x33335678 }
+            );
+        }
+        b.refill_complete(0x03000000);
+        b.instruction_context(0x03000000, true);
+        assert_eq!(b.read32(0x10000000, false), 0x11112222);
+    }
+    #[test]
+    fn arm_cpu_rotates_unaligned_unused_word_reads() {
+        let mut b = bus();
+        b.rom[..4].copy_from_slice(&0xe5910000u32.to_le_bytes());
+        b.rom[8..12].copy_from_slice(&0x12345678u32.to_le_bytes());
+        let mut c = crate::cpu::Cpu::default();
+        c.set_cpsr(0x1f).unwrap();
+        c.r[1] = 0x10000001;
+        c.r[15] = 0x08000000;
+        c.step(&mut b);
+        assert_eq!(c.r[0], 0x78123456);
     }
     #[test]
     fn prefetch_uses_idle_bus_clocks_but_not_cartridge_data_accesses() {
