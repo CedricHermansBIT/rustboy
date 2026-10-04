@@ -70,6 +70,13 @@ User-supplied BIOS execution still starts from raw reset state, and software can
 explicitly select a zero transform. This fixes a demonstrated synthetic case,
 not a claim to reproduce the user's earlier-version issue or all raster effects.
 
+Validation (2026-10-04): 289 self-contained native checks pass, along with the
+GBA browser upload/audio/persistence/fast-forward scenario and six patterned
+CPU-driven display fixtures. Clippy and the WASM check pass. The local FireRed
+1,800-frame startup probe still reaches the same CPU/display state without a
+fault: 505,612,801 clocks / 159,868,346 instructions in 12.563 s (2.40x native
+clock throughput with PSG enabled). This is not finished-game speed evidence.
+
 ### PSG synthesis milestone
 
 Our original GBA PSG now provides both pulse channels (duty, length, envelopes
