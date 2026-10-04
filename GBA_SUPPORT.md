@@ -60,6 +60,25 @@ backend-only milestone.
 
 ## Remaining milestones
 
+### Final-output Green Swap
+
+GREEN_SWAP (`04000002h`, bit 0) now exchanges the green components of each
+even/odd screen-pixel pair after layer composition and color effects. Red,
+blue, alpha, palette contents and VRAM remain unchanged. The register accepts
+byte/halfword/word writes and masks unused bits; forced blank remains white.
+This follows the [GBATEK Green Swap specification](https://rust-console.github.io/gbatek-gbaonly/#4000002h---undocumented---green-swap-rw),
+not another emulator's implementation. Existing snapshots already preserve this
+I/O register, so the state format remains version 10.
+
+Original tests cover all six modes, post-window/brightness ordering, an
+OBJ/backdrop pair at the right screen edge, untouched neighboring rows, forced
+blank and deterministic state replay. Two original browser cartridges verify
+enabled/disabled output through CPU register writes and the actual WASM canvas,
+with state round-trip checks. The self-contained native gate now has 356 checks
+(181 GBA: 162 unit, 16 original-program and 3 EEPROM). Internal memory control,
+RAM-disable/lockup behavior, DMA open bus and precise raster timing remain
+unfinished; Green Swap does not imply full display-hardware accuracy.
+
 ### CPU I/O readability and open-bus baseline
 
 CPU reads now distinguish readable I/O halfwords from write-only register
