@@ -57,6 +57,38 @@ backend-only milestone.
 
 ## Remaining milestones
 
+### DMA register and address-width corrections
+
+DMA control writes now clear unused low bits on every channel and the
+DMA3-only DRQ bit on channels 0-2. Byte writes to either control byte update
+the channel; changing the low byte while waiting for HBlank no longer leaves
+the internal mode stale or reloads the already latched source/count.
+
+Source and destination counters now wrap at their channel's physical 27/28-bit
+address limit after increment/decrement. Every transfer masks addresses before
+the bus access, so DMA0 cannot escape from internal memory into cartridge ROM.
+Older saved unmasked counters resume using the physical width, without changing
+snapshot layout. Source/destination initial register values remain separate from
+the internal moving counters. This follows the DMA register descriptions:
+https://rust-console.github.io/gbatek-gbaonly/#gba-dma-transfers
+
+Original tests cover channel-specific control masks, bytewise changes to a
+waiting channel, latched/programmed address separation, increment/decrement at
+each address limit, DMA0's boundary result, replay across wrap and recovery of
+older unmasked counters. This does not implement external DRQ signaling or
+video-capture DMA, and startup/arbitration phases, SRAM-side restrictions and
+invalid-source open-bus details remain accuracy work.
+
+Validation: 130 GBA unit / 15 original program / 3 EEPROM tests pass (148 GBA
+checks), together with 323 self-contained native checks, JS/Python checks,
+warnings-denied GBA Clippy and the root WASM check. The rebuilt GBA browser
+scenario passes its upload, graphics, audio, saves, speed, BIOS and STOP checks.
+FireRed's 1,800-frame startup probe remains fault-free at the same 505,612,800
+clocks / 159,995,200 instructions / 6,958 exceptions and CPU/display state.
+This run took 11.144 s (2.70x native clock throughput), not a controlled speed
+comparison or full-game validation. The separate GB ROM suite and full
+eleven-scenario browser gate were not rerun for this GBA-only correction.
+
 ### Replacement BIOS angle services
 
 ArcTan (09h) and ArcTan2 (0Ah) now execute rather than stopping as unsupported.
