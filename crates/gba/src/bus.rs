@@ -103,7 +103,9 @@ impl Bus {
             3 => self.iwram[index & 0x7fff],
             4 if index & 0xffffff < 0x400 => {
                 let offset = index & 0x3ff;
-                if (0x100..0x110).contains(&offset) && offset & 3 < 2 {
+                if (0x60..0xa0).contains(&offset) {
+                    self.sound_read(offset)
+                } else if (0x100..0x110).contains(&offset) && offset & 3 < 2 {
                     (self.timers[(offset - 0x100) / 4].counter >> ((offset & 1) * 8)) as u8
                 } else if ((0xb0..0xe0).contains(&offset) && (offset - 0xb0) % 12 < 10)
                     || (0xa0..0xa8).contains(&offset)
@@ -206,6 +208,9 @@ impl Bus {
             4 if index & 0xffffff < 0x400 => {
                 let offset = index & 0x3ff;
                 let old = self.io[offset];
+                if (0x60..0xa0).contains(&offset) {
+                    self.apu.psg.flush(&mut self.io);
+                }
                 match offset {
                     0x202 | 0x203 => self.io[offset] &= !value,
                     6 | 7 | 0x130 | 0x131 => {}
@@ -214,7 +219,7 @@ impl Bus {
                     _ => self.io[offset] = value,
                 }
                 self.peripheral_write(offset, old);
-                self.sound_write(offset);
+                self.sound_write(offset, old);
                 self.affine_write(offset);
             }
             5 => self.palette[index & 0x3ff] = value,
@@ -228,10 +233,12 @@ impl Bus {
 impl Memory for Bus {
     fn read8(&mut self, address: u32) -> u8 {
         self.charge(address, 1, false);
+        self.flush_sound_read(address);
         self.peek8(address)
     }
     fn read16(&mut self, address: u32, sequential: bool) -> u16 {
         self.charge(address, 2, sequential);
+        self.flush_sound_read(address);
         if self.eeprom_address(address) {
             return self.backup.eeprom.read();
         }
@@ -242,6 +249,7 @@ impl Memory for Bus {
     }
     fn read32(&mut self, address: u32, sequential: bool) -> u32 {
         self.charge(address, 4, sequential);
+        self.flush_sound_read(address);
         if (14..=15).contains(&(address >> 24)) {
             return u32::from(self.backup.read(address)) * 0x01010101;
         }

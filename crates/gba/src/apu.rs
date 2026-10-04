@@ -1,5 +1,5 @@
-//! Original timer-clocked Direct Sound FIFOs and stereo DAC mixing. PSG
-//! oscillators and precise variable-rate PWM filtering are subsequent work.
+//! Original timer-clocked Direct Sound and PSG stereo DAC mixing. Precise
+//! analog response and variable-rate PWM filtering remain subsequent work.
 use crate::bus::Bus;
 use std::collections::VecDeque;
 
@@ -31,6 +31,7 @@ impl Fifo {
     }
 }
 pub(crate) struct Apu {
+    pub psg: crate::psg::Psg,
     pub fifo: [Fifo; 2],
     pub phase: u16,
     pub samples: VecDeque<[f32; 2]>,
@@ -38,6 +39,7 @@ pub(crate) struct Apu {
 impl Default for Apu {
     fn default() -> Self {
         Self {
+            psg: crate::psg::Psg::default(),
             fifo: [Fifo::default(); 2],
             phase: 0,
             samples: VecDeque::with_capacity(1024),
@@ -57,7 +59,45 @@ impl Apu {
     }
 }
 impl Bus {
-    pub(crate) fn sound_write(&mut self, offset: usize) {
+    #[inline]
+    pub(crate) fn flush_sound_read(&mut self, address: u32) {
+        if address >> 24 == 4 && (0x60..0xa0).contains(&(address & 0xffffff)) {
+            self.apu.psg.flush(&mut self.io);
+        }
+    }
+    pub(crate) fn sound_read(&self, offset: usize) -> u8 {
+        if self.apu.psg.pending != 0
+            && (offset == 0x70 || offset == 0x84 || (0x90..0xa0).contains(&offset))
+        {
+            // Debugger peeks remain non-mutating, including deferred wave shifts
+            // and length expiry. Normal CPU reads flush without copying first.
+            let mut psg = self.apu.psg.clone();
+            let mut io: [u8; 0x400] = self.io.as_slice().try_into().unwrap();
+            psg.flush(&mut io);
+            return match offset {
+                0x70 => io[0x70] & 0xe0,
+                0x84 => (io[0x84] & 0x80) | psg.active,
+                _ => psg.wave[crate::psg::Psg::wave_index(&io, offset)],
+            };
+        }
+        match offset {
+            0x90..=0x9f => self.apu.psg.wave[crate::psg::Psg::wave_index(&self.io, offset)],
+            0x60 => self.io[offset] & 0x7f,
+            0x62 | 0x68 => self.io[offset] & 0xc0,
+            0x63 | 0x69 | 0x79 | 0x7c | 0x81 => self.io[offset],
+            0x65 | 0x6d | 0x75 | 0x7d => self.io[offset] & 0x40,
+            0x70 | 0x73 => self.io[offset] & 0xe0,
+            0x80 => self.io[offset] & 0x77,
+            0x82 => self.io[offset] & 0x0f,
+            0x83 => self.io[offset] & 0x77,
+            0x84 => (self.io[offset] & 0x80) | self.apu.psg.active,
+            0x88 => self.io[offset] & 0xfe,
+            0x89 => self.io[offset] & 0xc3,
+            _ => 0,
+        }
+    }
+    pub(crate) fn sound_write(&mut self, offset: usize, old: u8) {
+        self.apu.psg.write(offset, old, &mut self.io);
         match offset {
             0xa0..=0xa7 => self.apu.fifo[(offset - 0xa0) / 4].push(self.io[offset] as i8),
             0x83 => {
@@ -72,6 +112,7 @@ impl Bus {
             0x84 => {
                 self.io[0x84] &= 0x80;
                 if self.io[0x84] == 0 {
+                    self.apu.psg.reset();
                     self.io[0x60..0x82].fill(0);
                 }
             }
@@ -91,18 +132,23 @@ impl Bus {
     pub(crate) fn clock_audio(&mut self, clocks: u64) {
         // Scheduler bounds this at the next output deadline, preserving each
         // timer overflow's order relative to resampling rather than batch-ending.
+        if self.io[0x84] & 0x80 != 0 {
+            self.apu.psg.pending += clocks as u16;
+        }
         self.apu.phase += clocks as u16;
         if self.apu.phase < 512 {
             return;
         }
         self.apu.phase -= 512;
+        self.apu.psg.flush(&mut self.io);
+        let psg = self.apu.psg.output();
         let control = self.io16(0x82);
         let bias = self.io16(0x88);
         let enabled = self.io16(0x84) & 128 != 0;
         let mut stereo = [0.; 2];
         if enabled {
             for (side, value) in stereo.iter_mut().enumerate() {
-                let mut sum = 0i32;
+                let mut sum = psg[side];
                 for n in 0..2 {
                     let route = if side == 0 { 9 + n * 4 } else { 8 + n * 4 };
                     if control >> route & 1 != 0 {

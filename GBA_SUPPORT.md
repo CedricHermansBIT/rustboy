@@ -25,7 +25,7 @@ states but do not cache a real pipeline. ROM prefetch, BIOS read protection,
 open bus and bus arbitration remain unimplemented. Reserved/unpredictable
 instructions are not a complete hardware oracle. Scanline graphics and Direct
 Sound are now functional baselines, not claims of raster/PWM accuracy or complete
-game compatibility. PSG channels remain unimplemented.
+game compatibility. PSG channels now have a functional synthesis baseline (below).
 
 ## Run locally
 
@@ -55,6 +55,36 @@ The local ROM acceptance suite is separate and has not been rerun for this
 backend-only milestone.
 
 ## Remaining milestones
+
+### PSG synthesis milestone
+
+Our original GBA PSG now provides both pulse channels (duty, length, envelopes
+and channel-1 sweep), the two-bank rotating wave channel (32/64 digits, volume
+and bank switching), and 7/15-bit noise. The frame sequencer follows the GBA
+clock rate. Stereo routing, master volume and PSG gain share the DAC mixer with
+Direct Sound; integrated digital levels reduce output-rate aliasing.
+
+PSG work is deferred between output samples, then flushed before sound-register
+reads/writes, so instruction fetches do not advance four oscillators separately.
+Debugger peeks predict pending changes without mutating the machine. Version-6
+snapshots retain oscillator/sequencer phases, both wave banks, pending clocks
+and partial output integrals; versions 1-5 remain readable. Legacy states retain
+their exposed wave bank but cannot supply previously nonexistent PSG phases.
+
+This is not a claim of exact analog DAC/high-pass response, variable-rate PWM,
+sub-instruction register timing or every live-envelope/hardware-revision quirk.
+The implementation follows hardware documentation, not other emulator code:
+https://rust-console.github.io/gbatek-gbaonly/#gba-sound-controller
+Original tests cover periods, duty, sweep overflow, length/envelopes, wave banks,
+noise cycles, batching equivalence and replay. An original ARM cartridge starts
+all four channels through CPU stores; the browser fixture also drives PSG into
+the actual Web Audio stereo queue.
+
+Validation: 102 GBA unit tests plus 8 original program / 3 EEPROM integration
+tests pass. The full self-contained gate passes 287 native checks and eleven
+browser scenarios, including finite nonzero PSG audio through WASM, replay,
+Flash persistence and measured fast-forward. GBA Clippy (warnings denied) and
+the root WASM check pass. Analog/PWM and hardware-ROM audio validation remain.
 
 ### Fast-forward performance
 
@@ -155,8 +185,9 @@ remain accuracy work.
 Direct Sound A/B now implement bounded signed-byte FIFOs, timer selection,
 stereo routing/gain, clipping and bias/resolution quantization. DMA1/2 sound mode
 uses four-word refills and fixed destinations; the scheduler samples at 32,768 Hz
-and returns stereo audio through the shared backend API. PSG, precise FIFO
-request/underflow behavior and variable-rate PWM filtering remain incomplete.
+and returns stereo audio through the shared backend API. At this earlier
+milestone PSG was missing; it is added above. Precise FIFO request/underflow
+behavior and variable-rate PWM filtering remain incomplete.
 Version-2 snapshots preserve FIFO contents, held samples, output phase and
 queued audio; version-1 snapshots remain readable. Native GBA coverage now has
 68 unit tests and six original program tests, including timer/DMA PCM output
@@ -249,7 +280,7 @@ GBA Clippy with warnings denied and the root WASM check also pass.
    never as a distributed fixture or the sole correctness oracle.
 2. Validate and refine PPU modes 0–5, especially affine reference latches,
    raster effects, OBJ budgets and window/mosaic timing quirks.
-3. Implement the GBA PSG and refine Direct Sound request/PWM timing; validate
+3. Refine GBA PSG quirks, analog response and Direct Sound request/PWM timing; validate
    audio end to end in games and browser playback.
 4. Cartridge SRAM/Flash/EEPROM, save detection and persistence, validated state
    snapshots, keypad IRQ, serial/link devices and cartridge peripherals.

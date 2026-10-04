@@ -10,6 +10,72 @@ fn put_words(machine: &mut GameBoyAdvance, address: u32, words: &[u32]) {
 }
 
 #[test]
+fn original_arm_cartridge_starts_all_psg_channels_and_replays_pcm() {
+    use rustboy_emulator_api::Emulator;
+    // ARM literal loads and halfword stores perform every register write on the
+    // CPU bus. No host-side sound initialization or copyrighted score/sample.
+    let settings = [
+        (0x84u32, 0x80u32),
+        (0x80, 0xff77),
+        (0x82, 2),
+        (0x60, 0x19),
+        (0x62, 0xa280),
+        (0x64, 0x8680),
+        (0x68, 0x7280),
+        (0x6c, 0x8700),
+        (0x70, 0),
+        (0x90, 0xf0f0),
+        (0x92, 0xf0f0),
+        (0x94, 0xf0f0),
+        (0x96, 0xf0f0),
+        (0x98, 0xf0f0),
+        (0x9a, 0xf0f0),
+        (0x9c, 0xf0f0),
+        (0x9e, 0xf0f0),
+        (0x70, 0xc0),
+        (0x72, 0x2000),
+        (0x74, 0x8700),
+        (0x78, 0x5900),
+        (0x7c, 0x8039),
+    ];
+    let mut words = vec![0];
+    for (offset, _) in settings {
+        words.push(0); // LDR r1,[pc,#literal]
+        words.push(0xe1c010b0 | ((offset & 0xf0) << 4) | (offset & 15));
+    }
+    words.push(0xeafffffe);
+    let pool = words.len() * 4;
+    words[0] = 0xe59f0000 | (pool as u32 - 8);
+    words.push(0x04000000);
+    for (n, (_, value)) in settings.into_iter().enumerate() {
+        let instruction = 1 + n * 2;
+        let literal = words.len() * 4;
+        words[instruction] = 0xe59f1000 | (literal as u32 - (instruction as u32 * 4 + 8));
+        words.push(value);
+    }
+    let mut rom = vec![0; 1024];
+    for (n, word) in words.into_iter().enumerate() {
+        rom[n * 4..n * 4 + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    let mut m = GameBoyAdvance::new(rom, None).unwrap();
+    m.run(15000);
+    assert!(m.fault.is_none());
+    assert_eq!(m.bus.peek8(0x04000084), 0x8f);
+    let sound = m.drain_audio();
+    assert_eq!((sound.sample_rate, sound.channels), (32768, 2));
+    assert!(sound.samples.iter().any(|v| v.abs() > 0.05));
+    assert!(sound.samples.windows(2).any(|pair| pair[0] != pair[1]));
+    let saved = m.export_state();
+    m.run(FRAME_CYCLES * 3);
+    let expected = m.drain_audio();
+    let final_state = m.export_state();
+    m.import_state(&saved).unwrap();
+    m.run(FRAME_CYCLES * 3);
+    assert_eq!(m.drain_audio().samples, expected.samples);
+    assert_eq!(m.export_state(), final_state);
+}
+
+#[test]
 fn timer_dma_sound_reaches_frontend_and_replays_after_restore() {
     use rustboy_emulator_api::Emulator;
     let mut rom = vec![0; 192];

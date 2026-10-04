@@ -10,6 +10,7 @@ mod eeprom;
 pub mod machine;
 mod peripherals;
 mod ppu;
+mod psg;
 pub use backend::validate_cartridge;
 pub use machine::GameBoyAdvance;
 

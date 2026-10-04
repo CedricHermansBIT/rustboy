@@ -183,13 +183,29 @@ try {
       0xe3a02055,0xe5c12000,0xe3a020a0,0xe5c02000,0xe59f0010,
       0xe3a0205a,0xe5c02000,0xeafffffe,0x0e005555,0x0e002aaa,0x0e001234];
     flash.forEach((word,n)=>view.setUint32(0x100+n*4,word,true));
+    // Continue into an original pulse-channel program after Flash programming.
+    // Nonzero browser audio must come from PSG, not host-injected FIFO samples.
+    view.setUint32(0x100+11*4,0xea000000|((0x200-(0x100+11*4+8))>>2),true);
+    const soundSettings=[[0x84,0x80],[0x80,0x2277],[0x82,2],[0x68,0xf080],[0x6c,0x8600]];
+    const soundWords=[0];
+    for (const [offset] of soundSettings) soundWords.push(0,0xe1c010b0|((offset&0xf0)<<4)|(offset&15));
+    soundWords.push(0xeafffffe);
+    soundWords[0]=0xe59f0000|(soundWords.length*4-8);soundWords.push(0x04000000);
+    soundSettings.forEach(([,value],n)=>{
+      const at=1+n*2;soundWords[at]=0xe59f1000|(soundWords.length*4-(at*4+8));soundWords.push(value);
+    });
+    soundWords.forEach((word,n)=>view.setUint32(0x200+n*4,word,true));
     gba.set(new TextEncoder().encode('FLASH1M_V103'),0x180);
     gba[0xb2]=0x96;gba.set(new TextEncoder().encode('RUSTBOY TEST'),0xa0);
     const gbaPath=path.join(temporary,'original-32MiB.gba');await fs.writeFile(gbaPath,gba);
+    await evaluate("window.gbaPsgSamples=0; window.gbaPsgEnergy=0; window.gbaPsgFinite=true; window.gbaOriginalAudioQueue=queueAudioSamples; queueAudioSamples=(left,right,rate)=>{ for(const channel of [left,right]) for(const sample of channel) { window.gbaPsgSamples++; window.gbaPsgEnergy+=sample*sample; window.gbaPsgFinite &&=Number.isFinite(sample); } window.gbaOriginalAudioQueue(left,right,rate); }");
     await call('DOM.setFileInputFiles',{nodeId,files:[gbaPath]});
     await until("document.querySelector('#rustboy-canvas').width === 240");
     await until("(() => { const c=document.querySelector('#rustboy-canvas'); const p=c.getContext('2d').getImageData(239,159,1,1).data; return p[0]===255 && p[1]===0 && p[2]===0; })()");
     assert.equal(await evaluate("document.querySelector('#rustboy-canvas').height"),160);
+    await until("window.gbaPsgSamples > 2000 && window.gbaPsgEnergy/window.gbaPsgSamples > 0.001");
+    assert.equal(await evaluate("window.gbaPsgFinite"),true,'PSG PCM reaches the browser stereo queue');
+    await evaluate("queueAudioSamples=window.gbaOriginalAudioQueue");
     assert.ok(await evaluate("Module._get_state_id().startsWith('gba-')"));
     assert.equal(await evaluate("document.querySelector('#backend-status').hidden"),false);
     await evaluate("window.gbaUploadedId=Module._get_state_id(); Module._set_paused(true); window.gbaState=Module._export_state(); Module._import_state(gbaState)");
@@ -227,7 +243,7 @@ try {
     await call('DOM.setFileInputFiles',{nodeId,files:[oversized]});
     await until("document.body.textContent.includes('Could not read ROM: ROM size must')");
     assert.equal(await evaluate("Module._get_state_id()===gbaUploadedId"),true);
-    console.log('GBA browser: 32 MiB upload, real WASM bitmap, Flash persistence, checked states, measured fast-forward and oversized-load preservation passed', speedChecks);
+    console.log('GBA browser: 32 MiB upload, real WASM bitmap/PSG audio, Flash persistence, checked states, measured fast-forward and oversized-load preservation passed', speedChecks);
   }
   // Explicit opt-in only. Never copies the supplied game into public assets.
   if (process.env.RUSTBOY_GBA_PROFILE) {
@@ -244,7 +260,7 @@ try {
       const wasm = await import('./out/rustboy.js');
       const clocks = () => {
         const bytes = Module._export_state();
-        if (bytes[4] !== 5) throw new Error('Update profile snapshot offsets');
+        if (![5, 6].includes(bytes[4])) throw new Error('Update profile snapshot offsets');
         return Number(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(301, true));
       };
       Module._set_paused(true);

@@ -187,6 +187,7 @@ fn reset_memory(bus: &mut Bus, flags: u8) {
         bus.set_io(0x134, 0x8000);
     }
     if flags & 0x40 != 0 {
+        bus.apu.psg = Default::default();
         bus.apu.fifo = [Default::default(); 2];
         bus.io[0x60..0x88].fill(0);
         bus.io[0x90..0xb0].fill(0);

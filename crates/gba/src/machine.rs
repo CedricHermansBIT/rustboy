@@ -1,5 +1,5 @@
 //! Development GBA machine with scanline graphics, Direct Sound and backup saves.
-//! PSG, precise raster/bus timing and some BIOS services remain pending.
+//! Precise raster/bus/PWM timing and some BIOS services remain pending.
 use crate::{
     bus::Bus,
     cpu::{Cpu, Memory},
