@@ -11,6 +11,15 @@ pub const T: u32 = 1 << 5;
 
 /// Statically dispatched bus: no virtual call or allocation per CPU access.
 pub trait Memory {
+    /// Instruction fetches are distinct from data reads on protected memory.
+    fn instruction_context(&mut self, _address: u32, _thumb: bool) {}
+    fn fetch16(&mut self, address: u32, sequential: bool) -> u16 {
+        self.read16(address, sequential)
+    }
+    fn fetch32(&mut self, address: u32, sequential: bool) -> u32 {
+        self.read32(address, sequential)
+    }
+    fn refill_complete(&mut self, _last_address: u32) {}
     fn read8(&mut self, address: u32) -> u8;
     fn read16(&mut self, address: u32, sequential: bool) -> u16;
     fn read32(&mut self, address: u32, sequential: bool) -> u32;
@@ -170,11 +179,13 @@ impl Cpu {
         self.r[15] = target & if self.thumb() { !1 } else { !3 };
         // Incremental refill N+S, in addition to this instruction's fetch.
         if self.thumb() {
-            bus.read16(self.r[15], false);
-            bus.read16(self.r[15].wrapping_add(2), true);
+            bus.fetch16(self.r[15], false);
+            bus.fetch16(self.r[15].wrapping_add(2), true);
+            bus.refill_complete(self.r[15].wrapping_add(2));
         } else {
-            bus.read32(self.r[15], false);
-            bus.read32(self.r[15].wrapping_add(4), true);
+            bus.fetch32(self.r[15], false);
+            bus.fetch32(self.r[15].wrapping_add(4), true);
+            bus.refill_complete(self.r[15].wrapping_add(4));
         }
         self.sequential = true;
     }
@@ -198,13 +209,14 @@ impl Cpu {
     }
     pub fn step<B: Memory>(&mut self, bus: &mut B) {
         self.instructions = self.instructions.wrapping_add(1);
+        bus.instruction_context(self.r[15], self.thumb());
         if self.thumb() {
-            let op = bus.read16(self.r[15], self.sequential);
+            let op = bus.fetch16(self.r[15], self.sequential);
             self.r[15] = self.r[15].wrapping_add(2);
             self.sequential = true;
             self.execute_thumb(bus, op);
         } else {
-            let op = bus.read32(self.r[15], self.sequential);
+            let op = bus.fetch32(self.r[15], self.sequential);
             self.r[15] = self.r[15].wrapping_add(4);
             self.sequential = true;
             if self.condition(op >> 28) {

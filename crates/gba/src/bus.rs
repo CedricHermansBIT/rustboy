@@ -5,6 +5,8 @@ use crate::peripherals::{Dma, Timer};
 pub struct Bus {
     pub(crate) bios: Vec<u8>,
     pub(crate) replacement_bios: bool,
+    pub(crate) bios_access: bool,
+    pub(crate) bios_latch: u32,
     pub(crate) rom: Vec<u8>,
     pub ewram: Vec<u8>,
     pub iwram: Vec<u8>,
@@ -37,6 +39,8 @@ impl Bus {
         let mut bus = Self {
             bios: bios.unwrap_or_else(crate::bios::irq_firmware),
             replacement_bios,
+            bios_access: !replacement_bios,
+            bios_latch: 0,
             rom,
             ewram: vec![0; 0x40000],
             iwram: vec![0; 0x8000],
@@ -116,7 +120,7 @@ impl Bus {
             index
         }
     }
-    /// Non-mutating debugger read. BIOS protection and open-bus latch are pending.
+    /// Non-mutating debugger read: deliberately bypasses CPU BIOS protection.
     pub fn peek8(&self, address: u32) -> u8 {
         if self.eeprom_address(address) {
             return if address & 1 == 0 {
@@ -271,13 +275,51 @@ impl Bus {
     }
 }
 impl Memory for Bus {
+    fn instruction_context(&mut self, address: u32, thumb: bool) {
+        self.bios_access = address < 0x4000;
+        if self.bios_access {
+            // The interpreter represents the visible ARM/Thumb prefetch without
+            // yet maintaining a real pipeline queue. Data loads do not replace
+            // the last fetched opcode latch.
+            let ahead = address.wrapping_add(if thumb { 4 } else { 8 });
+            let fetched = if ahead < 0x4000 { ahead } else { address };
+            self.bios_latch = self.peek32(fetched & !3);
+        }
+    }
+    fn refill_complete(&mut self, address: u32) {
+        if address < 0x4000 {
+            self.bios_latch = self.peek32(address & !3);
+        }
+    }
+    fn fetch16(&mut self, address: u32, sequential: bool) -> u16 {
+        if address < 0x4000 {
+            self.charge(address, 2, sequential);
+            self.peek16(address & !1)
+        } else {
+            self.read16(address, sequential)
+        }
+    }
+    fn fetch32(&mut self, address: u32, sequential: bool) -> u32 {
+        if address < 0x4000 {
+            self.charge(address, 4, sequential);
+            self.peek32(address & !3)
+        } else {
+            self.read32(address, sequential)
+        }
+    }
     fn read8(&mut self, address: u32) -> u8 {
         self.charge(address, 1, false);
+        if address < 0x4000 && !self.bios_access {
+            return (self.bios_latch >> ((address & 3) * 8)) as u8;
+        }
         self.flush_sound_read(address);
         self.peek8(address)
     }
     fn read16(&mut self, address: u32, sequential: bool) -> u16 {
         self.charge(address, 2, sequential);
+        if address < 0x4000 && !self.bios_access {
+            return (self.bios_latch >> ((address & 2) * 8)) as u16;
+        }
         self.flush_sound_read(address);
         if self.eeprom_address(address) {
             return self.backup.eeprom.read();
@@ -289,6 +331,9 @@ impl Memory for Bus {
     }
     fn read32(&mut self, address: u32, sequential: bool) -> u32 {
         self.charge(address, 4, sequential);
+        if address < 0x4000 && !self.bios_access {
+            return self.bios_latch;
+        }
         self.flush_sound_read(address);
         if (14..=15).contains(&(address >> 24)) {
             return u32::from(self.backup.read(address)) * 0x01010101;
@@ -364,6 +409,58 @@ mod tests {
     use super::*;
     fn bus() -> Bus {
         Bus::new(vec![0; 0xc0], None).unwrap()
+    }
+    #[test]
+    fn bios_protection_uses_opcode_lanes_and_debugger_peeks_do_not_change_it() {
+        let mut b = bus();
+        b.bios[8..12].copy_from_slice(&0x12345678u32.to_le_bytes());
+        b.bios[32..36].copy_from_slice(&0xabcdef01u32.to_le_bytes());
+        b.instruction_context(0, false);
+        assert_eq!(b.read32(32, false), 0xabcdef01);
+        assert_eq!(b.bios_latch, 0x12345678); // Data isn't an opcode fetch.
+        b.instruction_context(0x08000000, false);
+        assert_eq!(b.read32(32, false), 0x12345678);
+        assert_eq!(b.read16(34, false), 0x1234);
+        assert_eq!(b.read16(33, false), 0x5678);
+        for (n, expected) in [0x78, 0x56, 0x34, 0x12].into_iter().enumerate() {
+            assert_eq!(b.read8(32 + n as u32), expected);
+        }
+        assert_eq!(b.peek32(32), 0xabcdef01);
+        assert_eq!(b.bios_latch, 0x12345678);
+        assert!(!b.bios_access);
+        assert_eq!(b.fetch32(32, false), 0xabcdef01);
+        b.refill_complete(32);
+        assert_eq!(b.bios_latch, 0xabcdef01);
+        b.instruction_context(0x08000000, true);
+        assert_eq!(b.read32(0, false), 0xabcdef01);
+    }
+    #[test]
+    fn thumb_bios_prefetch_and_end_of_firmware_do_not_mirror() {
+        let mut b = bus();
+        b.bios[4..8].copy_from_slice(&0x12345678u32.to_le_bytes());
+        b.bios[0x3ffc..].copy_from_slice(&0xabcdef01u32.to_le_bytes());
+        b.instruction_context(2, true);
+        assert_eq!(b.bios_latch, 0x12345678);
+        b.instruction_context(0x3ffe, true);
+        assert_eq!(b.bios_latch, 0xabcdef01);
+        b.instruction_context(0x4000, true);
+        assert_eq!(b.read32(0x3ffc, false), 0xabcdef01);
+        assert_eq!(b.peek32(0x4000), 0); // Unused area, not a BIOS mirror.
+    }
+    #[test]
+    fn dma_does_not_inherit_firmware_cpu_read_permissions() {
+        let mut b = bus();
+        b.bios[0..4].copy_from_slice(&0xdeadbeefu32.to_le_bytes());
+        b.bios_access = true;
+        b.bios_latch = 0x12345678;
+        b.write32(0x040000d4, 0, false);
+        b.write32(0x040000d8, 0x02000000, false);
+        b.write32(0x040000dc, 0x84000001, false);
+        assert!(b.dma_unit());
+        assert_eq!(b.peek32(0x02000000), 0x12345678);
+        assert!(b.bios_access);
+        assert_eq!(b.bios_latch, 0x12345678);
+        assert_eq!(b.peek32(0), 0xdeadbeef);
     }
     #[test]
     fn gamepak_boundaries_restart_nonsequential_in_all_wait_areas() {

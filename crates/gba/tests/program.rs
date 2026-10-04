@@ -9,6 +9,71 @@ fn put_words(machine: &mut GameBoyAdvance, address: u32, words: &[u32]) {
     machine.bus.take_cycles();
 }
 #[test]
+fn original_firmware_can_read_bios_but_arm_and_thumb_cartridges_get_opcode_latch() {
+    use rustboy_emulator_api::Emulator;
+    for thumb in [false, true] {
+        let mut bios = vec![0; 0x4000];
+        for (n, op) in [
+            0xe59f0018u32,
+            0xe59f5018,
+            0xe5956000,
+            0xe12fff10,
+            0xe1a00000,
+            0xe1a00000,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            bios[n * 4..n * 4 + 4].copy_from_slice(&op.to_le_bytes());
+        }
+        bios[32..36].copy_from_slice(&(0x08000000u32 | u32::from(thumb)).to_le_bytes());
+        bios[36..40].copy_from_slice(&0x100u32.to_le_bytes());
+        bios[0x100..0x104].copy_from_slice(&0xdeadbeefu32.to_le_bytes());
+        let mut rom = vec![0; 192];
+        if thumb {
+            for (n, op) in [0x4907u16, 0x680a, 0x784b, 0x884c, 0xe7fe]
+                .into_iter()
+                .enumerate()
+            {
+                rom[n * 2..n * 2 + 2].copy_from_slice(&op.to_le_bytes());
+            }
+        } else {
+            for (n, op) in [
+                0xe59f1018u32,
+                0xe5912000,
+                0xe5d13001,
+                0xe1d140b2,
+                0xeafffffe,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                rom[n * 4..n * 4 + 4].copy_from_slice(&op.to_le_bytes());
+            }
+        }
+        rom[32..36].copy_from_slice(&0x100u32.to_le_bytes());
+        let mut m = GameBoyAdvance::new(rom, Some(bios)).unwrap();
+        for _ in 0..4 {
+            m.step();
+        }
+        assert_eq!(m.cpu.r[6], 0xdeadbeef); // BIOS-side data load is permitted.
+        let saved = m.export_state();
+        for _ in 0..5 {
+            m.step();
+        }
+        assert_eq!(m.cpu.r[2], 0xe1a00000); // Last BIOS instruction's prefetch.
+        assert_eq!(m.cpu.r[3], 0);
+        assert_eq!(m.cpu.r[4], 0xe1a0);
+        assert!(m.fault.is_none());
+        let after = m.export_state();
+        m.import_state(&saved).unwrap();
+        for _ in 0..5 {
+            m.step();
+        }
+        assert_eq!(m.export_state(), after);
+    }
+}
+#[test]
 fn arm_block_load_restarts_cartridge_waits_at_page_boundary() {
     let mut rom = vec![0; 0x20008];
     rom[..4].copy_from_slice(&0xe8b0001eu32.to_le_bytes()); // LDMIA r0!, {r1-r4}

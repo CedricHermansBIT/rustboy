@@ -122,6 +122,7 @@ impl GameBoyAdvance {
                 } else {
                     self.bus.peek8(address.wrapping_add(2))
                 };
+                self.bus.bios_access = true;
                 match crate::bios::service(number, &mut self.cpu, &mut self.bus) {
                     Ok(effect) => {
                         if !matches!(effect, crate::bios::Effect::Reset) {
@@ -149,6 +150,7 @@ impl GameBoyAdvance {
                         })
                     }
                 }
+                self.bus.bios_access = self.cpu.r[15] < 0x4000;
             } else if vector != 0x18 {
                 self.fault = Some(MissingBiosException {
                     instruction_address: address,

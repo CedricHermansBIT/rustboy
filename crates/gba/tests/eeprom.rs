@@ -116,7 +116,7 @@ fn partial_command_busy_program_and_output_replay_in_snapshots() {
     m.import_state(&output).unwrap();
     finish(&mut m);
     assert_eq!(m.bus.peek32(0x02010000 + 128), expected);
-    let position = output.len() - 38 - 115; // EEPROM precedes version-6 PSG state.
+    let position = output.len() - 38 - 115 - 5; // EEPROM precedes PSG and BIOS state.
     let mut invalid = output.clone();
     invalid[position] = 7;
     let length = invalid.len();

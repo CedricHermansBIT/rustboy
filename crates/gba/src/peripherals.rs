@@ -190,6 +190,10 @@ impl Bus {
                 2
             });
         }
+        // DMA cannot grant BIOS read access merely because the interrupted CPU
+        // happens to be executing firmware.
+        let bios_access = self.bios_access;
+        self.bios_access = false;
         if width == 4 {
             let value = self.read32(d.source, !d.first);
             self.write32(d.destination, value, !d.first);
@@ -197,6 +201,7 @@ impl Bus {
             let value = self.read16(d.source, !d.first);
             self.write16(d.destination, value, !d.first);
         }
+        self.bios_access = bios_access;
         let move_address = |a: u32, mode: u16| match mode {
             0 | 3 => a.wrapping_add(width),
             1 => a.wrapping_sub(width),

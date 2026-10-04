@@ -326,11 +326,28 @@ try {
       await until('Module._export_state()[333]===2');
       await evaluate('window.stoppedGbaState=Module._export_state(); Module._import_state(stoppedGbaState)');
       await new Promise(resolve=>setTimeout(resolve,150));
-      assert.equal(await evaluate('(() => { const s=Module._export_state(); return s[4]===7 && s[333]===2 && s.every((byte,n)=>byte===stoppedGbaState[n]); })()'),true,'STOP freezes all serialized clocks/state across browser callbacks and restore');
+      assert.equal(await evaluate('(() => { const s=Module._export_state(); return s[4]===8 && s[333]===2 && s.every((byte,n)=>byte===stoppedGbaState[n]); })()'),true,'STOP freezes all serialized clocks/state across browser callbacks and restore');
       await call('Input.dispatchKeyEvent',{type:'keyDown',key:'k',code:'KeyK'});
       await until('(() => { const s=Module._export_state(); return s[333]===0 && new DataView(s.buffer,s.byteOffset).getUint32(40,true)===0x77; })()');
       await call('Input.dispatchKeyEvent',{type:'keyUp',key:'k',code:'KeyK'});
       console.log('GBA browser: STOP freezes hardware, replays state and wakes through keyboard keypad IRQ');
+    }
+    {
+      // Our IRQ shim has a nonzero PUSH opcode at BIOS 100h. Cartridge LDR
+      // must see the initial protected latch (zero), not those firmware bytes.
+      const words=[0xe59f0018,0xe5902000,0xe59f1018,0xe5812000,
+        0xe59f0014,0xe59f1014,0xe1c010b0,0xeafffffe,
+        0x100,0,0x06000000,0x04000000,0x403];
+      const fixture=new Uint8Array(512);const image=new DataView(fixture.buffer);
+      words.forEach((word,n)=>image.setUint32(n*4,word,true));fixture[0xb2]=0x96;
+      const file=path.join(temporary,'original-bios-protection.gba');await fs.writeFile(file,fixture);
+      const previous=await evaluate('Module._get_state_id()');
+      await call('DOM.setFileInputFiles',{nodeId,files:[file]});
+      await until(`Module._get_state_id()!==${JSON.stringify(previous)} && Module._get_state_id().startsWith('gba-')`);
+      await until('(() => { const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset).getBigUint64(309,true)>=2n; })()');
+      assert.equal(await evaluate('(() => { const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset).getUint32(32,true); })()'),0,'cartridge BIOS read is protected');
+      assert.deepEqual(await evaluate("Array.from(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,1,1).data)"),[0,0,0,255]);
+      console.log('GBA browser: protected BIOS load executes through CPU/WASM and renders the latch instead of firmware');
     }
   }
   // Explicit opt-in only. Never copies the supplied game into public assets.
@@ -348,7 +365,7 @@ try {
       const wasm = await import('./out/rustboy.js');
       const clocks = () => {
         const bytes = Module._export_state();
-        if (![5, 6, 7].includes(bytes[4])) throw new Error('Update profile snapshot offsets');
+        if (![5, 6, 7, 8].includes(bytes[4])) throw new Error('Update profile snapshot offsets');
         return Number(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(301, true));
       };
       Module._set_paused(true);

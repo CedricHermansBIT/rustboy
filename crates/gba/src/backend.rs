@@ -186,7 +186,7 @@ fn put(data: &mut Vec<u8>, value: u64, n: usize) {
 }
 impl GameBoyAdvance {
     fn snapshot(&self) -> Vec<u8> {
-        let mut data = b"RBGA\x07\0\0\0".to_vec();
+        let mut data = b"RBGA\x08\0\0\0".to_vec();
         put(&mut data, hash(&self.bus.rom), 8);
         put(&mut data, hash(&self.bus.bios), 8);
         for register in self
@@ -306,6 +306,8 @@ impl GameBoyAdvance {
         put(&mut data, u64::from(e.pending_address), 2);
         put(&mut data, e.pending_data, 8);
         data.extend_from_slice(&self.bus.apu.psg.encode());
+        put(&mut data, u64::from(self.bus.bios_latch), 4);
+        put(&mut data, u64::from(self.bus.bios_access), 1);
         let checksum = hash(&data);
         put(&mut data, checksum, 8);
         data
@@ -316,6 +318,7 @@ impl GameBoyAdvance {
                 > SNAPSHOT_BYTES
                     + 228
                     + crate::psg::STATE_BYTES
+                    + 5
                     + crate::apu::MAX_SAMPLES * 8
                     + 0x20000
         {
@@ -337,6 +340,7 @@ impl GameBoyAdvance {
             b"RBGA\x05\0\0\0" => 5,
             b"RBGA\x06\0\0\0" => 6,
             b"RBGA\x07\0\0\0" => 7,
+            b"RBGA\x08\0\0\0" => 8,
             _ => return Err("Unsupported GBA state version".into()),
         };
         if reader.int(8)? != hash(&self.bus.rom) || reader.int(8)? != hash(&self.bus.bios) {
@@ -567,6 +571,15 @@ impl GameBoyAdvance {
             let bank = crate::psg::Psg::wave_index(&next.bus.io, 0x90);
             next.bus.apu.psg.wave[bank..bank + 16].copy_from_slice(&next.bus.io[0x90..0xa0]);
         }
+        if version >= 8 {
+            next.bus.bios_latch = reader.int(4)? as u32;
+            next.bus.bios_access = reader.bool()?;
+        } else {
+            // Legacy states did not capture the BIOS latch. No firmware opcode
+            // can be recovered reliably from a cartridge PC alone.
+            next.bus.bios_latch = 0;
+            next.bus.bios_access = next.cpu.r[15] < 0x4000;
+        }
         if next.line >= 228
             || next.line_clocks >= 1232
             || next.bus.clocks > 1_000_000_000
@@ -589,20 +602,49 @@ mod tests {
         GameBoyAdvance::new(rom, None).unwrap()
     }
     #[test]
+    fn bios_latch_replays_migrates_v7_and_invalid_access_rejects_atomically() {
+        use crate::cpu::Memory;
+        let mut m = machine();
+        m.bus.bios_latch = 0x12345678;
+        let saved = m.export_state();
+        m.bus.bios_latch = 0;
+        m.import_state(&saved).unwrap();
+        assert_eq!(m.bus.read32(0x100, false), 0x12345678);
+        m.bus.take_cycles();
+        assert_eq!(m.export_state(), saved);
+        let mut invalid = saved.clone();
+        let at = invalid.len() - 9;
+        invalid[at] = 2;
+        let checksum_at = invalid.len() - 8;
+        let checksum = hash(&invalid[..checksum_at]);
+        invalid[checksum_at..].copy_from_slice(&checksum.to_le_bytes());
+        assert!(m.import_state(&invalid).is_err());
+        assert_eq!(m.export_state(), saved);
+        let mut old = saved[..saved.len() - 13].to_vec();
+        old[4] = 7;
+        let checksum = hash(&old);
+        put(&mut old, checksum, 8);
+        m.import_state(&old).unwrap();
+        assert_eq!(m.bus.bios_latch, 0);
+        assert!(!m.bus.bios_access);
+    }
+    #[test]
     fn stopped_states_replay_and_legacy_halt_states_remain_readable() {
         let mut m = machine();
         m.bus.enter_low_power(0x80);
         let saved = m.export_state();
-        assert_eq!(saved[4], 7);
+        assert_eq!(saved[4], 8);
         m.bus.stopped = false;
         m.import_state(&saved).unwrap();
         assert!(m.bus.stopped);
         assert!(!m.bus.halted);
         assert_eq!(m.run(crate::FRAME_CYCLES), 0);
         assert_eq!(m.export_state(), saved);
-        // Same-length V6 states may only encode a boolean HALT flag.
-        let mut old = saved.clone();
+        // V6 states may only encode a boolean HALT flag, and lack BIOS state.
+        let mut old = saved[..saved.len() - 13].to_vec();
         old[4] = 6;
+        let checksum = hash(&old);
+        put(&mut old, checksum, 8);
         let checksum_at = old.len() - 8;
         let checksum = hash(&old[..checksum_at]);
         old[checksum_at..].copy_from_slice(&checksum.to_le_bytes());
@@ -610,10 +652,11 @@ mod tests {
         assert_eq!(m.export_state(), saved);
         m.bus.stopped = false;
         m.bus.halted = true;
-        let mut old = m.export_state();
+        let current = m.export_state();
+        let mut old = current[..current.len() - 13].to_vec();
         old[4] = 6;
-        let checksum = hash(&old[..checksum_at]);
-        old[checksum_at..].copy_from_slice(&checksum.to_le_bytes());
+        let checksum = hash(&old);
+        put(&mut old, checksum, 8);
         m.import_state(&old).unwrap();
         assert!(m.bus.halted);
         assert!(!m.bus.stopped);
@@ -646,7 +689,7 @@ mod tests {
         let mut m = machine();
         m.bus.write8(0x04000090, 0xab);
         let saved = m.export_state();
-        let mut old = saved[..saved.len() - crate::psg::STATE_BYTES - 8].to_vec();
+        let mut old = saved[..saved.len() - crate::psg::STATE_BYTES - 13].to_vec();
         old[4] = 5;
         let checksum = hash(&old);
         put(&mut old, checksum, 8);
@@ -655,7 +698,7 @@ mod tests {
         assert_eq!(m.bus.apu.psg.active, 0);
         let before = m.export_state();
         let mut corrupt = before.clone();
-        let position = corrupt.len() - crate::psg::STATE_BYTES - 8;
+        let position = corrupt.len() - crate::psg::STATE_BYTES - 13;
         corrupt[position + 56] = 1; // Active voice with a zero period counter.
         let length = corrupt.len();
         let checksum = hash(&corrupt[..length - 8]);
@@ -704,7 +747,7 @@ mod tests {
         m.run(10000);
         assert_eq!(m.export_state(), expected);
         let mut invalid = state.clone();
-        let position = invalid.len() - 151 - crate::psg::STATE_BYTES;
+        let position = invalid.len() - 156 - crate::psg::STATE_BYTES;
         invalid[position..position + 4].copy_from_slice(&i32::MAX.to_le_bytes());
         let length = invalid.len();
         let checksum = hash(&invalid[..length - 8]);
@@ -833,7 +876,7 @@ mod tests {
     fn snapshots_reject_checksum_valid_impossible_peripherals() {
         let mut m = machine();
         let saved = m.export_state();
-        assert_eq!(saved.len(), SNAPSHOT_BYTES + 228 + crate::psg::STATE_BYTES);
+        assert_eq!(saved.len(), SNAPSHOT_BYTES + 233 + crate::psg::STATE_BYTES);
         for (offset, bytes) in [
             (348, &64u64.to_le_bytes()[..]),
             (415, &0x8000u16.to_le_bytes()[..]),
