@@ -56,6 +56,37 @@ backend-only milestone.
 
 ## Remaining milestones
 
+### BIOS data-service compatibility
+
+Original implementations now add BitUnPack (10h), Huffman decoding (13h), and
+the byte/halfword differential filters (16h-18h). Unpacking handles every
+documented source/destination width, low-bit-first units and offset/zero flags.
+Huffman handles 4/8-bit symbols, tree offsets and MSB-first bits within stream
+words. Differential filters use wrapping cumulative sums. The implementations
+use word/halfword bus writes where required, rather than incorrect VRAM byte
+writes. They follow the documented formats, not another emulator's code:
+https://rust-console.github.io/gbatek-gbaonly/#bios-decompression-functions
+
+Malformed headers, widths, trees and documented alignment/whole-word violations
+stop explicitly; decoded output is buffered before destination writes. Invalid
+input behavior is defensive, not a reproduction of firmware hangs or overflow.
+Odd-length Diff8 VRAM output is zero-padded, like our LZ/RL VRAM services. Exact
+firmware instruction timing and register clobbers remain unsupported. Other
+BIOS services, including ArcTan/ArcTan2 and the sound-driver helpers, remain work.
+
+Validation (2026-10-04): 109 GBA unit tests, 10 original cartridge-program tests
+and 3 EEPROM tests pass (122 GBA checks / 296 self-contained native checks),
+plus JS/Python checks, warnings-denied GBA Clippy and the root WASM check.
+Cartridge tests call all five services through both ARM and Thumb SWIs and
+verify return state and output. The rebuilt GBA browser scenario passes its
+upload/audio/persistence/fast-forward checks, all six patterned display modes
+and five new cartridges rendering BIOS-decoded output through actual WASM.
+The separate GB ROM acceptance suite was not rerun for this milestone.
+The local FireRed 1,800-frame startup probe also remains fault-free at the same
+505,612,801 clocks / 159,868,346 instructions and CPU/display state. This run
+took 11.659 s (2.58x native clock throughput), not a controlled speed comparison
+or proof of complete gameplay compatibility.
+
 ### Display-mode coverage and direct entry
 
 All six display modes are implemented: text/tiled modes 0-2 and bitmap modes
