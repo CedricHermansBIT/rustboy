@@ -9,6 +9,81 @@ fn put_words(machine: &mut GameBoyAdvance, address: u32, words: &[u32]) {
     machine.bus.take_cycles();
 }
 #[test]
+fn arm_and_thumb_angle_services_return_signed_and_wrapped_results() {
+    use rustboy_emulator_api::Emulator;
+    for thumb in [false, true] {
+        for (service, x, y, expected) in [
+            (9u8, 0i32, 0i32, 0u32),
+            (9, 0x4000, 0, 0x2000),
+            (9, -0x4000, 0, (-0x2000i32) as u32),
+            (10, 0, 0, 0),
+            (10, 0x4000, 0, 0),
+            (10, 0, 0x4000, 0x4000),
+            (10, -0x4000, 0, 0x8000),
+            (10, 0, -0x4000, 0xc000),
+            (10, -0x4000, 0x4000, 0x6000),
+            (10, -0x4000, -0x4000, 0xa000),
+            (10, 0x4000, -0x4000, 0xe000),
+            (10, i32::MIN, i32::MIN, 0xa000),
+        ] {
+            let mut rom = vec![0; 192];
+            let pool = if thumb {
+                for (n, op) in [
+                    0x4802u16,
+                    0x4903,
+                    0xdf00 | u16::from(service),
+                    0x2477,
+                    0xe7fe,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    rom[n * 2..n * 2 + 2].copy_from_slice(&op.to_le_bytes());
+                }
+                12
+            } else {
+                for (n, op) in [
+                    0xe59f000cu32,
+                    0xe59f100c,
+                    0xef000000 | (u32::from(service) << 16),
+                    0xe3a04077,
+                    0xeafffffe,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    rom[n * 4..n * 4 + 4].copy_from_slice(&op.to_le_bytes());
+                }
+                20
+            };
+            rom[pool..pool + 4].copy_from_slice(&(x as u32).to_le_bytes());
+            rom[pool + 4..pool + 8].copy_from_slice(&(y as u32).to_le_bytes());
+            let mut m = GameBoyAdvance::new(rom, None).unwrap();
+            if thumb {
+                m.cpu.set_cpsr(m.cpu.cpsr() | 0x20).unwrap();
+            }
+            m.step();
+            m.step();
+            let saved = m.export_state();
+            m.step();
+            m.step();
+            assert!(m.fault.is_none());
+            assert_eq!(
+                m.cpu.r[0], expected,
+                "service {service:x}, x {x}, y {y}, thumb {thumb}"
+            );
+            assert_eq!(m.cpu.r[4], 0x77);
+            assert_eq!(m.cpu.cpsr() & 0x3f, if thumb { 0x3f } else { 0x1f });
+            assert_eq!(m.cpu.exceptions, 1);
+            let after = m.export_state();
+            m.import_state(&saved).unwrap();
+            m.step();
+            m.step();
+            assert_eq!(m.export_state(), after);
+        }
+    }
+}
+#[test]
 fn original_firmware_can_read_bios_but_arm_and_thumb_cartridges_get_opcode_latch() {
     use rustboy_emulator_api::Emulator;
     for thumb in [false, true] {

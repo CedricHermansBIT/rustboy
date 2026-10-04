@@ -349,6 +349,25 @@ try {
       assert.deepEqual(await evaluate("Array.from(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,1,1).data)"),[0,0,0,255]);
       console.log('GBA browser: protected BIOS load executes through CPU/WASM and renders the latch instead of firmware');
     }
+    for (const [service,x,y,expected] of [
+      [9,0x4000,0,0x2000],[9,-0x4000,0,(-0x2000)>>>0],
+      [10,-0x4000,0x4000,0x6000],[10,0,-0x4000,0xc000],
+    ]) {
+      const words=[0xe59f001c,0xe59f101c,0xef000000|(service<<16),0xe59f1018,
+        0xe1c100b0,0xe59f1014,0xe59f2014,0xe1c120b0,0xeafffffe,
+        x>>>0,y>>>0,0x06000000,0x04000000,0x403];
+      const fixture=new Uint8Array(512);const image=new DataView(fixture.buffer);
+      words.forEach((word,n)=>image.setUint32(n*4,word,true));fixture[0xb2]=0x96;
+      const file=path.join(temporary,`original-angle-${service}-${x}-${y}.gba`);await fs.writeFile(file,fixture);
+      const previous=await evaluate('Module._get_state_id()');
+      await call('DOM.setFileInputFiles',{nodeId,files:[file]});
+      await until(`Module._get_state_id()!==${JSON.stringify(previous)} && Module._get_state_id().startsWith('gba-')`);
+      await until('(() => { const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset).getBigUint64(309,true)>=2n; })()');
+      assert.equal(await evaluate('(() => { const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset).getUint32(24,true); })()'),expected);
+      const pixel=[0,5,10].map(shift=>{const v=(expected>>>shift)&31;return (v<<3)|(v>>2);}).concat(255);
+      assert.deepEqual(await evaluate("Array.from(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,1,1).data)"),pixel,'angle SWI result is rendered by cartridge');
+    }
+    console.log('GBA browser: original ArcTan/ArcTan2 cartridges return signed/quadrant results and render them');
   }
   // Explicit opt-in only. Never copies the supplied game into public assets.
   if (process.env.RUSTBOY_GBA_PROFILE) {

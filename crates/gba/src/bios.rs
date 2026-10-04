@@ -6,6 +6,8 @@ use crate::{
 };
 #[path = "bios_data.rs"]
 mod data;
+#[path = "bios_math.rs"]
+mod math;
 
 /// Our tiny ARM IRQ dispatcher executes on the emulated CPU, so handlers may be
 /// ARM/Thumb, run for arbitrary time, use peripherals and return normally.
@@ -104,6 +106,14 @@ pub(crate) fn service(number: u8, cpu: &mut Cpu, bus: &mut Bus) -> Result<Effect
         8 => {
             cpu.r[0] = integer_sqrt(cpu.r[0]);
             bus.internal(32);
+        }
+        9 => {
+            cpu.r[0] = math::arctan(cpu.r[0] as i32) as u32;
+            bus.internal(64); // Functional approximation, not firmware timing.
+        }
+        0xa => {
+            cpu.r[0] = u32::from(math::arctan2(cpu.r[0] as i32, cpu.r[1] as i32));
+            bus.internal(64);
         }
         0xb | 0xc => copy(bus, cpu.r[0], cpu.r[1], cpu.r[2], number == 0xc),
         0xe | 0xf => affine_set(bus, cpu.r[0], cpu.r[1], cpu.r[2], cpu.r[3], number == 0xe)?,
