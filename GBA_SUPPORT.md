@@ -21,8 +21,9 @@ commercial game, or Nintendo firmware is included.
   frame, plus a bounded native diagnostic for local cartridges.
 
 This is not yet pipeline/bus-cycle accurate. Branch refill accesses charge wait
-states but do not cache a real pipeline. ROM prefetch, BIOS read protection,
-open bus and bus arbitration remain unimplemented. Reserved/unpredictable
+states but do not cache a real pipeline. ROM prefetch, general open bus and bus
+arbitration remain unimplemented. BIOS read protection has a functional baseline
+(below), not an exact pipeline oracle. Reserved/unpredictable
 instructions are not a complete hardware oracle. Scanline graphics and Direct
 Sound are now functional baselines, not claims of raster/PWM accuracy or complete
 game compatibility. PSG channels now have a functional synthesis baseline (below).
@@ -55,6 +56,43 @@ The local ROM acceptance suite is separate and has not been rerun for this
 backend-only milestone.
 
 ## Remaining milestones
+
+### Protected BIOS reads
+
+CPU instruction fetches are now distinct from data accesses. Only instructions
+executing in the BIOS region can read its bytes as data; cartridge reads return
+the protected BIOS opcode latch, with byte/halfword lane selection. Branch and
+exception refills can fetch firmware regardless of the previous instruction's
+region. Debugger peeks deliberately bypass protection without changing the
+latch or permissions. DMA uses the restricted data-read path even if the CPU
+was executing firmware. High-level BIOS services execute with BIOS permission;
+CpuSet/CpuFastSet retain their explicit BIOS-source rejection.
+
+Version-8 snapshots add the latch and access context after the existing PSG
+state. Versions 1-7 still load, using zero for the previously unrecorded latch;
+they cannot recover a last BIOS opcode from a cartridge PC. The direct-entry
+replacement also starts with a zero latch, not Nintendo boot-firmware values.
+The instruction-granular interpreter predicts visible ARM/Thumb BIOS prefetch
+and observes refills; a real pipeline, boundary quirks and exact DMA open-bus
+values remain accuracy work. This is not a claim of bit-exact Nintendo firmware
+behavior. The hardware rule follows:
+https://rust-console.github.io/gbatek-gbaonly/#reading-from-bios-memory-00000000-00003fff
+
+Original synthetic firmware reads a private data word, then hands off to ARM
+and Thumb cartridges; the cartridges see the opcode latch, not that data.
+Tests cover read lanes, non-mutating debug access, refill/Thumb context, DMA
+permissions, checked replay and legacy state migration. Validation: 122 GBA
+unit / 14 original program / 3 EEPROM tests pass (139 GBA checks), and the
+self-contained gate passes 314 native checks plus JS/Python. GBA Clippy with
+warnings denied and the root WASM check pass.
+The rebuilt GBA browser scenario passes its existing upload/audio/save/speed,
+six-mode, BIOS-data and STOP tests, plus a CPU-driven cartridge rendering a
+protected BIOS read instead of our nonzero IRQ firmware word. FireRed's local
+1,800-frame startup probe remains fault-free at the same 505,612,800 clocks,
+159,995,200 instructions, 6,958 exceptions and CPU/display state. This run took
+11.269 s (2.67x native clock throughput), not a controlled speed comparison or
+full-game validation. The separate GB ROM suite and full eleven-scenario browser
+gate were not rerun for this GBA-only change.
 
 ### Cartridge page timing and OAM bus width
 
