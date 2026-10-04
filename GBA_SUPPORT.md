@@ -56,6 +56,38 @@ backend-only milestone.
 
 ## Remaining milestones
 
+### Cartridge page timing and OAM bus width
+
+Game Pak accesses now restart non-sequential timing at every 128-KiB boundary,
+even when the CPU/DMA marks the access sequential. The boundary check uses the
+aligned physical access address; ARM words still consist of two halfword bus
+transfers. All three ROM wait areas and all WAITCNT first/second selections are
+covered by original tests. OAM's 32-bit bus now costs one baseline clock for a
+word, rather than incorrectly sharing palette/VRAM's two-clock word cost.
+WAITCNT's reserved bits and read-only Game Pak type flag cannot be overwritten.
+These changes follow the hardware memory-map and system-control documentation:
+https://rust-console.github.io/gbatek-gbaonly/#gba-memory-map
+https://rust-console.github.io/gbatek-gbaonly/#gba-system-control
+
+Original ARM block-load and DMA3 cartridges verify timing across a ROM page
+boundary, loaded values, writeback, CPU stall and a 32-bit OAM destination.
+This corrects baseline access costs, not ROM prefetch, video-memory contention,
+bus arbitration or sub-instruction peripheral scheduling. Those remain accuracy
+work; the backend is not cycle-exact.
+
+Validation: 118 GBA unit / 13 original program / 3 EEPROM tests pass (134 GBA
+checks), and the self-contained gate passes 309 native checks plus JS/Python.
+GBA Clippy (warnings denied) and the root WASM check pass.
+The rebuilt GBA browser scenario passes upload/audio/save/fast-forward, all six
+display modes, BIOS-data cartridges and STOP/keypad-wake checks. The local
+FireRed 1,800-frame startup probe remains fault-free: 505,612,800 clocks,
+159,995,200 instructions, 6,958 exceptions, display 9F40h and PC 08079758h.
+Corrected timing changes its sampled PC/instruction count; matching an earlier
+sample is not the oracle. This run took 11.369 s (2.65x native clock throughput),
+not a controlled speed comparison or full-game compatibility claim. The separate
+GB ROM acceptance suite and all eleven browser scenarios were not rerun in this
+GBA-only timing milestone.
+
 ### STOP mode and keypad wake
 
 HALTCNT now distinguishes HALT from STOP. STOP gates CPU execution, video,
