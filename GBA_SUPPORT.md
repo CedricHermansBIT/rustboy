@@ -60,6 +60,44 @@ backend-only milestone.
 
 ## Remaining milestones
 
+### Independent ARM/Thumb/memory conformance checks
+
+The opt-in `conformance` example runs unmodified, locally supplied
+[Julian Smolka's MIT-licensed GBA test ROMs](https://github.com/jsmolka/gba-tests)
+at pinned revision `a7113b67e63f83a9b321696ddd7042ccfad6c881`. No third-party
+emulator implementation is used. ROMs remain outside this repository; their
+Nintendo logo/header data and any external firmware are not redistributed.
+The runner checks fixture fingerprints, the source-verified final loop address,
+ARM/display state, firmware faults and the correct result register (R7 for
+Thumb, R12 for the other suites). It runs all four suites by default and exits
+nonzero on failures; they are not silently skipped or marked ignored.
+
+This revealed two independently reproduced CPU defects, fixed with original
+regression tests: ARM TST/TEQ/CMP/CMN with encoded destination R15 restore CPSR
+from SPSR without writing PC/refilling the pipeline; empty-list Thumb STM stores
+instruction address +6 rather than +4, retaining its +64-byte base writeback.
+ARM, Thumb and memory now reach their passing terminal loops. BIOS still reports
+failure 1: its protected-read assertion expects the opcode left by Nintendo's
+exact startup firmware, whereas RustBoy runs independently authored replacement
+firmware. This failure remains reported and is not worked around by changing
+the fixture or inventing a Nintendo opcode latch. It does not validate the
+remaining BIOS tests or establish full CPU/cycle accuracy.
+
+```sh
+# Supply a local checkout at the pinned revision (ROMs are not bundled).
+git clone https://github.com/jsmolka/gba-tests.git /tmp/rustboy-gba-tests
+git -C /tmp/rustboy-gba-tests checkout a7113b67e63f83a9b321696ddd7042ccfad6c881
+cargo run --release -p rustboy-gba --example conformance --offline -- /tmp/rustboy-gba-tests
+# Selected suites can be run explicitly; default above retains the BIOS failure.
+cargo run --release -p rustboy-gba --example conformance --offline -- /tmp/rustboy-gba-tests arm thumb memory
+```
+
+The self-contained gate passes 364 native checks (189 GBA: 170 unit, 16 original
+program, 3 EEPROM), JS/Python checks, warnings-denied GBA Clippy and the root
+WASM check. The rebuilt GBA browser scenario also passes. Independent fixtures
+are a separate opt-in diagnostic, not included in that self-contained count.
+The broader GB ROM suite/full browser matrix were not rerun in this milestone.
+
 ### Internal memory-control baseline
 
 The original bus now models `04000800h`, including its 64 KiB I/O mirrors,
@@ -87,7 +125,7 @@ atomically. The specifications are the
 
 Six new original native tests cover masks/mirrors, all finite wait settings,
 RAM disable/mapping, hidden RAM preservation, DMA timing/stall, state migration
-and lockup/reset. The native gate passes 362 self-contained checks (186 GBA:
+and lockup/reset. The native gate passes 362 self-contained checks (187 GBA:
 168 unit, 16 original-program, 3 EEPROM). Clippy with warnings denied, the root
 WASM check and rebuilt browser scenario pass; two original browser cartridges
 exercise mirrored register writes and normal/remapped RAM through the real CPU,
