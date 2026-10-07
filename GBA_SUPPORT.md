@@ -198,6 +198,10 @@ throughput), not a controlled performance comparison or complete-game validation
 
 ### Active major phase: browser 8x optimization
 
+The architectural strategy and decision gates are in
+[GBA_PERFORMANCE_PLAN.md](GBA_PERFORMANCE_PLAN.md). Further work should follow
+isolated component measurements, not a succession of speculative micro-edits.
+
 The user moved this phase ahead of the remaining GBA implementation work. Prioritize a substantial performance pass
 targeting smooth 8x gameplay. The user's current real-game browser observation
 is approximately 1.5x despite higher requested speeds. Profile real cartridges
@@ -291,6 +295,20 @@ warnings-denied GBA Clippy, independent ARM/Thumb/memory ROMs, and the rebuilt
 GBA upload/control browser scenarios pass. This is not a rerun of the full GB
 external ROM suite or the full browser matrix. The major optimization phase
 remains active, ahead of the remaining GBA feature work.
+
+Fourth batch: text backgrounds decode a complete eight-pixel tile row into a
+scanline-local cache. Palette transparency, map/tile flips, mosaic, wrapping,
+priority and invalid-character-address behavior match the uncached sampler in
+122,880 original differential pixel checks. Registers, palette and VRAM are
+immutable during one render call; no cache persists across subsequent raster
+writes or state restores. Seven sequential native trials measured median
+0.792897 s before / 0.715828 s after with byte-identical ending states. The
+browser measured 1.78x at requested 4x / 1.77x at 8x, which does not demonstrate
+a browser improvement over preceding samples. Register hoisting alone was
+removed after failing to show a supported gain. Targeted GBA browser scenarios,
+Clippy, the independent ARM/Thumb/memory ROMs and all 370 self-contained native
+checks (195 GBA) pass. This is a small renderer improvement, not
+completion of the architectural optimization pass or the 8x target.
 
 ### CPU unused-memory open-bus baseline
 
