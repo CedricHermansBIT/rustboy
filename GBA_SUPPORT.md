@@ -257,6 +257,41 @@ UI/controller edits and their modified browser bundle in the shared directory.
 The backend source changes are committed separately; shared `out/` artifacts
 are not overwritten or committed as part of this batch.
 
+Third batch (2026-10-07): text and affine background wrapping use exact
+power-of-two masks rather than variable signed remainder operations. An original
+affine test compares against a Euclidean-remainder oracle at negative and
+positive coordinate extremes for all four map sizes. No timing, audio, state
+format or hardware frame skipping changes are involved.
+
+The new native fixed-workload benchmark restores one baseline before every
+trial and requires byte-identical ending states. To create a local baseline:
+
+```bash
+GBA_BENCH_SAVE_STATE=target/my-gba-baseline.state cargo run --release -p rustboy-gba --example benchmark -- "path/to/game.gba" 300 120 5
+```
+
+For subsequent comparisons, use `GBA_BENCH_STATE=target/my-gba-baseline.state`
+instead of `GBA_BENCH_SAVE_STATE`; imported states skip warmup. State output is
+exclusive-create, never overwrite. Compare the printed ROM, baseline and result
+fingerprints, clocks and instruction counts as well as elapsed time. The example
+times native backend execution, not browser gameplay or frontend audio delivery.
+
+Five sequential trials of the same saved FireRed workload measured median
+0.824059 s before versus 0.776098 s after (roughly 6% faster), with overlapping
+trial ranges. Both executed 33,707,520 clocks / 12,269,926 instructions and
+produced result fingerprint `12f3190d01dcf2f2`. This is preliminary native
+evidence, not an established browser improvement. The rebuilt browser measured
+1.01x at requested 1x, 1.66x at 4x and 1.73x at 8x; fast-forward median callbacks
+were about 34–35 ms. **Smooth 8x remains unachieved.** A condition-code table and
+a scheduler fast-path experiment were discarded after repeat measurements
+showed noise or regressions; the exhaustive condition-code oracle test remains.
+
+Validation: 369 self-contained native checks (194 GBA), JS/Python checks,
+warnings-denied GBA Clippy, independent ARM/Thumb/memory ROMs, and the rebuilt
+GBA upload/control browser scenarios pass. This is not a rerun of the full GB
+external ROM suite or the full browser matrix. The major optimization phase
+remains active, ahead of the remaining GBA feature work.
+
 ### CPU unused-memory open-bus baseline
 
 CPU reads at 00004000h-01FFFFFFh and 10000000h-FFFFFFFFh now expose predicted
