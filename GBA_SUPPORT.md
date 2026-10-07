@@ -332,6 +332,30 @@ removed hashing is proven by profiling, but the small throughput difference
 is not a general speed claim; smooth 8x and broad gameplay validation remain
 outstanding.
 
+Major execution refactor: ordinary CPU execution now runs in event-bounded
+slices instead of traversing the complete machine/peripheral scheduler after
+every instruction. MMIO/EEPROM barriers synchronize preceding instruction time
+before side effects; exception helpers also flush prior work. Video, timer and
+audio deadlines cap slices, and DMA/IRQ/sleep/wait cases retain reference stepping.
+Current-instruction side effects and whole-instruction overshoot preserve the
+existing timing model. No opcode, hardware event, audio sample or rendered frame
+is skipped; snapshots retain version 11 and identical byte layout.
+
+Eight new differential tests compare complete state and PCM against reference
+stepping across ARM/Thumb, self-modifying RAM/open bus, register-write widths,
+timer/PSG/FIFO/DMA/EEPROM, IRQs, firmware/helpers, waits/sleep, RAM remapping and
+locks. All 379 self-contained native checks (204 GBA), GBA Clippy, independent
+ARM/Thumb/memory ROMs and rebuilt targeted GBA/browser controls pass.
+The native benchmark supports `GBA_BENCH_RUNNER=step` versus `slice` (default).
+
+Seven sequential fixed-state native trials measured medians 0.773316 s before /
+0.500198 s after, with identical 33,707,520 clocks, 12,269,926 instructions and
+ending fingerprint `12f3190d01dcf2f2`. A sequential unprofiled fixed-state browser
+pair measured requested 8x at **1.79x before / 2.60x after**, and requested 4x
+at 1.81x / 2.61x. These are promising local samples, not an 8x claim or broad
+gameplay validation. The optimization pass remains active; its synchronization
+contract and next decision gates are in the architecture plan.
+
 ### CPU unused-memory open-bus baseline
 
 CPU reads at 00004000h-01FFFFFFh and 10000000h-FFFFFFFFh now expose predicted

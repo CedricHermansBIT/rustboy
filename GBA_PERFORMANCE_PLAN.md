@@ -142,6 +142,71 @@ of stages 2–5 should follow the isolated component budget, not intuition.
 
 ## Current experiment disposition
 
+### Implemented: event-bounded CPU slices
+
+`execution.rs` replaces per-instruction machine dispatch during ordinary CPU
+execution with slices capped at the remaining run budget, video boundary, timer
+overflow and audio output deadline. The final instruction retains reference
+whole-instruction overshoot. Every real opcode still executes and fetches through
+the original CPU/bus; no decoded-code cache or presentation skipping is involved.
+
+The bus accumulates preceding instructions' elapsed peripheral clocks. MMIO and
+EEPROM accesses synchronize that prefix **before** observing/changing registers,
+then end the slice. The current instruction's clocks are applied after its side
+effects, exactly matching the existing instruction-granular reference model.
+An explicitly credited prefix avoids advancing timers/audio twice when video
+accounting catches up. BIOS/exception helpers synchronize prior instructions
+before performing direct register changes or resets. DMA units, enabled pending
+IRQs, HALT/STOP and BIOS waits use the original step path. All pending time is
+flushed before returning; snapshot version 11 and byte layout are unchanged.
+This does not yet implement sub-instruction bus arbitration or a real pipeline.
+
+Eight differential tests compare full snapshots (including pixels and queued
+PCM), clocks, timer deadlines and DMA request masks against repeated reference
+steps at irregular budgets across multiple frames. Cases include ARM/Thumb,
+RAM self-modification and open-bus history, 39 byte/halfword/word register-write
+combinations, timers/cascade, PSG/FIFO sound, scheduled DMA, EEPROM busy reads,
+IRQ arrival/unmasking, BIOS waits/returns/reset/faults, optional original test
+firmware, HALT/STOP/key wake, RAM remapping/disable and memory locking. Starting
+persistence dirty flags are normalized equally; mutations during execution are
+still compared. Public snapshot exports assert synchronized execution scratch
+in debug builds.
+
+Measured sequential A/B from the persisted FireRed baseline:
+
+- Seven native trials: prior-build median 0.773316 s vs sliced 0.500198 s
+  (about 55% higher throughput). Both execute 33,707,520 clocks and 12,269,926
+  instructions, ending at fingerprint `12f3190d01dcf2f2`. Initial same-binary
+  step/slice comparison also improved (0.811834 s / 0.540447 s).
+- Unprofiled browser requested 8x: previous committed bundle 1.79x vs sliced
+  2.60x (about 45% higher throughput). Requested 4x: 1.81x / 2.61x. Median
+  callbacks remain around 34 ms. An earlier sliced browser sample measured
+  only 2.24x; these are local fixed-start samples, not guaranteed performance
+  across devices or sustained walking/battle gameplay validation.
+
+Validation: all 379 self-contained native checks (204 GBA), warnings-denied GBA
+Clippy, independent ARM/Thumb/memory test ROMs and rebuilt targeted GBA/browser
+control scenarios pass. Broad GB external tests/full browser matrix were not
+rerun here. **Smooth 8x remains unachieved**, with roughly another threefold
+browser throughput gain needed in the latest sample. Refresh the isolated
+profile to choose the next CPU/bus/decode refactor rather than assuming that the
+old source budget still describes the new runner.
+
+The benchmark now accepts `GBA_BENCH_RUNNER=step` or `slice` (default) to compare
+the reference and production runners from the same binary and saved state.
+
+The refreshed isolated Chromium profile (`target/gba-firered-event-slice-8x.cpuprofile`)
+contains 3,590 samples over 4.13 seconds: advance_video 24.6%, Cpu::step 24.5%,
+Prefetch::fetch 10.3%, fetch16 7.9%, run/slice orchestration 6.7%, charge 5.0%,
+Prefetch::idle 4.0%. Inlining still prevents treating these as exact isolated
+component costs, but CPU/fetch/bus execution remains a substantial combined
+target after batching. The profiled run achieved 2.46x at requested 8x; do not
+compare that directly with the unprofiled 2.60x sample. Further work must reduce
+fetch/decode/bus work together and remeasure, rather than assuming an additional
+scheduler guard or graphics-only change can close the remaining gap.
+
+### Earlier local experiments
+
 Condition lookup and a scheduler guard were rejected after repeat measurements.
 Register hoisting alone passed correctness checks but produced no supported
 browser improvement and was removed. Text tile-row caching passed 122,880
