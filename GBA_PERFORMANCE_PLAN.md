@@ -205,6 +205,65 @@ compare that directly with the unprofiled 2.60x sample. Further work must reduce
 fetch/decode/bus work together and remeasure, rather than assuming an additional
 scheduler guard or graphics-only change can close the remaining gap.
 
+### Rendering worker investigation
+
+`advance_video` is a hardware scheduler, not just a compositor: it clocks timers,
+audio and EEPROM, mutates DISPSTAT/VCOUNT, raises IRQs, and schedules DMA.
+Keep those events under the CPU's timing authority. A rendering worker would
+instead consume stable graphics inputs; asynchronously reading live VRAM and
+registers is not correct. Copying the entire 96 KiB VRAM every visible scanline
+would alone move about 900 MiB/s at 60 fps, or about 7 GiB/s at 8x, before other
+state and synchronization. A useful design needs ordered write deltas or
+versioned snapshots, not that naive copy. Moving the entire core to a worker is
+a separate responsiveness improvement, not an automatic throughput multiplier.
+
+Added an **opt-in** `gba-profile-rendering` root feature (forwarded to the GBA
+crate's `profile-rendering`) that keeps the pixel compositor out of the scheduler
+through an explicit non-inlined boundary. It does not skip clocks or pixels and
+is disabled in normal builds. `scripts/gba_render_profile.mjs` counts inclusive
+compositor samples, including its callees, and excludes scheduler audio/timer
+work. It rejects profiles without that boundary rather than reporting zero.
+
+A fresh native source-attributed profile contains 16,389 samples: PPU source
+16.37%, bus 25.72%, CPU/Thumb 23.13%, prefetch 7.75%. This includes setup and
+serialization and is **not** a pure execution or browser budget. All 25 fixed
+workload trials reached 33,707,520 clocks, 12,269,926 instructions and the same
+complete ending-state fingerprint `12f3190d01dcf2f2`.
+
+The isolated browser diagnostic contains 3,583 samples: compositor 737 (20.57%),
+other work under `advance_video` 115 (3.21%). Its illustrative zero-cost-rendering
+ceiling is 1.259x, **not a worker speed prediction**. Crucially, this diagnostic
+build reached only 1.85x at requested 8x, while a subsequent normal-build control
+reached 2.54x. Inlining/code-layout changes and run variability mean this is not
+a precise production component budget. The normal control still attributes
+24.45% to CPU step, 9.71% to fetch16, 8.57% to prefetch fetch, 4.58% to prefetch
+idle and 3.97% to bus charge; its combined advance_video self samples are 23.22%.
+These observations do not support a rendering-only path to smooth 8x. Continue
+the CPU/fetch/bus refactor before committing to a graphics-worker architecture.
+
+Reproduction (use a temporary site so diagnostic output never replaces `out/`):
+
+```bash
+cargo build --locked --release --target wasm32-unknown-unknown --target-dir target/gba-render-profile --features gba-profile-rendering --offline
+profile_site=$(mktemp -d /tmp/rustboy-gba-render-profile-XXXXXX)
+git archive HEAD | tar -x -C "$profile_site"
+wasm-bindgen --target web --out-dir "$profile_site/out" target/gba-render-profile/wasm32-unknown-unknown/release/rustboy.wasm
+RUSTBOY_SITE_DIR="$profile_site" RUSTBOY_GBA_UPLOAD=1 RUSTBOY_NO_BOOT=1 RUSTBOY_GBA_PROFILE="path/to/game.gba" RUSTBOY_GBA_PROFILE_STATE=target/gba-firered-fixed-baseline.state RUSTBOY_GBA_CPU_PROFILE=target/new-render-boundary.cpuprofile node tests/browser_smoke.mjs
+node scripts/gba_render_profile.mjs target/new-render-boundary.cpuprofile
+node --test tests/gba_render_profile_test.mjs
+```
+
+The local state must belong to the selected ROM/firmware; profile artifacts are
+exclusive-create. Run a normal-build control without `RUSTBOY_SITE_DIR` and with
+a fresh output filename. All 204 GBA tests with the feature, GBA all-feature
+clippy with warnings denied, and the diagnostic/control browser GBA upload
+matrix passed. The complete self-contained gate also passed (379 native checks
+plus JavaScript/Python checks, including the three new profile-analysis tests).
+The shipped bundle is unchanged. Local artifacts:
+`target/gba-event-slice-render-attribution.data`,
+`target/gba-render-boundary-8x.cpuprofile`, and
+`target/gba-render-boundary-control-8x.cpuprofile`.
+
 ### Earlier local experiments
 
 Condition lookup and a scheduler guard were rejected after repeat measurements.
