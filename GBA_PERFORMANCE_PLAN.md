@@ -205,6 +205,50 @@ compare that directly with the unprofiled 2.60x sample. Further work must reduce
 fetch/decode/bus work together and remeasure, rather than assuming an additional
 scheduler guard or graphics-only change can close the remaining gap.
 
+### Implemented: write-derived cartridge timing
+
+`GamePakTiming` decodes WAITCNT into three N/S halfword costs, backup cost and
+prefetch enable once per register update, rather than re-reading and decoding
+the register during every cartridge fetch, data access and FIFO producer step.
+The 32-byte derived cache is initialized on power-on, updated on either WAITCNT
+byte and internal halfword writes, and rebuilt after checked state import.
+FIFO flush-on-change behavior, reserved-bit masks, physical access alignment,
+128-KiB page restarts, EEPROM/MMIO barriers and prefetch progress are unchanged.
+No opcode/data result is cached and no clocks/events/pixels/audio are skipped.
+Snapshots retain version 11 and byte layout; the cache is not serialized.
+
+Three additional tests exhaustively compare 65,536 wait settings against the
+original timing formula across all three areas, sequential/nonsequential
+accesses and page/end edges; check byte/halfword/word register writes; and check
+current/legacy state restoration and reset rebuilding. The complete GBA test
+set has 207 passing tests. All-feature warnings-denied GBA Clippy and two
+candidate browser upload matrices pass, including the original prefetch and
+memory-control cartridges. Existing full-state/PCM slice-reference tests pass.
+
+Sequential native A/B then B/A pairs, seven trials each, measured medians:
+0.507960 s reference / 0.448211 s candidate, and 0.499065 s reference /
+0.450788 s candidate (about 11–13% higher throughput). All 28 trials reached
+33,707,520 clocks, 12,269,926 instructions and the same complete ending-state
+fingerprint `12f3190d01dcf2f2` from baseline `ee9b65ac2acf1d52`.
+
+Sequential **unprofiled** fixed-state browser A/B then B/A pairs measured:
+requested 8x 2.3223x reference / 2.6511x candidate, then 2.5096x reference /
+2.6074x candidate (roughly 4–14% higher throughput, with clear run variability).
+Requested 4x pairs were 2.2595x / 2.6418x and 2.5509x / 2.5937x. Median callback
+intervals remained about 34 ms. Temporary sites contained the normal default
+builds; the compositor profiling feature was disabled and no profiler/build ran
+concurrently with measured trials. These are local startup-state observations,
+not walking/battle/device-wide guarantees. **Smooth 8x is still not achieved.**
+Continue reducing CPU fetch/decode/bus work together; this cache is one measured
+part of that architecture pass, not a substitute for it.
+
+The complete self-contained release gate passed (382 native checks plus JS/
+Python checks), as did the pinned independent ARM/Thumb/memory ROMs. The browser
+bundle was rebuilt with the normal default features; no profiling boundary is
+enabled in the published artifact. Rebuilt GBA upload/control browser scenarios
+passed on rerun; the first attempt ended in a CDP "Inspected target navigated or
+closed" error before checks completed (not an emulator assertion failure).
+
 ### Rendering worker investigation
 
 `advance_video` is a hardware scheduler, not just a compositor: it clocks timers,

@@ -356,6 +356,22 @@ at 1.81x / 2.61x. These are promising local samples, not an 8x claim or broad
 gameplay validation. The optimization pass remains active; its synchronization
 contract and next decision gates are in the architecture plan.
 
+Cartridge timing refactor: WAITCNT decoding now happens on register updates and
+state restoration, not every fetch/access/prefetch step. A small derived timing
+cache preserves all physical fetches, FIFO progress, page restarts and hardware
+events, without changing saved-state layout. Three new exhaustive-write/timing/
+restore tests bring the GBA set to 207 passing tests. Sequential native A/B and
+B/A pairs measured about 11–13% higher throughput with matching ending-state
+fingerprints. Unprofiled browser pairs measured requested 8x at 2.32x / 2.65x and
+2.51x / 2.61x (reference / candidate). These variable local gains do not establish
+smooth 8x or broad gameplay compatibility. Full measurement details and the
+rendering-worker investigation are in [GBA_PERFORMANCE_PLAN.md](GBA_PERFORMANCE_PLAN.md).
+All 382 self-contained native checks, JS/Python checks, GBA Clippy and the pinned
+independent ARM/Thumb/memory ROMs pass; the browser bundle is rebuilt with normal
+default features. Rebuilt GBA upload/control browser scenarios passed after one
+DevTools navigation-error retry; the full external GB/browser matrix was not
+rerun for this GBA-only change.
+
 ### CPU unused-memory open-bus baseline
 
 CPU reads at 00004000h-01FFFFFFh and 10000000h-FFFFFFFFh now expose predicted
