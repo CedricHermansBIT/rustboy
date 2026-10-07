@@ -189,6 +189,8 @@ fn put(data: &mut Vec<u8>, value: u64, n: usize) {
 }
 impl GameBoyAdvance {
     fn snapshot(&self) -> Vec<u8> {
+        debug_assert_eq!(self.bus.execution.pending, 0);
+        debug_assert_eq!(self.bus.execution.credited, 0);
         let mut data = b"RBGA\x0b\0\0\0".to_vec();
         put(&mut data, hash(&self.bus.rom), 8);
         put(&mut data, hash(&self.bus.bios), 8);

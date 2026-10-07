@@ -114,7 +114,15 @@ impl GameBoyAdvance {
         if !self.bus.irq_enabled() || !self.cpu.irq(&mut self.bus) {
             self.cpu.step(&mut self.bus);
         }
-        if self.cpu.exceptions != exceptions && self.bus.replacement_bios {
+        if self.cpu.exceptions != exceptions {
+            self.handle_replacement_exception(address, thumb);
+        }
+        let clocks = self.bus.take_cycles();
+        self.advance_video(clocks);
+        clocks
+    }
+    pub(crate) fn handle_replacement_exception(&mut self, address: u32, thumb: bool) {
+        if self.bus.replacement_bios {
             let vector = self.cpu.r[15];
             if vector == 8 {
                 let number = if thumb {
@@ -159,16 +167,18 @@ impl GameBoyAdvance {
                 });
             }
         }
-        let clocks = self.bus.take_cycles();
-        self.advance_video(clocks);
-        clocks
     }
     /// CPU clock budget, including whole-instruction overshoot. No host sleep,
     /// rendering callback or allocation in the execution loop.
     pub fn run(&mut self, budget: u64) -> u64 {
         let start = self.clocks;
         while self.clocks.wrapping_sub(start) < budget && self.fault.is_none() {
-            if self.step() == 0 {
+            let clocks = if self.can_run_cpu_slice() {
+                self.run_cpu_slice(budget - self.clocks.wrapping_sub(start))
+            } else {
+                self.step()
+            };
+            if clocks == 0 {
                 break;
             }
         }
@@ -190,7 +200,7 @@ impl GameBoyAdvance {
             enabled: true,
         }
     }
-    fn advance_video(&mut self, mut clocks: u64) {
+    pub(crate) fn advance_video(&mut self, mut clocks: u64) {
         self.clocks = self.clocks.wrapping_add(clocks);
         while clocks > 0 {
             let boundary = if self.line_clocks < 1006 { 1006 } else { 1232 };

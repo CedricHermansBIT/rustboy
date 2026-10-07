@@ -7,6 +7,7 @@ mod bios;
 pub mod bus;
 pub mod cpu;
 mod eeprom;
+mod execution;
 pub mod machine;
 mod peripherals;
 mod ppu;

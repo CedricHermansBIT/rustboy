@@ -30,6 +30,9 @@ pub struct Bus {
     pub oam: Vec<u8>,
     pub(crate) io: Vec<u8>,
     pub(crate) clocks: u64,
+    // Instruction-slice scratch only. Fully synchronized before machine
+    // run()/step() return; snapshots never contain this derived execution state.
+    pub(crate) execution: crate::execution::DeferredClock,
     pub halted: bool,
     pub stopped: bool,
     pub(crate) timers: [Timer; 4],
@@ -79,6 +82,7 @@ impl Bus {
             oam: vec![0; 0x400],
             io: vec![0; 0x400],
             clocks: 0,
+            execution: crate::execution::DeferredClock::default(),
             halted: false,
             stopped: false,
             timers: [Timer::default(); 4],
@@ -341,6 +345,11 @@ impl Bus {
             return;
         }
         let clocks = match address >> 24 {
+            4 => {
+                self.execution.barrier = true;
+                self.synchronize_deferred();
+                1
+            }
             2 if self.memory_control & 0x21 == 0x20 => {
                 let setting = self.memory_control >> 24 & 15;
                 if setting == 15 {
@@ -360,6 +369,10 @@ impl Bus {
                 }
             }
             8..=13 => {
+                if self.eeprom_address(address) {
+                    self.execution.barrier = true;
+                    self.synchronize_deferred();
+                }
                 let area = ((address >> 25) - 4) as usize;
                 let wait = self.io16(0x204);
                 let first = [4, 3, 2, 8][(wait >> (2 + area * 3) & 3) as usize] + 1;
