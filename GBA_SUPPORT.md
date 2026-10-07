@@ -310,6 +310,28 @@ Clippy, the independent ARM/Thumb/memory ROMs and all 370 self-contained native
 checks (195 GBA) pass. This is a small renderer improvement, not
 completion of the architectural optimization pass or the 8x target.
 
+Profiling refinement: `RUSTBOY_GBA_PROFILE_STATE=<local-state>` now gives each
+browser speed sample the same checked saved-state start. CPU sampling is scoped
+to the requested-8x execution interval, excluding startup, state restore and
+clock-reading exports. Native source-level attribution separates the inlined
+compositor from scheduler/audio/timer work; see the architecture plan for the
+budget and its limitations. This makes CPU/bus execution the primary structural
+target, not graphics-only micro-optimizations.
+
+The isolated browser profile also identified full-ROM rehashing in frontend
+status polling (about 4% of sampled time). GBA state IDs now reuse the immutable
+ROM identity already computed during cartridge detection. Firmware identity and
+checked snapshot hashes/validation remain unchanged. A new test checks identity
+against snapshot headers for batteryless/SRAM cartridges and replacement/user
+firmware, repeated polling, reset, clear-save, restore and distinct ROMs.
+All 371 self-contained native checks (196 GBA), warnings-denied GBA Clippy,
+independent ARM/Thumb/memory ROMs and targeted rebuilt GBA/browser-controls
+scenarios pass. One unprofiled fixed-state browser pair measured requested 8x
+at 1.79x before / 1.82x after, with p95 callback intervals 52.5 / 35.9 ms. The
+removed hashing is proven by profiling, but the small throughput difference
+is not a general speed claim; smooth 8x and broad gameplay validation remain
+outstanding.
+
 ### CPU unused-memory open-bus baseline
 
 CPU reads at 00004000h-01FFFFFFh and 10000000h-FFFFFFFFh now expose predicted

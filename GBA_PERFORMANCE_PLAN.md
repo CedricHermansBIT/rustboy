@@ -21,8 +21,53 @@ budget: release inlining attributes CPU execution to step and rendering/audio/
 timers to advance_video. State construction/restore/export are also included in
 whole-process profiles, though outside the native benchmark's timed run. Do not
 label all advance_video samples as graphics or use these percentages as precise
-predictions. The browser profile includes setup/restore and all three speeds;
-its next revision should isolate the actual high-speed execution interval.
+predictions. The initial browser profile included setup/restore and all three
+speeds; the runner now profiles only the 8x execution interval, excluding state
+restore and clock-reading snapshot exports. `RUSTBOY_GBA_PROFILE_STATE` imports
+a local checked snapshot and uses it as the baseline for all speed samples.
+
+An optimized native build with debug information gives better source attribution
+through inlining. Approximate whole-process source totals for the fixed workload
+are: bus 21%, CPU/Thumb 20%, compositor 12%, machine 11%, timers/DMA 7%, Game Pak
+prefetch 5%, audio 3%. Standard-library/inlining/initialization/restore/export
+samples make up much of the remainder. These are not a pure timed-run component
+budget, nor a browser budget. They nevertheless contradict treating the entire
+30% advance_video symbol as rendering: graphics alone is not the primary target.
+Prioritize coordinated CPU/bus execution and event synchronization; a scheduler
+refactor or decoded-op cache alone also cannot plausibly provide the entire
+required 4.5-fold gain. Measure their combined architecture, not isolated guards.
+
+The fixed-state 8x Chromium sample contained 3,755 samples over 4.31 seconds:
+advance_video 31%, step 29%, Prefetch::fetch 9%, fetch16 6%, Prefetch::idle 4%,
+charge 3%. Another 4% was actual frontend status polling in state_id, not setup
+noise: it repeatedly scanned the complete ROM. Reusing the already-calculated
+immutable cartridge identity removes that scan. A separate unprofiled,
+sequential fixed-state browser pair measured requested 8x at 1.79x before /
+1.82x after; its p95 callback interval was 52.5 ms / 35.9 ms. These single samples
+are preliminary, not proof of a general throughput gain. A profiled candidate
+run measured only 1.37x, illustrating variability and profiling overhead; do not
+mix instrumented and uninstrumented speed samples. The architectural goal
+remains unfinished.
+
+Reproduce source-level native attribution without changing production settings:
+
+```bash
+CARGO_PROFILE_RELEASE_DEBUG=1 CARGO_TARGET_DIR=target/gba-profile cargo build --release -p rustboy-gba --example benchmark --offline
+GBA_BENCH_STATE=target/gba-firered-fixed-baseline.state perf record -o target/new-gba-profile.data --call-graph dwarf -F 997 -- target/gba-profile/release/examples/benchmark "path/to/game.gba" 0 120 7
+perf report --stdio --no-children --inline --sort symbol,srcline -i target/new-gba-profile.data
+```
+
+Use a new output filename; `perf` output is a local diagnostic artifact. Linux
+perf permissions and debug symbols are required. For browser fixed-state runs:
+
+```bash
+RUSTBOY_GBA_UPLOAD=1 RUSTBOY_NO_BOOT=1 RUSTBOY_GBA_PROFILE="path/to/game.gba" RUSTBOY_GBA_PROFILE_STATE=target/gba-firered-fixed-baseline.state RUSTBOY_GBA_CPU_PROFILE=target/new-gba-8x.cpuprofile node tests/browser_smoke.mjs
+```
+
+The CPU-profile output is exclusive-create. Omit `RUSTBOY_GBA_CPU_PROFILE` for
+throughput measurements. Saved-state input must match the loaded ROM/firmware;
+the normal checked importer rejects mismatches. No game/state/firmware artifacts
+are distributed by these commands.
 
 Current architecture explains the repeated work:
 
