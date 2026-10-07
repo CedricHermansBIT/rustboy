@@ -55,6 +55,46 @@ const BLUE: [u8; 4] = [0, 0, 255, 255];
 const BLACK: [u8; 4] = [0, 0, 0, 255];
 
 #[test]
+fn text_tile_row_cache_matches_uncached_pixels_across_formats_and_wrapping() {
+    let mut b = bus();
+    let mut seed = 0x6a09e667u32;
+    for byte in b.vram.iter_mut().chain(b.palette.iter_mut()) {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        *byte = seed as u8;
+    }
+    // Independent uncached sampler remains the oracle. Random map entries
+    // cover flipping, palette banks, transparent pixels and invalid BG tile
+    // addresses (which must repeat map bytes rather than read OBJ VRAM).
+    for case in 0..256usize {
+        let bg = case & 3;
+        let cnt = ((case & 3) as u16)
+            | (((case >> 2) & 3) as u16) << 2
+            | (((case >> 4) & 1) as u16) << 6
+            | (((case >> 5) & 1) as u16) << 7
+            | (((case * 13) & 31) as u16) << 8
+            | (((case >> 6) & 3) as u16) << 14;
+        b.set_io(8 + bg * 2, cnt);
+        b.set_io(0x10 + bg * 4, (case * 73) as u16 & 511);
+        b.set_io(0x12 + bg * 4, (case * 151) as u16 & 511);
+        b.set_io(0x4c, ((case * 7) & 255) as u16);
+        let line = case * 97 % 160;
+        let mut cache = TextRow::new(&b, bg, line);
+        // Non-monotonic visits exercise cached row replacement as windows
+        // can skip pixels and scroll/mosaic can cross map blocks.
+        for x in (0..240).chain((0..240).rev()) {
+            let describe = |dot: Dot| (dot.color, dot.layer, dot.priority, dot.semi);
+            assert_eq!(
+                cache.dot(&b, bg, x).map(describe),
+                background(&b, Affine::default(), bg, 0, x, line).map(describe),
+                "case={case} x={x} line={line} cnt={cnt:04x}"
+            );
+        }
+    }
+}
+
+#[test]
 fn affine_power_of_two_wrapping_matches_euclidean_oracle_at_signed_extremes() {
     for size_code in 0..4 {
         let size = 128i32 << size_code;

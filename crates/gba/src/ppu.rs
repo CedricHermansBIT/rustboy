@@ -225,6 +225,100 @@ fn background(
     })
 }
 
+/// A text layer's current tile row, scoped to one immutable scanline render.
+/// Bit 15 marks a transparent palette index, not a palette color.
+struct TextRow {
+    cnt: u16,
+    scroll_x: usize,
+    y: usize,
+    width: usize,
+    mosaic_x: usize,
+    key: usize,
+    colors: [u16; 8],
+}
+impl TextRow {
+    fn new(bus: &Bus, bg: usize, line: usize) -> Self {
+        let cnt = bus.io16(8 + bg * 2);
+        let mosaic = bus.io16(0x4c);
+        let mosaic_y = if cnt & 0x40 != 0 {
+            ((mosaic >> 4) & 15) as usize + 1
+        } else {
+            1
+        };
+        let height = if cnt & 0x8000 != 0 { 512 } else { 256 };
+        Self {
+            cnt,
+            scroll_x: (bus.io16(0x10 + bg * 4) & 511) as usize,
+            y: (line - line % mosaic_y + (bus.io16(0x12 + bg * 4) & 511) as usize) & (height - 1),
+            width: if cnt & 0x4000 != 0 { 512 } else { 256 },
+            mosaic_x: if cnt & 0x40 != 0 {
+                (mosaic & 15) as usize + 1
+            } else {
+                1
+            },
+            key: usize::MAX,
+            colors: [0x8000; 8],
+        }
+    }
+    fn dot(&mut self, bus: &Bus, bg: usize, screen_x: usize) -> Option<Dot> {
+        let x = (screen_x - screen_x % self.mosaic_x + self.scroll_x) & (self.width - 1);
+        let y = self.y;
+        let block = x / 256 + (y / 256) * (self.width / 256);
+        let map = (((self.cnt >> 8) & 31) as usize * 0x800
+            + block * 0x800
+            + (((y / 8) & 31) * 32 + ((x / 8) & 31)) * 2)
+            & 0xffff;
+        let key = map * 8 + (y & 7);
+        if self.key != key {
+            self.key = key;
+            let entry = half(&bus.vram, map);
+            let py = if entry & 0x800 != 0 {
+                7 - (y & 7)
+            } else {
+                y & 7
+            };
+            let eight = self.cnt & 0x80 != 0;
+            let base = ((self.cnt >> 2) & 3) as usize * 0x4000
+                + (entry & 1023) as usize * if eight { 64 } else { 32 }
+                + py * if eight { 8 } else { 4 };
+            for (pixel, color) in self.colors.iter_mut().enumerate() {
+                let px = if entry & 0x400 != 0 { 7 - pixel } else { pixel };
+                let address = base + if eight { px } else { px / 2 };
+                let byte = if address < 0x10000 {
+                    bus.vram[address]
+                } else {
+                    (entry >> ((address & 1) * 8)) as u8
+                };
+                let index = if eight {
+                    byte as usize
+                } else {
+                    ((byte >> ((px & 1) * 4)) & 15) as usize
+                };
+                *color = if index == 0 {
+                    0x8000
+                } else {
+                    palette(
+                        bus,
+                        index
+                            + if eight {
+                                0
+                            } else {
+                                ((entry >> 12) & 15) as usize * 16
+                            },
+                    )
+                };
+            }
+        }
+        let color = self.colors[x & 7];
+        (color & 0x8000 == 0).then_some(Dot {
+            color,
+            layer: bg as u8,
+            priority: (self.cnt & 3) as u8,
+            semi: false,
+        })
+    }
+}
+
 fn objects(bus: &Bus, line: usize, dots: &mut [Option<Dot>; 240], window: &mut [bool; 240]) {
     let display = bus.io16(0);
     if display & 0x1000 == 0 {
@@ -450,6 +544,8 @@ fn render_line_origins(bus: &Bus, line: u16, pixels: &mut [u8], affine: Affine) 
         priority: 4,
         semi: false,
     };
+    let mut text_rows: [TextRow; 4] =
+        std::array::from_fn(|bg| TextRow::new(bus, bg, line as usize));
     for x in 0..240 {
         let mask = window_mask(bus, x, line as usize, obj_windows[x]);
         let mut first = backdrop;
@@ -462,9 +558,14 @@ fn render_line_origins(bus: &Bus, line: u16, pixels: &mut [u8], affine: Affine) 
                 second = Some(dot);
             }
         };
-        for bg in 0..4 {
+        for (bg, text_row) in text_rows.iter_mut().enumerate() {
             if enabled & mask as u16 & (1 << bg) != 0 {
-                if let Some(dot) = background(bus, affine, bg, mode, x, line as usize) {
+                let dot = if mode == 0 || mode == 1 && bg < 2 {
+                    text_row.dot(bus, bg, x)
+                } else {
+                    background(bus, affine, bg, mode, x, line as usize)
+                };
+                if let Some(dot) = dot {
                     insert(dot);
                 }
             }
