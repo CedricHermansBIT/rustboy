@@ -13,6 +13,7 @@ pub struct Bus {
     pub(crate) bios_access: bool,
     pub(crate) bios_latch: u32,
     pub(crate) prefetch: crate::prefetch::Prefetch,
+    pub(crate) gamepak_timing: crate::prefetch::GamePakTiming,
     pub(crate) previous_data: u32,
     pub(crate) previous_data_valid: bool,
     instruction_address: u32,
@@ -66,6 +67,7 @@ impl Bus {
             bios_access: !replacement_bios,
             bios_latch: 0,
             prefetch: crate::prefetch::Prefetch::default(),
+            gamepak_timing: crate::prefetch::GamePakTiming::from(0),
             previous_data: 0,
             previous_data_valid: false,
             instruction_address: 0,
@@ -109,6 +111,12 @@ impl Bus {
     }
     pub(crate) fn set_io(&mut self, offset: usize, value: u16) {
         self.io[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        if offset == 0x204 {
+            self.refresh_gamepak_timing();
+        }
+    }
+    pub(crate) fn refresh_gamepak_timing(&mut self) {
+        self.gamepak_timing = crate::prefetch::GamePakTiming::from(self.io16(0x204));
     }
     pub fn request_irq(&mut self, bits: u16) {
         self.set_io(0x202, self.io16(0x202) | bits);
@@ -374,13 +382,8 @@ impl Bus {
                     self.synchronize_deferred();
                 }
                 let area = ((address >> 25) - 4) as usize;
-                let wait = self.io16(0x204);
-                let first = [4, 3, 2, 8][(wait >> (2 + area * 3) & 3) as usize] + 1;
-                let second = if wait >> (4 + area * 3) & 1 != 0 {
-                    2
-                } else {
-                    [3, 5, 9][area]
-                };
+                let first = u64::from(self.gamepak_timing.nonsequential[area]);
+                let second = u64::from(self.gamepak_timing.sequential[area]);
                 // Cartridge /CS restarts at each 128-KiB page even when the
                 // CPU/DMA marks this access sequential. Align to the physical
                 // bus access before testing the boundary.
@@ -388,7 +391,7 @@ impl Bus {
                 let sequential = sequential && aligned & 0x1ffff != 0;
                 (if sequential { second } else { first }) + if width == 4 { second } else { 0 }
             }
-            14 | 15 => [4, 3, 2, 8][(self.io16(0x204) & 3) as usize] + 1,
+            14 | 15 => u64::from(self.gamepak_timing.backup),
             _ => 1,
         };
         self.clocks += clocks;
@@ -396,8 +399,9 @@ impl Bus {
             // Data accesses share the cartridge bus; queued opcode timing
             // cannot survive a ROM, EEPROM or backup-memory transaction.
             self.prefetch = crate::prefetch::Prefetch::default();
-        } else if self.io16(0x204) & 0x4000 != 0 {
-            self.prefetch.idle(clocks as u32, self.io16(0x204));
+        } else if self.gamepak_timing.enabled {
+            self.prefetch
+                .idle_with_timing(clocks as u32, &self.gamepak_timing);
         }
     }
     fn put8(&mut self, address: u32, value: u8) {
@@ -439,6 +443,7 @@ impl Bus {
                 self.affine_write(offset);
                 if matches!(offset, 0x204 | 0x205) && self.io[offset] != old {
                     self.prefetch = crate::prefetch::Prefetch::default();
+                    self.refresh_gamepak_timing();
                 }
             }
             5 => self.palette[index & 0x3ff] = value,
@@ -488,14 +493,15 @@ impl Memory for Bus {
     }
     fn fetch16(&mut self, address: u32, sequential: bool) -> u16 {
         if (8..=13).contains(&(address >> 24))
-            && self.io16(0x204) & 0x4000 != 0
+            && self.gamepak_timing.enabled
             && !self.eeprom_address(address)
         {
-            self.clocks +=
-                u64::from(
-                    self.prefetch
-                        .fetch(address & !1, 1, sequential, self.io16(0x204)),
-                );
+            self.clocks += u64::from(self.prefetch.fetch_with_timing(
+                address & !1,
+                1,
+                sequential,
+                &self.gamepak_timing,
+            ));
             return self.peek16(address & !1);
         }
         self.prefetch = crate::prefetch::Prefetch::default();
@@ -514,14 +520,15 @@ impl Memory for Bus {
     }
     fn fetch32(&mut self, address: u32, sequential: bool) -> u32 {
         if (8..=13).contains(&(address >> 24))
-            && self.io16(0x204) & 0x4000 != 0
+            && self.gamepak_timing.enabled
             && !self.eeprom_address(address)
         {
-            self.clocks +=
-                u64::from(
-                    self.prefetch
-                        .fetch(address & !3, 2, sequential, self.io16(0x204)),
-                );
+            self.clocks += u64::from(self.prefetch.fetch_with_timing(
+                address & !3,
+                2,
+                sequential,
+                &self.gamepak_timing,
+            ));
             return self.peek32(address & !3);
         }
         self.prefetch = crate::prefetch::Prefetch::default();
@@ -692,13 +699,13 @@ impl Memory for Bus {
     }
     fn internal(&mut self, clocks: u32) {
         self.clocks += u64::from(clocks);
-        if self.io16(0x204) & 0x4000 != 0 {
-            self.prefetch.idle(clocks, self.io16(0x204));
+        if self.gamepak_timing.enabled {
+            self.prefetch.idle_with_timing(clocks, &self.gamepak_timing);
         }
         // GBATEK's prefetch-disable bug: ROM opcodes with internal cycles
-        // turn the subsequent opcode S access into N. Enabled-prefetch queue
-        // timing is a separate, still pending feature.
-        if clocks != 0 && self.gamepak_instruction && self.io16(0x204) & 0x4000 == 0 {
+        // turn the subsequent opcode S access into N. Enabled prefetch instead
+        // uses these clocks to advance the cartridge FIFO above.
+        if clocks != 0 && self.gamepak_instruction && !self.gamepak_timing.enabled {
             self.restart_fetch = true;
         }
     }
@@ -775,6 +782,40 @@ mod tests {
     use super::*;
     fn bus() -> Bus {
         Bus::new(vec![0; 0xc0], None).unwrap()
+    }
+    #[test]
+    fn wait_cache_tracks_byte_halfword_word_writes_and_ignored_bits() {
+        let mut b = bus();
+        assert_eq!(b.gamepak_timing, crate::prefetch::GamePakTiming::from(0));
+        for address in [0x04000204, 0x04000205] {
+            for value in 0..=u8::MAX {
+                b.write8(address, value);
+                assert_eq!(
+                    b.gamepak_timing,
+                    crate::prefetch::GamePakTiming::from(b.io16(0x204))
+                );
+            }
+        }
+        for value in 0..=u16::MAX {
+            b.write16(0x04000204, value, false);
+            assert_eq!(b.io16(0x204), value & 0x5fff);
+            assert_eq!(
+                b.gamepak_timing,
+                crate::prefetch::GamePakTiming::from(value)
+            );
+        }
+        b.write32(0x04000204, u32::MAX, false);
+        assert_eq!(
+            b.gamepak_timing,
+            crate::prefetch::GamePakTiming::from(0xffff)
+        );
+        b.write32(0x04000204, 0, false);
+        assert_eq!(b.gamepak_timing, crate::prefetch::GamePakTiming::from(0));
+        b.set_io(0x204, 0x4317);
+        assert_eq!(
+            b.gamepak_timing,
+            crate::prefetch::GamePakTiming::from(0x4317)
+        );
     }
     #[test]
     fn write_only_and_unused_io_words_expose_cpu_prefetch_not_register_storage() {

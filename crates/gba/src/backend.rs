@@ -631,6 +631,7 @@ impl GameBoyAdvance {
         next.bus.set_keys(0);
         next.bus.refresh_timer_schedule();
         next.bus.refresh_dma_schedule();
+        next.bus.refresh_gamepak_timing();
         *self = next;
         Ok(())
     }
@@ -959,6 +960,30 @@ mod tests {
         m.bus.enter_low_power(0x80);
         Emulator::reset(&mut m);
         assert!(!m.bus.stopped);
+    }
+    #[test]
+    fn snapshot_rebuilds_derived_gamepak_waits() {
+        use crate::cpu::Memory;
+        let mut m = machine();
+        m.bus.write16(0x04000204, 0x4317, false);
+        m.bus.take_cycles();
+        let saved = m.export_state();
+        let timing = m.bus.gamepak_timing;
+        m.run(1000);
+        let expected = m.export_state();
+        m.bus.gamepak_timing = crate::prefetch::GamePakTiming::from(0);
+        m.import_state(&saved).unwrap();
+        assert_eq!(m.bus.gamepak_timing, timing);
+        m.run(1000);
+        assert_eq!(m.export_state(), expected);
+        let legacy = legacy_none_state(&saved, 4);
+        m.import_state(&legacy).unwrap();
+        assert_eq!(m.bus.gamepak_timing, timing);
+        Emulator::reset(&mut m);
+        assert_eq!(
+            m.bus.gamepak_timing,
+            crate::prefetch::GamePakTiming::from(0)
+        );
     }
     #[test]
     fn snapshot_rebuilds_derived_timer_deadlines() {
