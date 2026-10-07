@@ -9,7 +9,24 @@ fn hash(bytes: &[u8]) -> u64 {
         (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
     })
 }
+fn run(machine: &mut GameBoyAdvance, budget: u64, reference: bool) -> u64 {
+    if !reference {
+        return machine.run(budget);
+    }
+    let start = machine.clocks;
+    while machine.clocks.wrapping_sub(start) < budget && machine.fault.is_none() {
+        if machine.step() == 0 {
+            break;
+        }
+    }
+    machine.clocks.wrapping_sub(start)
+}
 fn main() -> Result<(), Box<dyn Error>> {
+    let reference = match std::env::var("GBA_BENCH_RUNNER").as_deref() {
+        Ok("step") => true,
+        Ok("slice") | Err(std::env::VarError::NotPresent) => false,
+        _ => return Err("GBA_BENCH_RUNNER must be step or slice".into()),
+    };
     let mut args = std::env::args().skip(1);
     let path = args
         .next()
@@ -32,7 +49,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(path) = std::env::var_os("GBA_BENCH_STATE") {
         machine.import_state(&std::fs::read(path)?)?;
     } else {
-        machine.run(FRAME_CYCLES * warmup);
+        run(&mut machine, FRAME_CYCLES * warmup, reference);
     }
     if machine.fault.is_some() || machine.paused() {
         return Err(format!("Cannot benchmark a stopped machine: {:?}", machine.fault).into());
@@ -46,8 +63,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             .write_all(&baseline)?;
     }
     println!(
-        "benchmark rom={rom_hash:016x} baseline={:016x} measure_frames={frames} trials={trials}",
-        hash(&baseline)
+        "benchmark rom={rom_hash:016x} baseline={:016x} measure_frames={frames} trials={trials} runner={}",
+        hash(&baseline), if reference { "step" } else { "slice" }
     );
     let budget = FRAME_CYCLES * frames;
     let mut times = Vec::with_capacity(trials);
@@ -56,7 +73,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         machine.import_state(&baseline)?;
         let instructions = machine.cpu.instructions;
         let start = Instant::now();
-        let clocks = machine.run(budget);
+        let clocks = run(&mut machine, budget, reference);
         let seconds = start.elapsed().as_secs_f64();
         if clocks < budget || machine.fault.is_some() {
             return Err(format!(
