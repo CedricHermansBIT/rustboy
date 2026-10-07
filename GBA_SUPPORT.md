@@ -39,6 +39,31 @@ cargo run --release -p rustboy-gba --example inspect -- "path/to/game.gba" 60
 # Optional third argument: a BIOS file supplied by the user.
 ```
 
+For deterministic local workload capture, `inspect` also accepts
+`GBA_STATE=<checked-state>` and `GBA_SAVE_STATE=<new-output>`. Optional
+`GBA_INPUT_SEQUENCE="0:0008,5:0000"` presses Start at relative frame zero and
+releases all buttons at frame five. Each event is `frame:complete_hex_key_mask`
+in GBA key order, up to 256 increasing events within the requested run. Inputs
+are applied at whole-instruction boundaries; frozen/faulted runs do not export
+a completed state. `GBA_FRAME_PNG=<new-output>` captures the resulting display.
+Output files are exclusive-create: use fresh paths and keep private cartridge
+states/screenshots local, not in git. Inspect counts are relative to the imported
+state; tracing/input-script runtimes are not isolated performance benchmarks.
+
+```sh
+GBA_INPUT_SEQUENCE="0:0008,5:0000" GBA_SAVE_STATE=target/local-start.state GBA_FRAME_PNG=target/local-start.png cargo run --release -p rustboy-gba --example inspect --offline -- "path/to/game.gba" 300
+cargo run --release -p rustboy-gba --example instruction_profile --offline -- "path/to/game.gba" target/local-start.state 120
+```
+
+The instruction-mix diagnostic counts guest encoding families and hot PCs under
+reference stepping, not wall-time component costs. It includes first-hit r0–r3
+and starting/ending state fingerprints, bounds its PC map, conservatively avoids
+decoding protected/serial/open-bus regions, and accepts a matching user BIOS as
+an optional final argument. The existing fixed FireRed benchmark is an intro
+animation, with about half its instructions in a RAM-flag polling loop; do not
+treat it as broad gameplay coverage or use cartridge-specific idle skips. See
+[GBA_PERFORMANCE_PLAN.md](GBA_PERFORMANCE_PLAN.md) for measurements and next gates.
+
 The diagnostic reports instruction/clock counts, CPU/display state and the first
 unsupported exception/service. Throughput measures this incomplete
 workload, **not finished-game speed**. The local FireRed cartridge is not committed

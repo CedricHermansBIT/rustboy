@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args().skip(1);
     let path = args
         .next()
-        .ok_or("usage: instruction_profile <rom.gba> <checked.state> [frames=120]")?;
+        .ok_or("usage: instruction_profile <rom.gba> <checked.state> [frames=120] [bios.bin]")?;
     let state_path = args
         .next()
         .ok_or("Supply a checked state from the selected ROM/firmware")?;
@@ -56,11 +56,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(|arg| arg.parse())
         .transpose()?
         .unwrap_or(120);
+    let bios = args.next().map(std::fs::read).transpose()?;
     if args.next().is_some() || !(1..=36000).contains(&frames) {
         return Err("Use 1..36000 frames".into());
     }
     let rom = std::fs::read(path)?;
-    let mut machine = GameBoyAdvance::new(rom, None)?;
+    let mut machine = GameBoyAdvance::new(rom, bios)?;
     machine.import_state(&std::fs::read(state_path)?)?;
     if machine.fault.is_some() || machine.paused() {
         return Err("Cannot profile a faulted or paused state".into());
@@ -112,6 +113,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let clocks = machine.clocks.wrapping_sub(start_clocks);
     if clocks < budget || machine.fault.is_some() {
         return Err(format!("Workload stopped early: {:?}", machine.fault).into());
+    }
+    if families.values().sum::<u64>() + not_decoded != instructions {
+        return Err("Instruction accounting did not match reference execution".into());
     }
     println!("instruction profile (instrumented reference stepping, NOT a speed benchmark)");
     println!("baseline={baseline:016x} clocks={clocks} instructions={instructions} result={:016x} undecoded={not_decoded}", hash(&machine.export_state()));

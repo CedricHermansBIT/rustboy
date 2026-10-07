@@ -166,6 +166,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         machine.frames
     );
     let handler = machine.bus.peek32(0x03007ffc);
+    println!("PPU BGCNT={:04X?} WINH={:04X?} WINV={:04X?} WININ={:04X} WINOUT={:04X} BLDCNT={:04X} BLDALPHA={:04X} BLDY={:04X}",
+        [8, 10, 12, 14].map(|offset| machine.bus.io16(offset)),
+        [0x40, 0x42].map(|offset| machine.bus.io16(offset)),
+        [0x44, 0x46].map(|offset| machine.bus.io16(offset)),
+        machine.bus.io16(0x48), machine.bus.io16(0x4a), machine.bus.io16(0x50),
+        machine.bus.io16(0x52), machine.bus.io16(0x54));
     println!(
         "IRQ IE={:04X} IF={:04X} IME={} DISPSTAT={:04X} handler={:08X}",
         machine.bus.io16(0x200),

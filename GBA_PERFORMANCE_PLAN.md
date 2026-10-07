@@ -205,6 +205,79 @@ compare that directly with the unprofiled 2.60x sample. Further work must reduce
 fetch/decode/bus work together and remeasure, rather than assuming an additional
 scheduler guard or graphics-only change can close the remaining gap.
 
+### Instruction-mix evidence and input-driven workload capture
+
+Added a bounded native `instruction_profile` example. It uses reference stepping
+and non-mutating pre-step opcode peeks, counting only steps that actually execute
+an instruction (not DMA, HALT or IRQ dispatch). BIOS/open-bus/0Dh-region
+encodings are conservatively left undecoded, since a plain peek cannot reproduce
+every protected/serial fetch context. Counts include failed ARM conditions and
+major encoding classes, not exact execution-time attribution. The hot-PC map is
+capped at 65,536 `(PC, mode, encoding)` entries, with omitted samples reported.
+It prints first-hit r0–r3 values, checked starting/ending-state fingerprints and
+complete instruction accounting. Instrumented runtime is **not** a benchmark.
+
+The existing fixed state is visually an intro star animation, not walking or
+battle gameplay. Of its 12,269,926 instructions, five Thumb instructions at
+080008BE–080008C6 each execute 1,229,866 times: 50.12% combined. Its first observed
+load reads IWRAM 0300310Ch (r2=030030F0h plus 1Ch), then add/AND/compare/
+conditional-branch. This is a **RAM-flag poll**, not repeated MMIO timer reads.
+ARM ALU/PSR/multiply/halfword encodings account for 22.29% and ARM branch for
+3.72%; hot ARM code is in IWRAM, not immutable cartridge ROM. The reference
+profile reaches exactly 33,707,520 clocks and ending fingerprint
+`12f3190d01dcf2f2`, matching the uninstrumented workload.
+
+A captured, visually checked title-screen state still spends about 47.15% of
+instructions in that polling loop. It reaches 33,707,521 clocks / 12,101,648
+instructions and result `7843d9920f29ae4a` from starting fingerprint
+`d23c8ad69105022e`. A ROM-only decode-cache strategy would miss substantial RAM
+execution; optimizing only this polling loop would overfit the existing startup
+sample. Do not introduce cartridge-specific idle skips. Obtain input-driven
+gameplay/battle and graphics-heavy states before judging a decoded-block design.
+
+Input-driven progression now reaches the playable bedroom, with visually checked
+player/camera movement. A settled neutral-input room state at frame 9,540 has
+starting fingerprint `0aea827a62bc56bf`; a reference 120-frame sample executes
+11,874,950 instructions / 33,707,520 clocks and ends at `6e7b6b77514b6c71`.
+That scene spends 57.94% of instructions in the same poll, with ARM ALU-family
+18.40% and ARM branch 3.04%. A separate unprofiled browser sample achieved 2.18x
+at requested 4x and 2.27x at 8x. This is a stationary room, **not** continuous
+walking or a battle benchmark. Do not compare its speed directly with startup
+A/B results. Local state/image files remain in ignored `target/`; this validates
+one progression path, not full game compatibility. Battle/affine-heavy/device
+coverage remains missing, and smooth 8x remains unachieved.
+
+The `inspect` example now supports checked state import, exclusive-create state
+output and up to 256 strictly increasing, bounded input events. Events are
+`relative_frame:complete_hex_key_mask`; masks use GBA key order (A=0001, B=0002,
+Select=0004, Start=0008, Right=0010, Left=0020, Up=0040, Down=0080, R=0100,
+L=0200). Each event applies at the next instruction boundary at/after the desired
+emulated time, preserving whole-instruction overshoot. End with mask zero for
+neutral captured states. Frozen/faulted runs fail rather than exporting a
+supposedly completed workload; existing trace loops now stop on zero progress.
+This is not a host-wall-time STOP/wake simulator. New tests cover malformed and
+oversized event sequences, full-state reference replay including keypad IRQs
+and clock wrap, and encoding-family labels. They are included in the normal
+self-contained gate; the shipped emulator/browser bundle is unchanged.
+
+```bash
+# No copyrighted data is distributed; state and image outputs stay local.
+GBA_STATE=target/local-start.state GBA_INPUT_SEQUENCE="0:0008,5:0000" GBA_SAVE_STATE=target/local-next.state GBA_FRAME_PNG=target/local-next.png cargo run --release -p rustboy-gba --example inspect --offline -- "path/to/game.gba" 300
+cargo run --release -p rustboy-gba --example instruction_profile --offline -- "path/to/game.gba" target/local-next.state 120
+# Optional final argument to either diagnostic: matching user-supplied BIOS.
+```
+
+Omit GBA_STATE to start from direct boot. All output files use exclusive-create,
+so use fresh paths; screenshots are diagnostic and never committed. State output
+is refused if the requested workload did not finish. Throughput reported by an
+input/tracing diagnostic must not be mixed with isolated benchmark timings.
+
+Validation: 385 self-contained native checks (including the three new diagnostic
+checks), JS/Python checks, warnings-denied all-feature GBA Clippy, and a targeted
+browser GBA upload/profile run pass. The example also reports internal PPU
+window/blend controls for screenshot investigation. No emulator hot-path or
+shipping bundle change was made during this investigation.
+
 ### Implemented: write-derived cartridge timing
 
 `GamePakTiming` decodes WAITCNT into three N/S halfword costs, backup cost and
