@@ -34,6 +34,7 @@ def main():
     subprocess.run(cargo + ["--workspace", "--lib", "--test", "ppu_strict"], cwd=ROOT, check=True)
     subprocess.run(cargo + ["-p", "rustboy-gba", "--test", "program"], cwd=ROOT, check=True)
     subprocess.run(cargo + ["-p", "rustboy-gba", "--test", "eeprom"], cwd=ROOT, check=True)
+    subprocess.run(cargo + ["-p", "rustboy-gba", "--examples"], cwd=ROOT, check=True)
     for test in ["tests/audio_queue.cjs", "tests/audio_worklet.cjs", "tests/rom_loader.mjs", "tests/library_rom.mjs", "tests/cartridge_inventory.mjs", "tests/controller_input.mjs", "tests/gba_render_profile_test.mjs"]:
         subprocess.run([node, test], cwd=ROOT, check=True)
     subprocess.run(["python3", "tests/prepare_pages_test.py"], cwd=ROOT, check=True)

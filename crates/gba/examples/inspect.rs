@@ -1,6 +1,48 @@
 //! Bounded diagnostic, not a game player. No game or proprietary BIOS bundled.
+use rustboy_emulator_api::Emulator;
 use rustboy_gba::{GameBoyAdvance, CLOCK_HZ, FRAME_CYCLES};
-use std::{error::Error, time::Instant};
+use std::{error::Error, io::Write, time::Instant};
+
+/// Relative emulated frame : complete pressed-key mask (GBA KEYINPUT order).
+/// Complete masks make overlapping/released buttons explicit and deterministic.
+fn input_sequence(value: &str, frames: u64) -> Result<Vec<(u64, u16)>, Box<dyn Error>> {
+    let mut events = Vec::new();
+    for entry in value.split(',') {
+        if events.len() >= 256 {
+            return Err("GBA_INPUT_SEQUENCE is limited to 256 events".into());
+        }
+        let (frame, mask) = entry.split_once(':').ok_or("Use GBA_INPUT_SEQUENCE=frame:hexmask,...")?;
+        let frame: u64 = frame.parse()?;
+        let mask = u16::from_str_radix(mask.trim_start_matches("0x"), 16)?;
+        if frame >= frames || mask > 0x3ff || events.last().is_some_and(|&(previous, _)| previous >= frame) {
+            return Err("Input frames must be increasing and within the run; key mask must be <=03ff".into());
+        }
+        events.push((frame, mask));
+    }
+    Ok(events)
+}
+fn run_inputs(machine: &mut GameBoyAdvance, budget: u64, events: &[(u64, u16)]) -> Result<(), Box<dyn Error>> {
+    let start = machine.clocks;
+    for &(frame, mask) in events {
+        let target = frame * FRAME_CYCLES;
+        let elapsed = machine.clocks.wrapping_sub(start);
+        if elapsed < target {
+            machine.run(target - elapsed);
+        }
+        if machine.fault.is_some() || machine.clocks.wrapping_sub(start) < target {
+            return Err("Input sequence stopped before its next event".into());
+        }
+        machine.bus.set_keys(mask);
+    }
+    let elapsed = machine.clocks.wrapping_sub(start);
+    if elapsed < budget {
+        machine.run(budget - elapsed);
+    }
+    if machine.fault.is_some() || machine.clocks.wrapping_sub(start) < budget {
+        return Err("Input sequence did not finish its requested workload".into());
+    }
+    Ok(())
+}
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args().skip(1);
     let path=args.next().ok_or("usage: cargo run --release -p rustboy-gba --example inspect -- <rom.gba> [frames=60] [bios.bin]")?;
@@ -9,12 +51,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("diagnostic is limited to 36,000 frames".into());
     }
     let bios = args.next().map(std::fs::read).transpose()?;
+    if args.next().is_some() {
+        return Err("Unexpected argument after BIOS path".into());
+    }
     let mut machine = GameBoyAdvance::new(std::fs::read(path)?, bios)?;
+    if let Some(path) = std::env::var_os("GBA_STATE") {
+        machine.import_state(&std::fs::read(path)?)?;
+    }
     println!(
         "GBA development backend: {} (graphics/audio/BIOS services incomplete)",
         machine.title()
     );
     let start = Instant::now();
+    let initial_clocks = machine.clocks;
+    let initial_instructions = machine.cpu.instructions;
+    let initial_exceptions = machine.cpu.exceptions;
+    let budget = FRAME_CYCLES * frames;
     let start_at = std::env::var("GBA_START_AT")
         .ok()
         .map(|v| v.parse::<u64>())
@@ -36,12 +88,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             ))
         })
         .transpose()?;
-    if trace_irq || trace_range.is_some() || watch.is_some() || start_at.is_some() {
+    let sequence = std::env::var("GBA_INPUT_SEQUENCE").ok()
+        .map(|value| input_sequence(&value, frames)).transpose()?;
+    if sequence.is_some() && (trace_irq || trace_range.is_some() || watch.is_some() || start_at.is_some()) {
+        return Err("Input sequences cannot be combined with tracing or GBA_START_AT".into());
+    }
+    if let Some(events) = sequence {
+        run_inputs(&mut machine, budget, &events)?;
+    } else if trace_irq || trace_range.is_some() || watch.is_some() || start_at.is_some() {
         let mut traced = false;
         let mut remaining = 0u32;
         let mut window_lines = 128;
         let mut watch_lines = 128;
-        while machine.clocks < FRAME_CYCLES * frames && machine.fault.is_none() {
+        while machine.clocks.wrapping_sub(initial_clocks) < budget && machine.fault.is_none() {
             if let Some(frame) = start_at {
                 let pressed = (frame.saturating_mul(FRAME_CYCLES)
                     ..frame.saturating_add(5).saturating_mul(FRAME_CYCLES))
@@ -62,7 +121,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     window_lines -= 1;
                 }
             }
-            machine.step();
+            if machine.step() == 0 {
+                break;
+            }
             if let Some(addr) = watch {
                 let value = machine.bus.peek16(addr);
                 if watch_lines > 0 && old_value != Some(value) {
@@ -90,11 +151,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let elapsed = start.elapsed().as_secs_f64();
     println!(
         "{} clocks, {} instructions, {} exceptions in {:.3}s ({:.2}x clock throughput)",
-        machine.clocks,
-        machine.cpu.instructions,
-        machine.cpu.exceptions,
+        machine.clocks.wrapping_sub(initial_clocks),
+        machine.cpu.instructions.wrapping_sub(initial_instructions),
+        machine.cpu.exceptions.wrapping_sub(initial_exceptions),
         elapsed,
-        machine.clocks as f64 / CLOCK_HZ as f64 / elapsed
+        machine.clocks.wrapping_sub(initial_clocks) as f64 / CLOCK_HZ as f64 / elapsed
     );
     println!(
         "PC={:08X}, CPSR={:08X}, display={:04X}, VCOUNT={}, frames={}",
@@ -137,6 +198,62 @@ fn main() -> Result<(), Box<dyn Error>> {
             "Stopped at {:08X}: exception vector {:02X}: {}.",
             fault.instruction_address, fault.vector, fault.reason
         );
+        return Err("Diagnostic stopped on a CPU/BIOS fault".into());
+    }
+    if machine.clocks.wrapping_sub(initial_clocks) < budget {
+        return Err("Diagnostic did not finish its requested workload".into());
+    }
+    if let Some(path) = std::env::var_os("GBA_SAVE_STATE") {
+        std::fs::OpenOptions::new().write(true).create_new(true).open(path)?
+            .write_all(&machine.export_state())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn input_masks_have_bounded_increasing_frame_times() {
+        assert_eq!(input_sequence("0:0008,5:0000,120:0x0001,125:0000", 130).unwrap(),
+            [(0, 8), (5, 0), (120, 1), (125, 0)]);
+        for value in ["", "0", "a:0", "0:xyz", "0:400", "130:0", "5:0,5:1", "5:0,4:1"] {
+            assert!(input_sequence(value, 130).is_err(), "{value}");
+        }
+        let many = (0..257).map(|frame| format!("{frame}:0")).collect::<Vec<_>>().join(",");
+        assert!(input_sequence(&many, 300).is_err());
+    }
+    #[test]
+    fn input_timeline_replays_instruction_boundaries_keypad_irq_and_clock_wrap() {
+        use rustboy_gba::cpu::Memory;
+        for start in [0, u64::MAX - 100] {
+            let mut rom = vec![0; 192];
+            for (index, op) in [0xe1d100b0u32, 0xe5820000, 0xeafffffc].into_iter().enumerate() {
+                rom[index * 4..index * 4 + 4].copy_from_slice(&op.to_le_bytes());
+            }
+            let mut sliced = GameBoyAdvance::new(rom.clone(), None).unwrap();
+            let mut reference = GameBoyAdvance::new(rom, None).unwrap();
+            for machine in [&mut sliced, &mut reference] {
+                machine.clocks = start;
+                machine.cpu.r[1] = 0x04000130;
+                machine.cpu.r[2] = 0x03000100;
+                machine.bus.write16(0x04000132, 0x4001, false);
+                machine.bus.take_cycles();
+            }
+            let events = input_sequence("0:0001,5:0000,8:0100", 9).unwrap();
+            run_inputs(&mut sliced, FRAME_CYCLES * 9, &events).unwrap();
+            for &(frame, mask) in &events {
+                while reference.clocks.wrapping_sub(start) < frame * FRAME_CYCLES {
+                    assert_ne!(reference.step(), 0);
+                }
+                reference.bus.set_keys(mask);
+            }
+            while reference.clocks.wrapping_sub(start) < FRAME_CYCLES * 9 {
+                assert_ne!(reference.step(), 0);
+            }
+            assert_eq!(sliced.export_state(), reference.export_state());
+            assert_eq!(sliced.bus.peek16(0x03000100), 0x02ff);
+            assert_ne!(sliced.bus.io16(0x202) & 0x1000, 0);
+        }
+    }
 }
