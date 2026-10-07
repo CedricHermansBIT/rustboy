@@ -114,7 +114,10 @@ impl Emulator for GameBoyAdvance {
     fn state_id(&self) -> String {
         format!(
             "gba-{:016x}-{:016x}",
-            hash(&self.bus.rom),
+            // Cartridge bytes are immutable after loading. Backup detection
+            // already hashes even batteryless ROMs; reuse that identity instead
+            // of scanning up to 32 MiB during frontend status polling.
+            self.bus.backup.rom_hash,
             hash(&self.bus.bios)
         )
     }
@@ -1114,6 +1117,36 @@ mod tests {
         other[30] = 1;
         let other = GameBoyAdvance::new(other, None).unwrap();
         assert_ne!(key, other.save_info().unwrap().key);
+    }
+    #[test]
+    fn polled_identity_matches_snapshot_for_batteryless_and_saved_cartridges() {
+        for saved in [false, true] {
+            for firmware in [None, Some(vec![0x5a; 0x4000])] {
+                let mut rom = vec![0; 192];
+                rom[..4].copy_from_slice(&0xeafffffeu32.to_le_bytes());
+                if saved {
+                    rom[80..90].copy_from_slice(b"SRAM_V123\0");
+                }
+                let mut m = GameBoyAdvance::new(rom.clone(), firmware.clone()).unwrap();
+                let state = m.export_state();
+                let rom_hash = u64::from_le_bytes(state[8..16].try_into().unwrap());
+                let bios_hash = u64::from_le_bytes(state[16..24].try_into().unwrap());
+                let expected = format!("gba-{rom_hash:016x}-{bios_hash:016x}");
+                for _ in 0..32 {
+                    assert_eq!(m.state_id(), expected);
+                }
+                m.clear_save();
+                m.import_state(&state).unwrap();
+                assert_eq!(m.state_id(), expected);
+                m.reset();
+                assert_eq!(m.state_id(), expected);
+                rom[191] = 1;
+                let other = GameBoyAdvance::new(rom, firmware).unwrap();
+                assert_ne!(other.state_id(), expected);
+                let other_bios = GameBoyAdvance::new(vec![0; 192], Some(vec![0xa5; 0x4000])).unwrap();
+                assert_ne!(other_bios.state_id(), expected);
+            }
+        }
     }
     #[test]
     fn snapshots_preserve_sound_and_accept_legacy_v1() {
