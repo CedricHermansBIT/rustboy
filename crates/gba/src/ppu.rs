@@ -509,6 +509,7 @@ fn brighten(color: u16, coefficient: u16, increase: bool) -> u16 {
     }
     result
 }
+#[cfg_attr(feature = "profile-rendering", inline(never))]
 pub(crate) fn render_line(bus: &Bus, line: u16, pixels: &mut [u8]) {
     render_line_origins(bus, line, pixels, bus.affine);
 }

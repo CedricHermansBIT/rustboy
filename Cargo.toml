@@ -17,6 +17,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = ["web"]
 web = ["wasm-bindgen", "js-sys", "web-sys", "console_error_panic_hook"]
+gba-profile-rendering = ["rustboy-gba/profile-rendering"]
 
 [dependencies]
 rustboy-emulator-api = { path = "crates/emulator-api" }

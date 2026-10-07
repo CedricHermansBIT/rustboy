@@ -5,6 +5,11 @@ edition = "2021"
 license = "MIT"
 description = "Independently authored headless Game Boy Advance hardware for RustBoy"
 
+[features]
+# Preserve a compositor boundary for sampling profilers; no clocks or pixels
+# are skipped. Disabled in normal builds so ordinary inlining is unaffected.
+profile-rendering = []
+
 [dependencies]
 rustboy-emulator-api = { path = "../emulator-api" }
 
