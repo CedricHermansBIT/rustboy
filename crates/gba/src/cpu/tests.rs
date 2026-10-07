@@ -61,6 +61,40 @@ fn cpu() -> Cpu {
     c
 }
 #[test]
+fn conditions_match_boolean_oracle_for_every_condition_and_flag_tuple() {
+    let mut c = cpu();
+    for flags in 0..16 {
+        c.set_cpsr(0x1f | flags << 28).unwrap();
+        let n = flags & 8 != 0;
+        let z = flags & 4 != 0;
+        let carry = flags & 2 != 0;
+        let v = flags & 1 != 0;
+        let expected = [
+            z,
+            !z,
+            carry,
+            !carry,
+            n,
+            !n,
+            v,
+            !v,
+            carry && !z,
+            !carry || z,
+            n == v,
+            n != v,
+            !z && n == v,
+            z || n != v,
+            true,
+            false,
+        ];
+        for (condition, expected) in expected.into_iter().enumerate() {
+            assert_eq!(c.condition(condition as u32), expected);
+        }
+        assert!(!c.condition(16));
+        assert!(!c.condition(u32::MAX));
+    }
+}
+#[test]
 fn arm_psr_compares_restore_saved_flags_and_banks_without_pipeline_refill() {
     for opcode in 8..12 {
         for mode in [0x11, 0x12, 0x13, 0x17, 0x1b] {
