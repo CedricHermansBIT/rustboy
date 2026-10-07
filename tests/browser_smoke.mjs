@@ -568,12 +568,10 @@ try {
         if (++frames < 120) requestAnimationFrame(warmup); else resolve();
       });
     })`);
-    if (process.env.RUSTBOY_GBA_CPU_PROFILE) {
-      await call('Profiler.enable');
-      await call('Profiler.setSamplingInterval',{interval:1000});
-      await call('Profiler.start');
-    }
-    const metrics = await evaluate(`(async () => {
+    const profileState = process.env.RUSTBOY_GBA_PROFILE_STATE
+      ? (await fs.readFile(path.resolve(process.env.RUSTBOY_GBA_PROFILE_STATE))).toString('base64')
+      : null;
+    await evaluate(`(async () => {
       const wasm = await import('./out/rustboy.js');
       const clocks = () => {
         const bytes = Module._export_state();
@@ -581,39 +579,69 @@ try {
         return Number(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(301, true));
       };
       Module._set_paused(true);
-      const baseline = Module._export_state();
-      const results = [];
-      for (const requested of [1, 4, 8]) {
-      Module._import_state(baseline); Module._set_speed(requested);
-      const before = clocks(); const start = performance.now(); Module._set_paused(false);
-      const delays = []; let previous = start;
-      await new Promise(resolve => requestAnimationFrame(function sample() {
-        const now = performance.now(); delays.push(now-previous); previous=now;
-        if (delays.length < 120) requestAnimationFrame(sample); else resolve();
-      }));
-      const elapsed = performance.now()-start;
-      Module._set_paused(true);
-      const speed = (clocks()-before)/16777216/(elapsed/1000);
-      delays.sort((a,b) => a-b);
-      const result = {requestedSpeed: requested, achievedSpeed: speed,
-        medianCallbackMs: delays[60], p95CallbackMs: delays[114],
-        maxCallbackMs: delays[119], status: wasm.get_backend_status()};
-      results.push(result);
+      const saved = ${JSON.stringify(profileState)};
+      if (saved !== null) {
+        Module._import_state(Uint8Array.from(atob(saved), c => c.charCodeAt(0)));
+        Module._set_paused(true);
       }
-      Module._set_speed(1);
-      return results;
+      const baseline = Module._export_state();
+      let before, requested, elapsed, delays;
+      globalThis[Symbol.for('rustboy.test.gba.profile')] = {
+        prepare(speed) {
+          Module._import_state(baseline); Module._set_paused(true);
+          Module._set_speed(speed); requested = speed; before = clocks();
+        },
+        async sample() {
+          const start = performance.now(); let previous = start; delays = [];
+          Module._set_paused(false);
+          await new Promise(resolve => requestAnimationFrame(function sample() {
+            const now = performance.now(); delays.push(now-previous); previous=now;
+            if (delays.length < 120) requestAnimationFrame(sample); else resolve();
+          }));
+          elapsed = performance.now()-start; Module._set_paused(true);
+        },
+        result() {
+          const achievedSpeed = (clocks()-before)/16777216/(elapsed/1000);
+          delays.sort((a,b) => a-b);
+          return {requestedSpeed: requested, achievedSpeed,
+            medianCallbackMs: delays[60], p95CallbackMs: delays[114],
+            maxCallbackMs: delays[119], status: wasm.get_backend_status()};
+        }
+      };
     })()`);
+    const metrics = [];
+    let profiling = false;
+    try {
+      for (const requested of [1, 4, 8]) {
+        await evaluate(`globalThis[Symbol.for('rustboy.test.gba.profile')].prepare(${requested})`);
+        if (requested === 8 && process.env.RUSTBOY_GBA_CPU_PROFILE) {
+          await call('Profiler.enable');
+          await call('Profiler.setSamplingInterval',{interval:1000});
+          await call('Profiler.start');
+          profiling = true;
+        }
+        await evaluate(`globalThis[Symbol.for('rustboy.test.gba.profile')].sample()`);
+        if (profiling) {
+          const {profile} = await call('Profiler.stop');
+          profiling = false;
+          await call('Profiler.disable');
+          await fs.writeFile(path.resolve(process.env.RUSTBOY_GBA_CPU_PROFILE),JSON.stringify(profile),{flag:'wx'});
+          console.log('Local GBA CPU profile written (8x execution interval only; exclusive create):',process.env.RUSTBOY_GBA_CPU_PROFILE);
+        }
+        metrics.push(await evaluate(`globalThis[Symbol.for('rustboy.test.gba.profile')].result()`));
+      }
+    } finally {
+      if (profiling) {
+        await call('Profiler.stop');
+        await call('Profiler.disable');
+      }
+      await evaluate(`Module._set_paused(true); Module._set_speed(1); delete globalThis[Symbol.for('rustboy.test.gba.profile')]`);
+    }
     for (const metric of metrics) {
       assert.ok(!metric.status.includes('stopped'), metric.status);
       assert.ok(metric.achievedSpeed > 0, 'GBA continues executing');
     }
     console.log('Local GBA fast-forward profile:', JSON.stringify(metrics));
-    if (process.env.RUSTBOY_GBA_CPU_PROFILE) {
-      const {profile}=await call('Profiler.stop');
-      await fs.writeFile(path.resolve(process.env.RUSTBOY_GBA_CPU_PROFILE),JSON.stringify(profile),{flag:'wx'});
-      await call('Profiler.disable');
-      console.log('Local GBA CPU profile written (exclusive create):',process.env.RUSTBOY_GBA_CPU_PROFILE);
-    }
   }
   if (process.env.RUSTBOY_SGB_FIRMWARE) {
     const firmware = path.resolve(process.env.RUSTBOY_SGB_FIRMWARE);
