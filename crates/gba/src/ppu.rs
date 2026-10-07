@@ -123,8 +123,10 @@ fn background(
         let size = cnt >> 14;
         let width = if size & 1 != 0 { 512 } else { 256 };
         let height = if size & 2 != 0 { 512 } else { 256 };
-        x = (x + (bus.io16(0x10 + bg * 4) & 511) as i32) % width;
-        y = (y + (bus.io16(0x12 + bg * 4) & 511) as i32) % height;
+        // Text dimensions are powers of two. Masking also avoids variable
+        // signed remainder operations for every pixel/layer in WASM.
+        x = (x + (bus.io16(0x10 + bg * 4) & 511) as i32) & (width - 1);
+        y = (y + (bus.io16(0x12 + bg * 4) & 511) as i32) & (height - 1);
         let block = x / 256 + (y / 256) * (width / 256);
         let map = ((cnt >> 8) & 31) as usize * 0x800
             + block as usize * 0x800
@@ -173,8 +175,10 @@ fn background(
         if mode <= 2 {
             let size = 128i32 << (cnt >> 14);
             if cnt & 0x2000 != 0 {
-                x = x.rem_euclid(size);
-                y = y.rem_euclid(size);
+                // Two's-complement masking is Euclidean modulo for these
+                // power-of-two affine dimensions, including negative origins.
+                x &= size - 1;
+                y &= size - 1;
             } else if x < 0 || y < 0 || x >= size || y >= size {
                 return None;
             }

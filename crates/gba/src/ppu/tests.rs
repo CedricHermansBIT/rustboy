@@ -55,6 +55,41 @@ const BLUE: [u8; 4] = [0, 0, 255, 255];
 const BLACK: [u8; 4] = [0, 0, 0, 255];
 
 #[test]
+fn affine_power_of_two_wrapping_matches_euclidean_oracle_at_signed_extremes() {
+    for size_code in 0..4 {
+        let size = 128i32 << size_code;
+        let mut b = bus();
+        b.set_io(0, 0x402);
+        b.set_io(12, 0x2000 | (16 << 8) | (size_code << 14));
+        for tile in 1..=3 {
+            b.vram[tile * 64..(tile + 1) * 64].fill(tile as u8);
+            pal(&mut b, tile, [31, 0x3e0, 0x7c00][tile - 1]);
+        }
+        let map_size = (size / 8 * (size / 8)) as usize;
+        for (i, byte) in b.vram[0x8000..0x8000 + map_size].iter_mut().enumerate() {
+            *byte = (i % 3 + 1) as u8;
+        }
+        let coordinates = [-524288, -size - 1, -size, -1, 0, size - 1, size, 524287];
+        for x in coordinates {
+            for y in coordinates {
+                let affine = Affine {
+                    current: [[x * 256, y * 256], [0; 2]],
+                    ..Affine::default()
+                };
+                let map_index =
+                    (y.rem_euclid(size) / 8 * (size / 8) + x.rem_euclid(size) / 8) as usize;
+                let expected = [31, 0x3e0, 0x7c00][map_index % 3];
+                assert_eq!(
+                    background(&b, affine, 2, 2, 0, 0).unwrap().color,
+                    expected,
+                    "size={size}, origin=({x},{y})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn green_swap_exchanges_only_final_green_channels_in_every_display_mode() {
     use crate::cpu::Memory;
     for mode in 0..=5 {
