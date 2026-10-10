@@ -1,5 +1,173 @@
 use super::*;
 impl Cpu {
+    #[cfg(any(test, feature = "decoded-blocks"))]
+    pub(crate) fn step_decoded_thumb<B: Memory>(
+        &mut self,
+        bus: &mut B,
+        decoded: crate::decoded::Instruction,
+    ) -> bool {
+        use crate::decoded::Operation;
+        self.instructions = self.instructions.wrapping_add(1);
+        bus.instruction_context(self.r[15], true);
+        let raw = bus.fetch16(self.r[15], self.sequential);
+        self.r[15] = self.r[15].wrapping_add(2);
+        self.sequential = true;
+        let matched = raw == decoded.raw;
+        if !matched {
+            self.execute_thumb(bus, raw);
+        } else {
+            match decoded.operation {
+                Operation::Shift {
+                    rd,
+                    rs,
+                    kind,
+                    amount,
+                } => {
+                    let (value, carry) = shift(
+                        self.r[(rs & 7) as usize],
+                        u32::from(kind),
+                        u32::from(amount),
+                        true,
+                        self.cpsr & C != 0,
+                    );
+                    self.r[(rd & 7) as usize] = value;
+                    self.nz(value);
+                    self.flag(C, carry);
+                }
+                Operation::AddSub {
+                    rd,
+                    rs,
+                    operand,
+                    immediate,
+                    subtract,
+                } => {
+                    let b = if immediate {
+                        u32::from(operand)
+                    } else {
+                        self.r[(operand & 7) as usize]
+                    };
+                    let (value, carry, overflow) = add_with_carry(
+                        self.r[(rs & 7) as usize],
+                        if subtract { !b } else { b },
+                        subtract,
+                    );
+                    self.r[(rd & 7) as usize] = value;
+                    self.arithmetic(value, carry, overflow);
+                }
+                Operation::Immediate { rd, kind, value } => {
+                    let value = u32::from(value);
+                    if kind == 0 {
+                        self.r[(rd & 7) as usize] = value;
+                        self.nz(value);
+                    } else {
+                        let (value, carry, overflow) = add_with_carry(
+                            self.r[(rd & 7) as usize],
+                            if kind == 2 { value } else { !value },
+                            kind != 2,
+                        );
+                        self.arithmetic(value, carry, overflow);
+                        if kind != 1 {
+                            self.r[(rd & 7) as usize] = value;
+                        }
+                    }
+                }
+                Operation::Alu { rd, rs, kind } => {
+                    let a = self.r[(rd & 7) as usize];
+                    let b = self.r[(rs & 7) as usize];
+                    let carry = self.cpsr & C != 0;
+                    let (value, carry, overflow) = match kind {
+                        0 | 8 => (a & b, carry, None),
+                        1 => (a ^ b, carry, None),
+                        2 | 3 | 4 | 7 => {
+                            bus.internal(1);
+                            let (value, c) = shift(
+                                a,
+                                u32::from(if kind == 7 { 3 } else { kind - 2 }),
+                                b & 255,
+                                false,
+                                carry,
+                            );
+                            (value, c, None)
+                        }
+                        5 | 6 | 9 | 10 | 11 => {
+                            let (value, c, v) = match kind {
+                                5 => add_with_carry(a, b, carry),
+                                6 => add_with_carry(a, !b, carry),
+                                9 => add_with_carry(0, !b, true),
+                                10 => add_with_carry(a, !b, true),
+                                _ => add_with_carry(a, b, false),
+                            };
+                            (value, c, Some(v))
+                        }
+                        12 => (a | b, carry, None),
+                        13 => {
+                            bus.internal(Self::multiply_cycles(b, true));
+                            (a.wrapping_mul(b), carry, None)
+                        }
+                        14 => (a & !b, carry, None),
+                        _ => (!b, carry, None),
+                    };
+                    self.nz(value);
+                    self.flag(C, carry);
+                    if let Some(v) = overflow {
+                        self.flag(V, v);
+                    }
+                    if ![8, 10, 11].contains(&kind) {
+                        self.r[(rd & 7) as usize] = value;
+                    }
+                }
+                Operation::Memory {
+                    rd,
+                    rs,
+                    offset,
+                    byte,
+                    load,
+                } => {
+                    let address = self.r[(rs & 7) as usize].wrapping_add(u32::from(offset));
+                    if load {
+                        self.r[(rd & 7) as usize] = if byte {
+                            u32::from(bus.read8(address))
+                        } else {
+                            bus.read32(address & !3, false)
+                                .rotate_right((address & 3) * 8)
+                        };
+                        bus.internal(1);
+                    } else if byte {
+                        bus.write8(address, self.r[(rd & 7) as usize] as u8);
+                    } else {
+                        bus.write32(address & !3, self.r[(rd & 7) as usize], false);
+                    }
+                }
+                Operation::Halfword {
+                    rd,
+                    rs,
+                    offset,
+                    load,
+                } => {
+                    let address = self.r[(rs & 7) as usize].wrapping_add(u32::from(offset));
+                    if load {
+                        self.r[(rd & 7) as usize] = u32::from(bus.read16(address & !1, false))
+                            .rotate_right((address & 1) * 8);
+                        bus.internal(1);
+                    } else {
+                        bus.write16(address & !1, self.r[(rd & 7) as usize] as u16, false);
+                    }
+                }
+                Operation::Conditional { condition, offset } => {
+                    if self.condition(u32::from(condition)) {
+                        self.branch(
+                            bus,
+                            self.operand(15, 0).wrapping_add(offset as i32 as u32),
+                            false,
+                        );
+                    }
+                }
+                Operation::Reference => self.execute_thumb(bus, raw),
+            }
+        }
+        self.sequential &= bus.finish_instruction();
+        matched
+    }
     pub(super) fn execute_thumb<B: Memory>(&mut self, bus: &mut B, instruction: u16) {
         let op = u32::from(instruction);
         let rd = (op & 7) as usize;

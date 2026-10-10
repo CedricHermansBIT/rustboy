@@ -191,7 +191,7 @@ impl GameBoyAdvance {
     fn snapshot(&self) -> Vec<u8> {
         debug_assert_eq!(self.bus.execution.pending, 0);
         debug_assert_eq!(self.bus.execution.credited, 0);
-        let mut data = b"RBGA\x0b\0\0\0".to_vec();
+        let mut data = b"RBGA\x0c\0\0\0".to_vec();
         put(&mut data, hash(&self.bus.rom), 8);
         put(&mut data, hash(&self.bus.bios), 8);
         for register in self
@@ -320,6 +320,7 @@ impl GameBoyAdvance {
         put(&mut data, u64::from(self.bus.previous_data_valid), 1);
         put(&mut data, u64::from(self.bus.memory_control), 4);
         put(&mut data, u64::from(self.bus.memory_locked), 1);
+        put(&mut data, u64::from(self.wait_resume_pc), 4);
         let checksum = hash(&data);
         put(&mut data, checksum, 8);
         data
@@ -333,6 +334,7 @@ impl GameBoyAdvance {
                     + 5
                     + crate::prefetch::STATE_BYTES
                     + (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES)
+                    + 4
                     + crate::apu::MAX_SAMPLES * 8
                     + 0x20000
         {
@@ -358,6 +360,7 @@ impl GameBoyAdvance {
             b"RBGA\x09\0\0\0" => 9,
             b"RBGA\x0a\0\0\0" => 10,
             b"RBGA\x0b\0\0\0" => 11,
+            b"RBGA\x0c\0\0\0" => 12,
             _ => return Err("Unsupported GBA state version".into()),
         };
         if reader.int(8)? != hash(&self.bus.rom) || reader.int(8)? != hash(&self.bus.bios) {
@@ -620,6 +623,18 @@ impl GameBoyAdvance {
             {
                 return Err("Invalid GBA internal memory control".into());
             }
+        }
+        if version >= 12 {
+            next.wait_resume_pc = reader.int(4)? as u32;
+            if next.wait_mask.is_none() && next.wait_resume_pc != 0 {
+                return Err("Invalid GBA BIOS wait state".into());
+            }
+        } else if next.wait_mask.is_some() {
+            // HLE IntrWait returned from SVC before suspending the caller.
+            // Legacy snapshots already contain that banked return address,
+            // including snapshots made inside a System-mode IRQ callback.
+            let thumb = next.cpu.spsr[3] & 0x20 != 0;
+            next.wait_resume_pc = next.cpu.banks[3][6] & if thumb { !1 } else { !3 };
         }
         if next.line >= 228
             || next.line_clocks >= 1232

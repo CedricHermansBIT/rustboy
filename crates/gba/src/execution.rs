@@ -64,10 +64,15 @@ impl GameBoyAdvance {
             .max(1);
         self.bus.execution.barrier = false;
         let mut elapsed = 0;
+        #[cfg(feature = "decoded-blocks")]
+        let mut cursor = None;
         loop {
             let address = self.cpu.r[15];
             let thumb = self.cpu.thumb();
             let exceptions = self.cpu.exceptions;
+            #[cfg(feature = "decoded-blocks")]
+            self.step_decoded_slice(&mut cursor, address, thumb);
+            #[cfg(not(feature = "decoded-blocks"))]
             self.cpu.step(&mut self.bus);
             let exception = self.cpu.exceptions != exceptions;
             if exception {

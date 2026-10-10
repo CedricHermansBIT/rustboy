@@ -7,6 +7,8 @@ mod bios;
 pub mod bus;
 pub mod cpu;
 mod eeprom;
+#[cfg(any(test, feature = "decoded-blocks"))]
+mod decoded;
 mod execution;
 pub mod machine;
 mod peripherals;

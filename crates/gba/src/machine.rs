@@ -25,7 +25,11 @@ pub struct GameBoyAdvance {
     pub(crate) line: u16,
     pub(crate) line_clocks: u16,
     pub(crate) wait_mask: Option<u16>,
+    /// The suspended IntrWait caller, not inferred from the current CPU mode.
+    pub(crate) wait_resume_pc: u32,
     pub(crate) paused: bool,
+    #[cfg(feature = "decoded-blocks")]
+    pub(crate) decoded: Box<crate::decoded::Cache>,
 }
 impl GameBoyAdvance {
     pub fn new(rom: Vec<u8>, bios: Option<Vec<u8>>) -> Result<Self, String> {
@@ -58,7 +62,10 @@ impl GameBoyAdvance {
             line: 0,
             line_clocks: 0,
             wait_mask: None,
+            wait_resume_pc: 0,
             paused: false,
+            #[cfg(feature = "decoded-blocks")]
+            decoded: Box::default(),
         })
     }
     pub fn title(&self) -> String {
@@ -84,11 +91,15 @@ impl GameBoyAdvance {
             return clocks;
         }
         if let Some(mask) = self.wait_mask {
-            if self.cpu.cpsr() & 31 != 0x12 {
+            // A cartridge IRQ handler may switch to System mode to call Thumb
+            // callbacks. It is still running: only resume the wait when the
+            // CPU actually returns to its suspended caller's instruction.
+            if self.cpu.r[15] == self.wait_resume_pc {
                 let flags = self.bus.peek16(0x03007ff8);
                 if flags & mask != 0 {
                     self.bus.write16(0x03007ff8, flags & !mask, false);
                     self.wait_mask = None;
+                    self.wait_resume_pc = 0;
                     self.bus.halted = false;
                 } else {
                     self.bus.halted = true;
@@ -146,6 +157,11 @@ impl GameBoyAdvance {
                                     self.bus.write16(0x03007ff8, flags & !mask, false);
                                 }
                                 self.wait_mask = Some(mask);
+                                self.wait_resume_pc = self.cpu.r[15];
+                            }
+                            crate::bios::Effect::Reset => {
+                                self.wait_mask = None;
+                                self.wait_resume_pc = 0;
                             }
                             _ => {}
                         }

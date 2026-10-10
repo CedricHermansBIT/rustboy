@@ -2,6 +2,7 @@
 /pkg/
 /roms/
 /testroms/
+/mooneye-gb/
 /.idea/
 /perf.data*
 /trace_*.csv

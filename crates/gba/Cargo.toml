@@ -9,6 +9,7 @@ description = "Independently authored headless Game Boy Advance hardware for Rus
 # Preserve a compositor boundary for sampling profilers; no clocks or pixels
 # are skipped. Disabled in normal builds so ordinary inlining is unaffected.
 profile-rendering = []
+decoded-blocks = []
 
 [dependencies]
 rustboy-emulator-api = { path = "../emulator-api" }
