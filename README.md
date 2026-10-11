@@ -40,9 +40,10 @@ see [the cartridge compatibility notes](CARTRIDGE_COMPATIBILITY.md).
 ## Building
 
 Requirements: Rust, the WASM target, Python 3.11+, and the matching
-`wasm-bindgen` CLI, plus [Binaryen](https://github.com/WebAssembly/binaryen/releases)
-with `wasm-opt` on PATH. CI uses Rust 1.98.1 and Node.js 24 for JavaScript checks.
-On Ubuntu/Debian, install Binaryen with `sudo apt-get install binaryen`.
+`wasm-bindgen` CLI, plus [Binaryen 117 or newer](https://github.com/WebAssembly/binaryen/releases)
+with `wasm-opt` on PATH. CI uses Rust 1.98.1 and Node.js 24 for JavaScript checks,
+and pins Binaryen 117. Download a compatible release and add its `bin` directory
+to PATH; Ubuntu 24.04's Binaryen 108 package breaks this bundle's reference tables.
 
 ```sh
 rustup target add wasm32-unknown-unknown

@@ -3,12 +3,28 @@
 import argparse
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
+MIN_BINARYEN_VERSION = 117
+
+
+def check_wasm_opt_version(executable):
+    output = subprocess.check_output([executable, "--version"], text=True).strip()
+    match = re.match(r"wasm-opt version (\d+)(?:\s|$)", output)
+    if not match:
+        raise ValueError(f"Cannot identify wasm-opt version: {output!r}")
+    version = int(match[1])
+    if version < MIN_BINARYEN_VERSION:
+        # Binaryen 108 (Ubuntu 24.04's package) misexports the externref table
+        # in this multi-table bundle, causing WASM startup to fail in Table.set.
+        raise ValueError(f"wasm-opt {MIN_BINARYEN_VERSION} or newer is required; found {version}. "
+                         "Install Binaryen from https://github.com/WebAssembly/binaryen/releases")
+    return version
 
 
 def main():
@@ -27,6 +43,10 @@ def main():
     wasm_opt = shutil.which("wasm-opt")
     if wasm_opt is None:
         parser.error("wasm-opt is not installed; install Binaryen and add its bin directory to PATH")
+    try:
+        check_wasm_opt_version(wasm_opt)
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        parser.error(str(error))
     manifest = tomllib.loads((ROOT / "Cargo.toml").read_text())
     optimization = manifest["package"]["metadata"]["wasm-pack"]["profile"]["release"]["wasm-opt"]
     target = Path(args.target_dir).resolve()

@@ -37,6 +37,7 @@ def main():
     subprocess.run(cargo + ["-p", "rustboy-gba", "--examples"], cwd=ROOT, check=True)
     for test in ["tests/save_states.mjs", "tests/audio_queue.cjs", "tests/audio_worklet.cjs", "tests/rom_loader.mjs", "tests/library_rom.mjs", "tests/cartridge_inventory.mjs", "tests/controller_input.mjs", "tests/gba_render_profile_test.mjs"]:
         subprocess.run([node, test], cwd=ROOT, check=True)
+    subprocess.run(["python3", "tests/build_web_test.py"], cwd=ROOT, check=True)
     subprocess.run(["python3", "tests/prepare_pages_test.py"], cwd=ROOT, check=True)
     subprocess.run(["python3", "tests/generate_romlist_test.py"], cwd=ROOT, check=True)
     if args.roms:

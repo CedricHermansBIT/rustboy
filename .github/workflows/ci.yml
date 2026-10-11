@@ -22,8 +22,12 @@ jobs:
           package-manager-cache: false
       - name: Install matching Rust and WASM tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y binaryen
+          curl --fail --location --retry 3 \
+            https://github.com/WebAssembly/binaryen/releases/download/version_117/binaryen-version_117-x86_64-linux.tar.gz \
+            --output "$RUNNER_TEMP/binaryen.tar.gz"
+          echo "3dc677006555b355ea2da5e82602065a161d5e83eaefd3f759afa00b96e83212  $RUNNER_TEMP/binaryen.tar.gz" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/binaryen.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/binaryen-version_117/bin" >> "$GITHUB_PATH"
           rustup toolchain install 1.98.1 --profile minimal --target wasm32-unknown-unknown
           cargo install wasm-bindgen-cli --locked --version 0.2.118
       - name: Native and JavaScript regressions

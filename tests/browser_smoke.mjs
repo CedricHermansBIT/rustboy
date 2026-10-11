@@ -83,9 +83,13 @@ try {
   let nextId = 0;
   const pending = new Map();
   const exceptions = [];
+  const consoleErrors = [];
   socket.onmessage = event => {
     const message = JSON.parse(event.data);
     if (message.method === 'Runtime.exceptionThrown') exceptions.push(message.params.exceptionDetails);
+    if (message.method === 'Runtime.consoleAPICalled' && message.params.type === 'error') {
+      consoleErrors.push(message.params.args.map(arg => arg.description ?? String(arg.value)).join(' '));
+    }
     if (message.id && pending.has(message.id)) {
       const {resolve, reject, timeout} = pending.get(message.id);
       clearTimeout(timeout); pending.delete(message.id);
@@ -119,7 +123,9 @@ try {
       if (await evaluate(expression)) return;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    throw new Error(`Browser assertion timed out: ${expression}`);
+    const diagnostics = [...consoleErrors, ...exceptions.map(error =>
+      error.exception?.description ?? error.text)];
+    throw new Error(`Browser assertion timed out: ${expression}${diagnostics.length ? '\nBrowser errors:\n' + diagnostics.join('\n') : ''}`);
   }
   async function checkActualSpeed(system) {
     await evaluate("openSettings(); document.querySelector('#show-actual-speed').click()");
@@ -1083,6 +1089,9 @@ try {
   if (process.env.RUSTBOY_HOMEBREW) {
     const entries = JSON.parse(await fs.readFile(path.join(site, 'homebrew/romlist.json'), 'utf8'));
     assert.equal(entries.length, 3);
+    // These pinned cartridges exercise all automatic hardware choices. Tobu
+    // supports both CGB and SGB; Auto deliberately prefers its SGB enhancements.
+    const homebrewHardware = {'2048':'dmg','tobu-tobu-girl-deluxe':'sgb','ucity':'cgb'};
     for (const entry of entries) {
       await evaluate("openPicker(); searchQuery = ''; document.querySelector('#rom-search').value = ''; document.querySelector('[data-tab=homebrew]').click(); filterRoms()");
       await until("document.querySelectorAll('#rom-list li .rom-name').length === 3");
@@ -1095,7 +1104,10 @@ try {
       await new Promise(resolve => setTimeout(resolve, entry.id === 'tobu-tobu-girl-deluxe' ? 14000 : 3000));
       const colors = await evaluate("new Set(new Uint32Array(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,160,144).data.buffer)).size");
       assert.ok(colors > 1, `${entry.title} renders a nonblank game screen`);
-      assert.equal(await evaluate("(async () => (await import('./out/rustboy.js')).get_is_cgb())()"), entry.platform !== 'GB');
+      const expectedHardware = homebrewHardware[entry.id];
+      assert.ok(expectedHardware, `${entry.title}: pinned hardware expectation exists`);
+      assert.equal(await evaluate('Module._get_is_cgb()'), expectedHardware === 'cgb', `${entry.title}: automatic CGB selection`);
+      assert.equal(await evaluate("Module._get_sgb_status().startsWith('SGB HLE: functions enabled')"), expectedHardware === 'sgb', `${entry.title}: automatic SGB selection`);
       for (const [key, code] of [['Enter', 'Enter'], ['a', 'KeyA'], ['ArrowRight', 'ArrowRight']]) {
         await call('Input.dispatchKeyEvent', {type: 'keyDown', key, code});
         await new Promise(resolve => setTimeout(resolve, 120));
