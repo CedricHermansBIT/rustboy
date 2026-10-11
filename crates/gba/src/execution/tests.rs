@@ -22,6 +22,106 @@ fn reference_run(machine: &mut GameBoyAdvance, budget: u64) -> u64 {
     machine.clocks.wrapping_sub(start)
 }
 
+#[test]
+fn slices_exit_on_arm_thumb_interworking_before_the_next_opcode() {
+    let mut m = program(&[0xe12fff11, 0xe2844001, 0xeafffffc], b"");
+    m.bus.rom[16..20].copy_from_slice(&[0x01, 0x34, 0x10, 0x47]); // ADD r4,1; BX r2
+    let mut m = GameBoyAdvance::new(m.bus.rom, None).unwrap();
+    m.cpu.r[1] = 0x08000011;
+    m.cpu.r[2] = 0x08000004;
+    replay_budgets(&mut m, &[1, 7, 19, 101, 1007, FRAME_CYCLES]);
+    assert!(m.cpu.r[4] > 100);
+}
+
+#[test]
+fn deferred_instruction_counts_match_reference_across_wrap_and_idle_proofs() {
+    for thumb in [false, true] {
+        let mut m = program(&[0xe1a00000, 0xe1a00000, 0xeafffffc], b"");
+        if thumb {
+            m.bus.rom[..6].copy_from_slice(&[0xc0, 0x46, 0xc0, 0x46, 0xfc, 0xe7]);
+            m = GameBoyAdvance::new(m.bus.rom, None).unwrap();
+            m.cpu.set_cpsr(0x3f).unwrap();
+        }
+        m.cpu.instructions = u64::MAX - 2;
+        replay_budgets(&mut m, &[1, 17, 1006, 1232, FRAME_CYCLES]);
+        assert!(m.cpu.instructions < u64::MAX / 2);
+    }
+}
+
+#[cfg(feature = "idle-loops")]
+#[test]
+fn idle_loops_replay_complete_state_across_events_modes_memory_and_prefetch() {
+    for thumb in [false, true] {
+        for address in [0x08000000, 0x03000000, 0x02000000] {
+            for wait in [0, 0x4000, 0x4317] {
+                let mut m = program(&[0xe5910000, 0xe3500000, 0x0afffffc], b"");
+                let code: Vec<u8> = if thumb {
+                    [0x6808u16, 0x2800, 0xd0fc]
+                        .into_iter()
+                        .flat_map(u16::to_le_bytes)
+                        .collect()
+                } else {
+                    [0xe5910000u32, 0xe3500000, 0x0afffffc]
+                        .into_iter()
+                        .flat_map(u32::to_le_bytes)
+                        .collect()
+                };
+                if address >> 24 == 8 {
+                    m.bus.rom[..code.len()].copy_from_slice(&code);
+                    m = GameBoyAdvance::new(m.bus.rom, None).unwrap();
+                } else {
+                    for (n, byte) in code.into_iter().enumerate() {
+                        m.bus.write8(address + n as u32, byte);
+                    }
+                }
+                m.cpu.set_cpsr(if thumb { 0x3f } else { 0x1f }).unwrap();
+                m.cpu.r[15] = address;
+                m.cpu.r[1] = 0x03000100;
+                m.bus.write16(0x04000204, wait, false);
+                // Audio, video and timer events must all retain exact state.
+                m.bus.write16(0x04000100, 0xff01, false);
+                m.bus.write16(0x04000102, 0x80, false);
+                replay_budgets(&mut m, &[1, 7, 19, 127, 777, 5000, FRAME_CYCLES * 2 + 1]);
+                assert!(
+                    m.accelerated_instructions() > 0,
+                    "{address:08x} thumb={thumb} wait={wait:04x}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(feature = "idle-loops")]
+#[test]
+fn idle_proofs_cannot_hide_writes_peripheral_reads_dma_or_host_ram_changes() {
+    for (opcode, address) in [(0xe5810000, 0x03000100), (0xe5910000, 0x04000100)] {
+        let mut m = program(&[opcode, 0xeafffffd], b"");
+        m.cpu.r[1] = address;
+        m.bus.write16(0x04000102, 0x80, false);
+        replay_budgets(&mut m, &[1000, 3000]);
+        assert_eq!(m.accelerated_instructions(), 0);
+    }
+    let mut m = program(&[0xe5910000, 0xe3500000, 0x0afffffc, 0xeafffffe], b"");
+    m.cpu.r[1] = 0x03000100;
+    m.bus.write32(0x02000000, 1, false);
+    m.bus.write32(0x040000d4, 0x02000000, false);
+    m.bus.write32(0x040000d8, 0x03000100, false);
+    m.bus.write32(0x040000dc, 0xa4000001, false);
+    replay_budgets(&mut m, &[500, 2000]);
+    assert!(m.accelerated_instructions() > 0);
+    assert_eq!(m.cpu.r[0], 1);
+    assert_eq!(m.cpu.r[15], 0x0800000c);
+
+    let mut m = program(&[0xe5910000, 0xe3500000, 0x0afffffc, 0xeafffffe], b"");
+    m.cpu.r[1] = 0x03000100;
+    m.run(4000);
+    assert!(m.accelerated_instructions() > 0);
+    // The public RAM API can bypass bus write hooks between host calls.
+    m.bus.iwram[0x100] = 1;
+    replay_budgets(&mut m, &[1000]);
+    assert_eq!(m.cpu.r[0], 1);
+}
+
 fn assert_state(a: &GameBoyAdvance, b: &GameBoyAdvance, context: &str) {
     let (a, b) = (a.export_state(), b.export_state());
     assert_eq!(a.len(), b.len(), "{context}: snapshot size");
@@ -304,9 +404,39 @@ fn slice_irq_arrival_unmask_and_bios_wait_replay_reference_dispatch() {
             m.cpu.set_cpsr(m.cpu.cpsr() | 0x80).unwrap();
             m.cpu.r[0] = 0x1f;
             m.bus.request_irq(8);
+            assert!(
+                m.can_run_cpu_slice(),
+                "CPSR.I permits batching while IRQ is pending"
+            );
         }
         replay(m);
     }
+}
+
+#[test]
+fn masked_pending_irq_slice_ends_at_the_unmasking_instruction() {
+    let mut m = program(&[0xe2888001, 0xe2888001, 0xe121f000, 0xe2888001], b"");
+    m.cpu.set_cpsr(0x9f).unwrap();
+    m.cpu.r[0] = 0x1f;
+    m.bus.write16(0x04000200, 8, false);
+    m.bus.write16(0x04000208, 1, false);
+    m.bus.request_irq(8);
+    m.bus.take_cycles();
+    assert!(m.can_run_cpu_slice());
+    m.run_cpu_slice(500);
+    assert_eq!(
+        m.cpu.r[8], 2,
+        "no instruction may execute after MSR unmasks the IRQ"
+    );
+    assert_eq!(m.cpu.r[15], 0x0800000c);
+    assert!(!m.can_run_cpu_slice());
+    let before = m.cpu.instructions;
+    m.step();
+    assert_eq!(
+        m.cpu.instructions, before,
+        "the next boundary dispatches the IRQ first"
+    );
+    assert_eq!(m.cpu.exceptions, 1);
 }
 
 #[test]

@@ -20,6 +20,8 @@ pub trait Memory {
         self.read32(address, sequential)
     }
     fn refill_complete(&mut self, _last_address: u32) {}
+    fn flush_pipeline(&mut self) {}
+    fn latch_pipeline(&mut self, _target: u32, _thumb: bool) {}
     /// Whether the bus permits the next opcode access to remain sequential.
     /// Called only at instruction boundaries; a branch refill may reset it.
     fn finish_instruction(&mut self) -> bool {
@@ -34,6 +36,7 @@ pub trait Memory {
     fn internal(&mut self, clocks: u32);
 }
 
+#[cfg_attr(feature = "jit", repr(C))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cpu {
     pub r: [u32; 16],
@@ -111,6 +114,15 @@ pub fn shift(value: u32, kind: u32, amount: u32, immediate: bool, carry: bool) -
     }
 }
 impl Cpu {
+    #[cfg(feature = "idle-loops")]
+    pub(crate) fn same_execution_state(&self, other: &Self) -> bool {
+        self.r == other.r
+            && self.cpsr == other.cpsr
+            && self.sequential == other.sequential
+            && self.banks == other.banks
+            && self.spsr == other.spsr
+            && self.exceptions == other.exceptions
+    }
     pub(crate) fn return_swi<B: Memory>(&mut self, bus: &mut B) {
         let pc = self.r[14];
         self.write_result(bus, 15, pc, true);
@@ -177,11 +189,12 @@ impl Cpu {
         self.flag(C, carry);
         self.flag(V, overflow);
     }
-    fn branch<B: Memory>(&mut self, bus: &mut B, target: u32, exchange: bool) {
+    pub(crate) fn branch<B: Memory>(&mut self, bus: &mut B, target: u32, exchange: bool) {
         if exchange {
             self.flag(T, target & 1 != 0);
         }
         self.r[15] = target & if self.thumb() { !1 } else { !3 };
+        bus.flush_pipeline();
         // Incremental refill N+S, in addition to this instruction's fetch.
         if self.thumb() {
             bus.fetch16(self.r[15], false);
@@ -192,9 +205,10 @@ impl Cpu {
             bus.fetch32(self.r[15].wrapping_add(4), true);
             bus.refill_complete(self.r[15].wrapping_add(4));
         }
+        bus.latch_pipeline(self.r[15], self.thumb());
         self.sequential = true;
     }
-    fn exception<B: Memory>(&mut self, bus: &mut B, mode: u32, vector: u32, lr: u32) {
+    pub(crate) fn exception<B: Memory>(&mut self, bus: &mut B, mode: u32, vector: u32, lr: u32) {
         let old = self.cpsr;
         self.set_cpsr((old & !(31 | T)) | mode | I).unwrap();
         self.spsr[bank(mode).unwrap()] = old;
@@ -209,13 +223,32 @@ impl Cpu {
         self.exception(bus, 0x12, 0x18, self.r[15].wrapping_add(4));
         true
     }
-    fn undefined<B: Memory>(&mut self, bus: &mut B) {
+    pub(crate) fn undefined<B: Memory>(&mut self, bus: &mut B) {
         self.exception(bus, 0x1b, 4, self.r[15]);
     }
     pub fn step<B: Memory>(&mut self, bus: &mut B) {
-        self.instructions = self.instructions.wrapping_add(1);
-        bus.instruction_context(self.r[15], self.thumb());
         if self.thumb() {
+            self.step_mode::<B, true>(bus);
+        } else {
+            self.step_mode::<B, false>(bus);
+        }
+    }
+    /// A slice selects its instruction set once, then exits on a mode change.
+    pub(crate) fn step_mode<B: Memory, const THUMB: bool>(&mut self, bus: &mut B) {
+        self.step_mode_inner::<B, THUMB, true>(bus);
+    }
+    /// A hardware-bounded slice accumulates this diagnostic counter locally.
+    /// It publishes the count before idle proofs, JIT calls and returning.
+    #[cfg(not(feature = "decoded-blocks"))]
+    pub(crate) fn step_mode_deferred_count<B: Memory, const THUMB: bool>(&mut self, bus: &mut B) {
+        self.step_mode_inner::<B, THUMB, false>(bus);
+    }
+    fn step_mode_inner<B: Memory, const THUMB: bool, const COUNT: bool>(&mut self, bus: &mut B) {
+        if COUNT {
+            self.instructions = self.instructions.wrapping_add(1);
+        }
+        bus.instruction_context(self.r[15], THUMB);
+        if THUMB {
             let op = bus.fetch16(self.r[15], self.sequential);
             self.r[15] = self.r[15].wrapping_add(2);
             self.sequential = true;
@@ -253,7 +286,13 @@ impl Cpu {
             )
         }
     }
-    fn write_result<B: Memory>(&mut self, bus: &mut B, rd: usize, value: u32, restore: bool) {
+    pub(crate) fn write_result<B: Memory>(
+        &mut self,
+        bus: &mut B,
+        rd: usize,
+        value: u32,
+        restore: bool,
+    ) {
         if rd == 15 {
             let mode = bank(self.cpsr).unwrap();
             if restore && mode != 0 && self.set_cpsr(self.spsr[mode]).is_err() {
@@ -265,7 +304,7 @@ impl Cpu {
             self.r[rd] = value;
         }
     }
-    fn user_read(&self, reg: usize) -> u32 {
+    pub(crate) fn user_read(&self, reg: usize) -> u32 {
         let mode = bank(self.cpsr).unwrap();
         if ((13..15).contains(&reg) && mode != 0) || ((8..13).contains(&reg) && mode == 1) {
             self.banks[0][reg - 8]
@@ -273,7 +312,7 @@ impl Cpu {
             self.operand(reg, if reg == 15 { 4 } else { 0 })
         }
     }
-    fn user_write(&mut self, reg: usize, value: u32) {
+    pub(crate) fn user_write(&mut self, reg: usize, value: u32) {
         let mode = bank(self.cpsr).unwrap();
         if ((13..15).contains(&reg) && mode != 0) || ((8..13).contains(&reg) && mode == 1) {
             self.banks[0][reg - 8] = value;

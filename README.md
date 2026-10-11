@@ -40,13 +40,20 @@ see [the cartridge compatibility notes](CARTRIDGE_COMPATIBILITY.md).
 ## Building
 
 Requirements: Rust, the WASM target, Python 3.11+, and the matching
-`wasm-bindgen` CLI. CI uses Rust 1.98.1 and Node.js 24 for JavaScript checks.
+`wasm-bindgen` CLI, plus [Binaryen](https://github.com/WebAssembly/binaryen/releases)
+with `wasm-opt` on PATH. CI uses Rust 1.98.1 and Node.js 24 for JavaScript checks.
+On Ubuntu/Debian, install Binaryen with `sudo apt-get install binaryen`.
 
 ```sh
 rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --locked --version 0.2.118
 python3 scripts/build_web.py
 ```
+
+The script builds in release mode, generates the web bindings, then runs
+`wasm-opt` using the release flags in `Cargo.toml` (`-O3` and mutable globals).
+CI and Pages deployment use the same pipeline. Missing tools or optimizer
+failures stop the build; the optimized WASM replaces the output after success.
 
 The build includes RustBoy-branded replacement boot ROMs, with startup
 animations and chimes. **Users do not need boot-ROM files to play.**
@@ -80,6 +87,14 @@ three licensed homebrew games into its deployment artifact (see below).
 Pages uses a homebrew-only picker and automatic hardware detection; the local
 GB/GBC/GBA/test categories and hardware overrides are not shown there. ROM uploads
 remain available. Locally served checkouts retain the full picker.
+
+The **Saves** panel shows cartridge saves separately from exact-position save states.
+Cartridge saves live in localStorage; state slots and the 30-second autosave live
+in IndexedDB. GBA cartridge keys are based on the exact ROM bytes, so different
+revisions have separate saves. Compatible older replacement-BIOS state IDs are
+searched automatically. A rejected autosave is preserved until you explicitly
+save over it or delete it. Loading another game captures the current autosave
+before switching.
 
 On HTTPS/localhost, audio playback uses a dedicated AudioWorklet with a bounded
 stereo buffer and short fades on underrun/recovery, so UI work does not run the

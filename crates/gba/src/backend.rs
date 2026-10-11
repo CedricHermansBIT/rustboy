@@ -54,6 +54,19 @@ impl Emulator for GameBoyAdvance {
             reason: StopReason::Stepped,
         }
     }
+    fn begin_run_batch(&mut self) {
+        #[cfg(all(feature = "jit", target_arch = "wasm32"))]
+        {
+            self.jit.new_epoch();
+            self.jit.batch_active = true;
+        }
+    }
+    fn end_run_batch(&mut self) {
+        #[cfg(all(feature = "jit", target_arch = "wasm32"))]
+        {
+            self.jit.batch_active = false;
+        }
+    }
     fn paused(&self) -> bool {
         self.paused || self.fault.is_some() || self.bus.memory_locked
     }
@@ -104,6 +117,9 @@ impl Emulator for GameBoyAdvance {
     fn video_frame(&mut self) -> VideoFrame<'_> {
         GameBoyAdvance::video_frame(self)
     }
+    fn set_video_frame_stride(&mut self, stride: u32) {
+        GameBoyAdvance::set_video_frame_stride(self, stride);
+    }
     fn drain_audio(&mut self) -> AudioChunk {
         AudioChunk {
             sample_rate: 32768,
@@ -126,6 +142,22 @@ impl Emulator for GameBoyAdvance {
             key: format!("rustboy_save_gba_{:016x}", self.bus.backup.rom_hash),
             dirty: self.bus.backup.dirty,
         })
+    }
+    fn compatible_state_ids(&self) -> Vec<String> {
+        let mut ids = vec![self.state_id()];
+        if self.bus.replacement_bios {
+            let mut legacy = self.bus.bios.clone();
+            legacy[crate::bios::sound::MAIN as usize..].fill(0);
+            let id = format!(
+                "gba-{:016x}-{:016x}",
+                self.bus.backup.rom_hash,
+                hash(&legacy)
+            );
+            if id != ids[0] {
+                ids.push(id);
+            }
+        }
+        ids
     }
     fn export_save(&self) -> Vec<u8> {
         self.bus.backup.data.clone()
@@ -191,7 +223,7 @@ impl GameBoyAdvance {
     fn snapshot(&self) -> Vec<u8> {
         debug_assert_eq!(self.bus.execution.pending, 0);
         debug_assert_eq!(self.bus.execution.credited, 0);
-        let mut data = b"RBGA\x0c\0\0\0".to_vec();
+        let mut data = b"RBGA\x0e\0\0\0".to_vec();
         put(&mut data, hash(&self.bus.rom), 8);
         put(&mut data, hash(&self.bus.bios), 8);
         for register in self
@@ -321,6 +353,12 @@ impl GameBoyAdvance {
         put(&mut data, u64::from(self.bus.memory_control), 4);
         put(&mut data, u64::from(self.bus.memory_locked), 1);
         put(&mut data, u64::from(self.wait_resume_pc), 4);
+        put(&mut data, u64::from(self.bus.video_pipeline_address), 4);
+        for word in self.bus.video_pipeline_words {
+            put(&mut data, u64::from(word), 4);
+        }
+        put(&mut data, u64::from(self.bus.video_pipeline_thumb), 1);
+        put(&mut data, u64::from(self.bus.dma_latch), 4);
         let checksum = hash(&data);
         put(&mut data, checksum, 8);
         data
@@ -335,6 +373,8 @@ impl GameBoyAdvance {
                     + crate::prefetch::STATE_BYTES
                     + (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES)
                     + 4
+                    + crate::bus::VIDEO_PIPELINE_STATE_BYTES
+                    + crate::bus::DMA_LATCH_STATE_BYTES
                     + crate::apu::MAX_SAMPLES * 8
                     + 0x20000
         {
@@ -361,9 +401,20 @@ impl GameBoyAdvance {
             b"RBGA\x0a\0\0\0" => 10,
             b"RBGA\x0b\0\0\0" => 11,
             b"RBGA\x0c\0\0\0" => 12,
+            b"RBGA\x0d\0\0\0" => 13,
+            b"RBGA\x0e\0\0\0" => 14,
             _ => return Err("Unsupported GBA state version".into()),
         };
-        if reader.int(8)? != hash(&self.bus.rom) || reader.int(8)? != hash(&self.bus.bios) {
+        let rom_hash = reader.int(8)?;
+        let bios_hash = reader.int(8)?;
+        // Old HLE snapshots used the same IRQ firmware without sound thunks.
+        // Their CPU/RAM layout is unchanged; supplied firmware remains exact.
+        let legacy_hle = self.bus.replacement_bios && version <= 14 && {
+            let mut legacy = self.bus.bios.clone();
+            legacy[crate::bios::sound::MAIN as usize..].fill(0);
+            bios_hash == hash(&legacy)
+        };
+        if rom_hash != hash(&self.bus.rom) || (bios_hash != hash(&self.bus.bios) && !legacy_hle) {
             return Err("GBA state belongs to another ROM/firmware".into());
         }
         let bios = if self.bus.replacement_bios {
@@ -636,6 +687,27 @@ impl GameBoyAdvance {
             let thumb = next.cpu.spsr[3] & 0x20 != 0;
             next.wait_resume_pc = next.cpu.banks[3][6] & if thumb { !1 } else { !3 };
         }
+        if version >= 13 {
+            let address = reader.int(4)? as u32;
+            let words = [reader.int(4)? as u32, reader.int(4)? as u32];
+            let thumb = reader.bool()?;
+            if (address == 0 && (words != [0; 2] || thumb))
+                || (address != 0
+                    && (address >> 24 != 6
+                        || address & if thumb { 1 } else { 3 } != 0
+                        || thumb != next.cpu.thumb()
+                        || address != next.cpu.r[15]
+                        || (thumb && words.iter().any(|word| *word > 0xffff))))
+            {
+                return Err("Invalid GBA video instruction pipeline".into());
+            }
+            next.bus.video_pipeline_address = address;
+            next.bus.video_pipeline_words = words;
+            next.bus.video_pipeline_thumb = thumb;
+        }
+        if version >= 14 {
+            next.bus.dma_latch = reader.int(4)? as u32;
+        }
         if next.line >= 228
             || next.line_clocks >= 1232
             || next.bus.clocks > 1_000_000_000
@@ -647,12 +719,131 @@ impl GameBoyAdvance {
         next.bus.refresh_timer_schedule();
         next.bus.refresh_dma_schedule();
         next.bus.refresh_gamepak_timing();
+        #[cfg(all(feature = "jit", target_arch = "wasm32"))]
+        {
+            next.jit = std::mem::take(&mut self.jit);
+        }
         *self = next;
         Ok(())
     }
 }
 #[cfg(test)]
 mod tests {
+    const LATEST_SUFFIX_BYTES: usize =
+        crate::bus::VIDEO_PIPELINE_STATE_BYTES + crate::bus::DMA_LATCH_STATE_BYTES;
+    #[test]
+    fn dma_latch_replays_between_channels_and_migrates_version_thirteen() {
+        use crate::cpu::Memory;
+        let mut m = machine();
+        m.bus.write16(0x02000000, 31, false);
+        for (n, source, destination, control) in [
+            (1, 0x02000000, 0x04000016, 0xa240u32),
+            (2, 0x04000016, 0x04000012, 0xa340u32),
+        ] {
+            let base = 0x040000b0 + n * 12;
+            m.bus.write32(base, source, false);
+            m.bus.write32(base + 4, destination, false);
+            m.bus.write32(base + 8, control << 16 | 1, false);
+        }
+        m.bus.take_cycles();
+        m.bus.trigger_dma(2);
+        m.step();
+        assert_eq!(m.bus.dma_latch, 31 * 0x10001);
+        let saved = m.export_state();
+        m.step();
+        assert_eq!(m.bus.io16(0x12), 31);
+        let completed = m.export_state();
+        m.import_state(&saved).unwrap();
+        m.step();
+        assert_eq!(m.export_state(), completed);
+        let mut legacy = saved[..saved.len() - 8 - crate::bus::DMA_LATCH_STATE_BYTES].to_vec();
+        legacy[4] = 13;
+        let checksum = hash(&legacy);
+        put(&mut legacy, checksum, 8);
+        m.import_state(&legacy).unwrap();
+        assert_eq!(
+            m.bus.dma_latch, 0,
+            "older snapshots cannot recover missing DMA history"
+        );
+        assert_eq!(m.bus.io16(0x16), 31);
+    }
+    #[test]
+    fn old_replacement_firmware_identity_migrates_without_accepting_other_bios() {
+        let mut m = machine();
+        let current = m.export_state();
+        let mut legacy = current.clone();
+        let mut firmware = m.bus.bios.clone();
+        firmware[crate::bios::sound::MAIN as usize..].fill(0);
+        let ids = m.compatible_state_ids();
+        assert_eq!(ids[0], m.state_id());
+        assert_eq!(
+            ids[1],
+            format!(
+                "gba-{:016x}-{:016x}",
+                m.bus.backup.rom_hash,
+                hash(&firmware)
+            )
+        );
+        assert_eq!(ids.len(), 2);
+        legacy[16..24].copy_from_slice(&hash(&firmware).to_le_bytes());
+        let end = legacy.len() - 8;
+        let sum = hash(&legacy[..end]);
+        legacy[end..].copy_from_slice(&sum.to_le_bytes());
+        m.import_state(&legacy).unwrap();
+        assert_eq!(m.export_state(), current);
+        legacy[16] ^= 1;
+        let sum = hash(&legacy[..end]);
+        legacy[end..].copy_from_slice(&sum.to_le_bytes());
+        assert!(m.import_state(&legacy).is_err());
+        assert_eq!(m.export_state(), current);
+        let mut supplied =
+            GameBoyAdvance::new(m.bus.rom.clone(), Some(m.bus.bios.clone())).unwrap();
+        assert_eq!(supplied.compatible_state_ids(), vec![supplied.state_id()]);
+        legacy[16..24].copy_from_slice(&hash(&firmware).to_le_bytes());
+        let sum = hash(&legacy[..end]);
+        legacy[end..].copy_from_slice(&sum.to_le_bytes());
+        assert!(supplied.import_state(&legacy).is_err());
+        let mut other_rom = m.bus.rom.clone();
+        other_rom[0] ^= 1;
+        let mut other = GameBoyAdvance::new(other_rom, None).unwrap();
+        assert!(!other.compatible_state_ids().contains(&ids[1]));
+        assert!(other.import_state(&legacy).is_err());
+    }
+    #[test]
+    fn video_pipeline_rejects_invalid_state_and_migrates_version_twelve() {
+        use crate::cpu::Memory;
+        let mut m = machine();
+        let saved = m.export_state();
+        let mut legacy = saved[..saved.len() - 8 - LATEST_SUFFIX_BYTES].to_vec();
+        legacy[4] = 12;
+        let checksum = hash(&legacy);
+        put(&mut legacy, checksum, 8);
+        m.import_state(&legacy).unwrap();
+        assert_eq!(m.export_state(), saved);
+        m.bus.write32(0x06000000, 0xe3a00001, false);
+        m.bus.write32(0x06000004, 0xe3a01002, false);
+        m.bus.write32(0x06000008, 0xe3a02003, false);
+        m.bus.take_cycles();
+        m.cpu.r[15] = 0x06000000;
+        m.step();
+        let valid = m.export_state();
+        for (field, bytes) in [
+            (0, 0x06000005u32.to_le_bytes().to_vec()),
+            (0, 0x03000004u32.to_le_bytes().to_vec()),
+            (0, 0u32.to_le_bytes().to_vec()),
+            (12, vec![1]),
+            (12, vec![2]),
+        ] {
+            let mut invalid = valid.clone();
+            let at = invalid.len() - 8 - LATEST_SUFFIX_BYTES + field;
+            invalid[at..at + bytes.len()].copy_from_slice(&bytes);
+            let at = invalid.len() - 8;
+            let checksum = hash(&invalid[..at]);
+            invalid[at..].copy_from_slice(&checksum.to_le_bytes());
+            assert!(m.import_state(&invalid).is_err());
+            assert_eq!(m.export_state(), valid);
+        }
+    }
     use super::*;
     fn machine() -> GameBoyAdvance {
         let mut rom = vec![0; 192];
@@ -677,7 +868,7 @@ mod tests {
         assert_eq!(m.export_state(), expected);
         for (lane, value) in [(0, 0x10), (4, 2), (4, 1)] {
             let mut invalid = saved.clone();
-            let at = invalid.len() - 8 - crate::bus::MEMORY_STATE_BYTES;
+            let at = invalid.len() - 8 - crate::bus::MEMORY_STATE_BYTES - 4 - LATEST_SUFFIX_BYTES;
             invalid[at + lane] = value;
             let checksum_at = invalid.len() - 8;
             let checksum = hash(&invalid[..checksum_at]);
@@ -685,7 +876,9 @@ mod tests {
             assert!(m.import_state(&invalid).is_err());
             assert_eq!(m.export_state(), expected);
         }
-        let mut old = saved[..saved.len() - 8 - crate::bus::MEMORY_STATE_BYTES].to_vec();
+        let mut old = saved
+            [..saved.len() - 8 - crate::bus::MEMORY_STATE_BYTES - 4 - LATEST_SUFFIX_BYTES]
+            .to_vec();
         old[4] = 10;
         let checksum = hash(&old);
         put(&mut old, checksum, 8);
@@ -789,15 +982,19 @@ mod tests {
         m.step();
         assert_eq!(m.export_state(), expected);
         let mut invalid = expected.clone();
-        let at = invalid.len() - 9 - crate::bus::MEMORY_STATE_BYTES;
+        let at = invalid.len() - 9 - crate::bus::MEMORY_STATE_BYTES - 4 - LATEST_SUFFIX_BYTES;
         invalid[at] = 2;
         let checksum_at = invalid.len() - 8;
         let checksum = hash(&invalid[..checksum_at]);
         invalid[checksum_at..].copy_from_slice(&checksum.to_le_bytes());
         assert!(m.import_state(&invalid).is_err());
         assert_eq!(m.export_state(), expected);
-        let mut old = saved
-            [..saved.len() - 8 - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES)]
+        let mut old = saved[..saved.len()
+            - 8
+            - (crate::bus::OPEN_STATE_BYTES
+                + crate::bus::MEMORY_STATE_BYTES
+                + 4
+                + LATEST_SUFFIX_BYTES)]
             .to_vec();
         old[4] = 9;
         let checksum = hash(&old);
@@ -832,7 +1029,10 @@ mod tests {
                 let at = invalid.len()
                     - 8
                     - crate::prefetch::STATE_BYTES
-                    - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES);
+                    - (crate::bus::OPEN_STATE_BYTES
+                        + crate::bus::MEMORY_STATE_BYTES
+                        + 4
+                        + LATEST_SUFFIX_BYTES);
                 invalid[at + offset] = 255;
                 let checksum_at = invalid.len() - 8;
                 let checksum = hash(&invalid[..checksum_at]);
@@ -845,7 +1045,10 @@ mod tests {
         let mut old = saved[..saved.len()
             - 8
             - crate::prefetch::STATE_BYTES
-            - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES)]
+            - (crate::bus::OPEN_STATE_BYTES
+                + crate::bus::MEMORY_STATE_BYTES
+                + 4
+                + LATEST_SUFFIX_BYTES)]
             .to_vec();
         old[4] = 8;
         let checksum = hash(&old);
@@ -886,7 +1089,7 @@ mod tests {
         m.step();
         let expected = m.export_state();
         assert_eq!(m.bus.peek32(0x02000000), 0x12345678);
-        assert_eq!(m.bus.peek32(0x02000004), 0);
+        assert_eq!(m.bus.peek32(0x02000004), 0x12345678); // Wrapped source retains DMA's last word.
         m.import_state(&saved).unwrap();
         m.step();
         assert_eq!(m.export_state(), expected);
@@ -913,7 +1116,10 @@ mod tests {
         let at = invalid.len()
             - 9
             - crate::prefetch::STATE_BYTES
-            - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES);
+            - (crate::bus::OPEN_STATE_BYTES
+                + crate::bus::MEMORY_STATE_BYTES
+                + 4
+                + LATEST_SUFFIX_BYTES);
         invalid[at] = 2;
         let checksum_at = invalid.len() - 8;
         let checksum = hash(&invalid[..checksum_at]);
@@ -923,7 +1129,10 @@ mod tests {
         let mut old = saved[..saved.len()
             - 13
             - crate::prefetch::STATE_BYTES
-            - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES)]
+            - (crate::bus::OPEN_STATE_BYTES
+                + crate::bus::MEMORY_STATE_BYTES
+                + 4
+                + LATEST_SUFFIX_BYTES)]
             .to_vec();
         old[4] = 7;
         let checksum = hash(&old);
@@ -937,7 +1146,7 @@ mod tests {
         let mut m = machine();
         m.bus.enter_low_power(0x80);
         let saved = m.export_state();
-        assert_eq!(saved[4], 11);
+        assert_eq!(saved[4], 14);
         m.bus.stopped = false;
         m.import_state(&saved).unwrap();
         assert!(m.bus.stopped);
@@ -948,7 +1157,10 @@ mod tests {
         let mut old = saved[..saved.len()
             - 13
             - crate::prefetch::STATE_BYTES
-            - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES)]
+            - (crate::bus::OPEN_STATE_BYTES
+                + crate::bus::MEMORY_STATE_BYTES
+                + 4
+                + LATEST_SUFFIX_BYTES)]
             .to_vec();
         old[4] = 6;
         let checksum = hash(&old);
@@ -964,7 +1176,10 @@ mod tests {
         let mut old = current[..current.len()
             - 13
             - crate::prefetch::STATE_BYTES
-            - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES)]
+            - (crate::bus::OPEN_STATE_BYTES
+                + crate::bus::MEMORY_STATE_BYTES
+                + 4
+                + LATEST_SUFFIX_BYTES)]
             .to_vec();
         old[4] = 6;
         let checksum = hash(&old);
@@ -1029,7 +1244,10 @@ mod tests {
             - crate::psg::STATE_BYTES
             - 13
             - crate::prefetch::STATE_BYTES
-            - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES)]
+            - (crate::bus::OPEN_STATE_BYTES
+                + crate::bus::MEMORY_STATE_BYTES
+                + 4
+                + LATEST_SUFFIX_BYTES)]
             .to_vec();
         old[4] = 5;
         let checksum = hash(&old);
@@ -1043,7 +1261,10 @@ mod tests {
             - crate::psg::STATE_BYTES
             - 13
             - crate::prefetch::STATE_BYTES
-            - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES);
+            - (crate::bus::OPEN_STATE_BYTES
+                + crate::bus::MEMORY_STATE_BYTES
+                + 4
+                + LATEST_SUFFIX_BYTES);
         corrupt[position + 56] = 1; // Active voice with a zero period counter.
         let length = corrupt.len();
         let checksum = hash(&corrupt[..length - 8]);
@@ -1096,7 +1317,10 @@ mod tests {
             - 156
             - crate::psg::STATE_BYTES
             - crate::prefetch::STATE_BYTES
-            - (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES);
+            - (crate::bus::OPEN_STATE_BYTES
+                + crate::bus::MEMORY_STATE_BYTES
+                + 4
+                + LATEST_SUFFIX_BYTES);
         invalid[position..position + 4].copy_from_slice(&i32::MAX.to_le_bytes());
         let length = invalid.len();
         let checksum = hash(&invalid[..length - 8]);
@@ -1185,7 +1409,8 @@ mod tests {
                 rom[191] = 1;
                 let other = GameBoyAdvance::new(rom, firmware).unwrap();
                 assert_ne!(other.state_id(), expected);
-                let other_bios = GameBoyAdvance::new(vec![0; 192], Some(vec![0xa5; 0x4000])).unwrap();
+                let other_bios =
+                    GameBoyAdvance::new(vec![0; 192], Some(vec![0xa5; 0x4000])).unwrap();
                 assert_ne!(other_bios.state_id(), expected);
             }
         }
@@ -1261,7 +1486,10 @@ mod tests {
                 + 233
                 + crate::psg::STATE_BYTES
                 + crate::prefetch::STATE_BYTES
-                + (crate::bus::OPEN_STATE_BYTES + crate::bus::MEMORY_STATE_BYTES)
+                + (crate::bus::OPEN_STATE_BYTES
+                    + crate::bus::MEMORY_STATE_BYTES
+                    + 4
+                    + LATEST_SUFFIX_BYTES)
         );
         for (offset, bytes) in [
             (348, &64u64.to_le_bytes()[..]),

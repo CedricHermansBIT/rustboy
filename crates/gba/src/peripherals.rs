@@ -265,12 +265,11 @@ impl Bus {
         // happens to be executing firmware.
         let bios_access = self.bios_access;
         self.bios_access = false;
+        let value = self.dma_read(d.source, width, !d.first);
         if width == 4 {
-            let value = self.read32(d.source, !d.first);
             self.write32(d.destination, value, !d.first);
         } else {
-            let value = self.read16(d.source, !d.first);
-            self.write16(d.destination, value, !d.first);
+            self.write16(d.destination, value as u16, !d.first);
         }
         self.bios_access = bios_access;
         if self.memory_locked {
@@ -636,7 +635,7 @@ mod tests {
         assert_eq!(b.dma[0].source, 0);
         assert!(b.dma_unit());
         assert_eq!(b.peek32(0x02000000), 0x12345678);
-        assert_eq!(b.peek32(0x02000004), 0); // Protected BIOS latch, not ROM.
+        assert_eq!(b.peek32(0x02000004), 0x12345678); // Wrapped source retains DMA data; it cannot read BIOS or ROM.
     }
     fn configure(b: &mut Bus, n: usize, source: u32, dest: u32, count: u16, control: u16) {
         let base = 0x040000b0 + n as u32 * 12;
@@ -648,6 +647,61 @@ mod tests {
             false,
         );
         b.take_cycles();
+    }
+    #[test]
+    fn hblank_dma_write_only_scroll_reads_share_the_previous_channels_latch() {
+        let mut b = bus();
+        b.write16(0x02000000, 9, false);
+        b.write16(0x02000002, 31, false);
+        configure(&mut b, 1, 0x02000000, 0x04000016, 1, 0xa240);
+        configure(&mut b, 2, 0x04000016, 0x04000012, 1, 0xa340);
+        for expected in [9, 31] {
+            b.trigger_dma(2);
+            assert!(b.dma_unit());
+            assert_eq!(b.io16(0x16), expected);
+            assert!(b.dma_unit());
+            assert_eq!(
+                b.io16(0x12),
+                expected,
+                "DMA2 must observe DMA1's value, not zero or CPU prefetch"
+            );
+            assert_eq!(b.dma_latch, u32::from(expected) * 0x10001);
+            assert!(!b.dma_unit());
+        }
+        assert_eq!(
+            b.peek16(0x04000016),
+            0,
+            "write-only registers remain unreadable to the debugger"
+        );
+    }
+    #[test]
+    fn dma_invalid_sources_retain_shared_words_halfwords_and_cpu_independence() {
+        let mut b = bus();
+        b.write32(0x02000000, 0x12345678, false);
+        configure(&mut b, 3, 0x02000000, 0x03000000, 1, 0x8400);
+        assert!(b.dma_unit());
+        assert_eq!(b.dma_latch, 0x12345678);
+        b.read32(0x03000004, false); // CPU/debug read must not change DMA's register.
+        for source in [
+            0, 0x00003ffc, 0x04000010, 0x040003fc, 0x01000000, 0x10000000,
+        ] {
+            configure(&mut b, 0, source, 0x03000004, 2, 0x8500);
+            assert!(b.dma_unit());
+            assert!(b.dma_unit());
+            assert_eq!(b.peek32(0x03000004), 0x12345678);
+            assert_eq!(b.peek32(0x03000008), 0x12345678);
+            assert_eq!(b.dma_latch, 0x12345678);
+        }
+        b.write16(0x02000000, 0x9abc, false);
+        configure(&mut b, 1, 0x02000000, 0x03000000, 1, 0x8000);
+        assert!(b.dma_unit());
+        configure(&mut b, 2, 0, 0x03000004, 1, 0x8500);
+        assert!(b.dma_unit());
+        assert_eq!(b.peek32(0x03000004), 0x9abc9abc);
+        // A driven mixed I/O word retains zero in its write-only halfword.
+        configure(&mut b, 3, 0x040000dc, 0x03000004, 1, 0x8400);
+        assert!(b.dma_unit());
+        assert_eq!(b.peek32(0x03000004), 0x84000000);
     }
     #[test]
     fn sound_dma_forces_words_fixed_destination_and_four_transfers() {

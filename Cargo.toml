@@ -15,10 +15,16 @@ resolver = "2"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["web"]
+default = ["web", "gba-idle-loops", "gba-jit"]
 web = ["wasm-bindgen", "js-sys", "web-sys", "console_error_panic_hook"]
 gba-profile-rendering = ["rustboy-gba/profile-rendering"]
+# Guarded ARM IWRAM regions; all unsupported execution falls back.
+gba-jit = ["rustboy-gba/jit"]
 gba-decoded-blocks = ["rustboy-gba/decoded-blocks"]
+# Exact loop iteration batching within hardware event boundaries.
+gba-idle-loops = ["rustboy-gba/idle-loops"]
+# Experimental: native wins have not translated into browser gains.
+gba-render-cache = ["rustboy-gba/render-cache"]
 
 [dependencies]
 rustboy-emulator-api = { path = "crates/emulator-api" }

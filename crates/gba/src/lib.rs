@@ -6,15 +6,21 @@ mod backup;
 mod bios;
 pub mod bus;
 pub mod cpu;
-mod eeprom;
 #[cfg(any(test, feature = "decoded-blocks"))]
 mod decoded;
+mod eeprom;
 mod execution;
+#[cfg(feature = "idle-loops")]
+mod idle;
+#[cfg(feature = "jit")]
+pub mod jit;
 pub mod machine;
 mod peripherals;
 mod ppu;
 mod prefetch;
 mod psg;
+#[cfg(feature = "render-cache")]
+mod render_cache;
 pub use backend::validate_cartridge;
 pub use machine::GameBoyAdvance;
 

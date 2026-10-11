@@ -1,5 +1,9 @@
 //! Browser adapter. Console execution and output formats belong to the backend.
-use std::{cell::{Cell, RefCell}, rc::Rc, sync::Mutex};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::Mutex,
+};
 use wasm_bindgen::{prelude::*, Clamped, JsCast};
 use web_sys::console;
 
@@ -14,9 +18,16 @@ lazy_static::lazy_static! {
 }
 
 const CONTROLLER_MAPPING: [(usize, Button); 10] = [
-    (38, Button::Up), (40, Button::Down), (37, Button::Left), (39, Button::Right),
-    (65, Button::A), (66, Button::B), (13, Button::Start), (16, Button::Select),
-    (81, Button::L), (69, Button::R),
+    (38, Button::Up),
+    (40, Button::Down),
+    (37, Button::Left),
+    (39, Button::Right),
+    (65, Button::A),
+    (66, Button::B),
+    (13, Button::Start),
+    (16, Button::Select),
+    (81, Button::L),
+    (69, Button::R),
 ];
 
 #[wasm_bindgen]
@@ -38,33 +49,47 @@ thread_local! {
 
 /// User-provided SNES firmware, distinct from the handheld startup override.
 #[wasm_bindgen]
-pub fn set_sgb_sound_firmware(data:&[u8]) -> Result<bool,JsValue> {
-    GameBoy::validate_sgb_sound_firmware(data).map_err(|error|JsValue::from_str(&error))?;
+pub fn set_sgb_sound_firmware(data: &[u8]) -> Result<bool, JsValue> {
+    GameBoy::validate_sgb_sound_firmware(data).map_err(|error| JsValue::from_str(&error))?;
     let restarted = with_session_mut(|session| {
         let mut restarted = false;
-        if let Some(gb) = session.backend.debug_extension_mut().and_then(|value|value.downcast_mut::<GameBoy>()) {
+        if let Some(gb) = session
+            .backend
+            .debug_extension_mut()
+            .and_then(|value| value.downcast_mut::<GameBoy>())
+        {
             if gb.cpu().sgb.is_some() {
                 gb.load_sgb_sound_firmware(data)?;
                 restarted = true;
             }
         }
-        if restarted { session.reset(); }
+        if restarted {
+            session.reset();
+        }
         Ok(restarted)
-    }).unwrap_or(Ok(false)).map_err(|error:String|JsValue::from_str(&error))?;
-    SGB_SOUND_FIRMWARE.with(|value|*value.borrow_mut()=Some(data.to_vec()));
+    })
+    .unwrap_or(Ok(false))
+    .map_err(|error: String| JsValue::from_str(&error))?;
+    SGB_SOUND_FIRMWARE.with(|value| *value.borrow_mut() = Some(data.to_vec()));
     Ok(restarted)
 }
 
 #[wasm_bindgen]
 pub fn clear_sgb_sound_firmware() {
-    SGB_SOUND_FIRMWARE.with(|value|*value.borrow_mut()=None);
+    SGB_SOUND_FIRMWARE.with(|value| *value.borrow_mut() = None);
     with_session_mut(|session| {
         let mut restarted = false;
-        if let Some(gb) = session.backend.debug_extension_mut().and_then(|value|value.downcast_mut::<GameBoy>()) {
+        if let Some(gb) = session
+            .backend
+            .debug_extension_mut()
+            .and_then(|value| value.downcast_mut::<GameBoy>())
+        {
             gb.clear_sgb_sound_firmware();
             restarted = gb.cpu().sgb.is_some();
         }
-        if restarted { session.reset(); }
+        if restarted {
+            session.reset();
+        }
     });
 }
 
@@ -75,22 +100,33 @@ pub fn set_debug_enabled(enabled: bool) {
         with_gb_mut(|cpu| cpu.disable_debug_output());
         toggleVramCanvas(false);
         let mut keys = KEYS.lock().unwrap();
-        for key in [76, 78, 86] { keys[key] = false; }
+        for key in [76, 78, 86] {
+            keys[key] = false;
+        }
     }
 }
 
 #[wasm_bindgen]
 pub fn get_debug_flags() -> u8 {
     let enabled = DEBUG_ENABLED.with(Cell::get) as u8;
-    with_gb(|cpu| enabled | ((cpu.is_console_logging() as u8) << 1)
-        | ((cpu.is_tracing() as u8) << 2) | ((cpu.show_vram as u8) << 3)).unwrap_or(enabled)
+    with_gb(|cpu| {
+        enabled
+            | ((cpu.is_console_logging() as u8) << 1)
+            | ((cpu.is_tracing() as u8) << 2)
+            | ((cpu.show_vram as u8) << 3)
+    })
+    .unwrap_or(enabled)
 }
 
 #[wasm_bindgen]
 pub fn set_border_visible(visible: bool) {
     BORDER_VISIBLE.with(|value| value.set(visible));
     with_session_mut(|session| {
-        if let Some(gb) = session.backend.debug_extension_mut().and_then(|v| v.downcast_mut::<GameBoy>()) {
+        if let Some(gb) = session
+            .backend
+            .debug_extension_mut()
+            .and_then(|v| v.downcast_mut::<GameBoy>())
+        {
             gb.set_border_visible(visible);
         }
     });
@@ -118,23 +154,29 @@ pub fn set_sgb_user_palette(colors: &[u16]) -> Result<(), JsValue> {
         palette.copy_from_slice(colors);
     }
     with_session_mut(|session| {
-        session.backend.debug_extension_mut()
+        session
+            .backend
+            .debug_extension_mut()
             .and_then(|debug| debug.downcast_mut::<GameBoy>())
             .ok_or_else(|| "SGB palette is unavailable".to_string())?
             .set_sgb_user_palette(palettes)
-    }).unwrap_or_else(|| Err("No ROM is loaded".into()))
-        .map_err(|error| JsValue::from_str(&error))
+    })
+    .unwrap_or_else(|| Err("No ROM is loaded".into()))
+    .map_err(|error| JsValue::from_str(&error))
 }
 
 #[wasm_bindgen]
 pub fn clear_sgb_user_palette() -> Result<(), JsValue> {
     with_session_mut(|session| {
-        session.backend.debug_extension_mut()
+        session
+            .backend
+            .debug_extension_mut()
             .and_then(|debug| debug.downcast_mut::<GameBoy>())
             .ok_or_else(|| "SGB palette is unavailable".to_string())?
             .clear_sgb_user_palette()
-    }).unwrap_or_else(|| Err("No ROM is loaded".into()))
-        .map_err(|error| JsValue::from_str(&error))
+    })
+    .unwrap_or_else(|| Err("No ROM is loaded".into()))
+    .map_err(|error| JsValue::from_str(&error))
 }
 
 fn with_session<R>(f: impl FnOnce(&Session) -> R) -> Option<R> {
@@ -182,13 +224,21 @@ pub fn set_key_state(key_code: u32, pressed: bool) {
 #[wasm_bindgen]
 pub fn set_controller_button(port: u32, button: &str, pressed: bool) -> Result<(), JsValue> {
     let index = match button {
-        "up" => 0, "down" => 1, "left" => 2, "right" => 3,
-        "a" => 4, "b" => 5, "start" => 6, "select" => 7,
-        "l" => 8, "r" => 9,
+        "up" => 0,
+        "down" => 1,
+        "left" => 2,
+        "right" => 3,
+        "a" => 4,
+        "b" => 5,
+        "start" => 6,
+        "select" => 7,
+        "l" => 8,
+        "r" => 9,
         _ => return Err(JsValue::from_str("Unknown controller button")),
     };
     let mut controllers = CONTROLLER_BUTTONS.lock().unwrap();
-    let controller = controllers.get_mut(port as usize)
+    let controller = controllers
+        .get_mut(port as usize)
         .ok_or_else(|| JsValue::from_str("Controller port must be 0 through 3"))?;
     controller[index] = pressed;
     Ok(())
@@ -216,13 +266,19 @@ pub fn load_rom_data(rom: &[u8], boot_rom: &[u8]) -> Result<(), JsValue> {
 #[wasm_bindgen]
 pub fn load_gba_data(rom: &[u8], bios: &[u8]) -> Result<(), JsValue> {
     crate::gba::validate_cartridge(rom).map_err(|e| JsValue::from_str(&e))?;
-    let bios = if bios.is_empty() { None } else { Some(bios.to_vec()) };
-    let mut backend = crate::gba::GameBoyAdvance::new(rom.to_vec(), bios)
-        .map_err(|e| JsValue::from_str(&e))?;
+    let bios = if bios.is_empty() {
+        None
+    } else {
+        Some(bios.to_vec())
+    };
+    let mut backend =
+        crate::gba::GameBoyAdvance::new(rom.to_vec(), bios).map_err(|e| JsValue::from_str(&e))?;
     if let Some(info) = backend.save_info() {
         let saved = loadSaveData(&info.key);
         if let Ok(array) = saved.dyn_into::<js_sys::Uint8Array>() {
-            backend.import_save(&array.to_vec()).map_err(|e| JsValue::from_str(&e))?;
+            backend
+                .import_save(&array.to_vec())
+                .map_err(|e| JsValue::from_str(&e))?;
         }
     }
     save_game();
@@ -234,16 +290,24 @@ pub fn load_gba_data(rom: &[u8], bios: &[u8]) -> Result<(), JsValue> {
 #[wasm_bindgen]
 pub fn get_backend_status() -> String {
     with_session(|session| {
-        let Some(gba) = session.backend.debug_extension()
-            .and_then(|d| d.downcast_ref::<crate::gba::GameBoyAdvance>()) else {
+        let Some(gba) = session
+            .backend
+            .debug_extension()
+            .and_then(|d| d.downcast_ref::<crate::gba::GameBoyAdvance>())
+        else {
             return String::new();
         };
         if let Some(fault) = &gba.fault {
-            format!("GBA stopped at {:08X}: {}", fault.instruction_address, fault.reason)
+            format!(
+                "GBA stopped at {:08X}: {}",
+                fault.instruction_address, fault.reason
+            )
         } else {
-            "GBA development: graphics/audio timing incomplete; SRAM/Flash/EEPROM saves supported".to_owned()
+            "GBA development: graphics/audio timing incomplete; SRAM/Flash/EEPROM saves supported"
+                .to_owned()
         }
-    }).unwrap_or_default()
+    })
+    .unwrap_or_default()
 }
 
 #[wasm_bindgen]
@@ -267,10 +331,14 @@ pub fn load_rom_data_with_model(rom: &[u8], boot_rom: &[u8], model: &str) -> Res
     )
     .map_err(|error| JsValue::from_str(&error))?;
     if backend.cpu().sgb.is_some() {
-        SGB_SOUND_FIRMWARE.with(|value| {
-            if let Some(data)=value.borrow().as_ref() { backend.load_sgb_sound_firmware(data)?; }
-            Ok::<(),String>(())
-        }).map_err(|error|JsValue::from_str(&error))?;
+        SGB_SOUND_FIRMWARE
+            .with(|value| {
+                if let Some(data) = value.borrow().as_ref() {
+                    backend.load_sgb_sound_firmware(data)?;
+                }
+                Ok::<(), String>(())
+            })
+            .map_err(|error| JsValue::from_str(&error))?;
     }
     backend.set_border_visible(BORDER_VISIBLE.with(Cell::get));
     toggleVramCanvas(false);
@@ -336,6 +404,10 @@ pub fn get_state_id() -> String {
     with_session(|s| s.backend.state_id()).unwrap_or_default()
 }
 #[wasm_bindgen]
+pub fn get_compatible_state_ids() -> Vec<String> {
+    with_session(|s| s.backend.compatible_state_ids()).unwrap_or_default()
+}
+#[wasm_bindgen]
 pub fn get_rom_title() -> String {
     with_session(|s| s.backend.title()).unwrap_or_default()
 }
@@ -360,7 +432,9 @@ pub fn clear_save_data() {
 #[wasm_bindgen]
 pub fn set_paused(paused: bool) {
     with_session_mut(|s| s.backend.set_paused(paused));
-    if paused { release_controller_inputs(); }
+    if paused {
+        release_controller_inputs();
+    }
 }
 #[wasm_bindgen]
 pub fn is_paused() -> bool {
@@ -378,6 +452,12 @@ pub fn set_speed(speed: u32) {
 #[wasm_bindgen]
 pub fn get_speed() -> u32 {
     with_session(|s| s.speed).unwrap_or(1)
+}
+#[wasm_bindgen]
+pub fn get_actual_speed() -> f64 {
+    with_session(|s| s.actual_speed())
+        .flatten()
+        .unwrap_or(f64::NAN)
 }
 #[wasm_bindgen]
 pub fn get_debug_state() -> String {
@@ -480,7 +560,9 @@ pub fn peek_regs() -> String {
 }
 #[wasm_bindgen]
 pub fn toggle_trace() {
-    if DEBUG_ENABLED.with(Cell::get) { with_gb_mut(|cpu| cpu.toggle_trace()); }
+    if DEBUG_ENABLED.with(Cell::get) {
+        with_gb_mut(|cpu| cpu.toggle_trace());
+    }
 }
 #[wasm_bindgen]
 pub fn is_tracing() -> bool {
@@ -527,10 +609,16 @@ fn start_emulation_loop() {
             {
                 if DEBUG_ENABLED.with(Cell::get) && debug.cpu().show_vram {
                     let view = VRAM_VIEW.with(Cell::get);
-                    let (pixels, width, height) = if let Some(sgb) = debug.cpu().sgb.as_ref().filter(|_| view != 0) {
-                        if view == 1 { (sgb.debug_border_tiles(), 384, 128) }
-                        else { (sgb.debug_border_map(), 256, 224) }
-                    } else { (crate::ppu::debug_vram_rgba(debug.cpu()), 128, 192) };
+                    let (pixels, width, height) =
+                        if let Some(sgb) = debug.cpu().sgb.as_ref().filter(|_| view != 0) {
+                            if view == 1 {
+                                (sgb.debug_border_tiles(), 384, 128)
+                            } else {
+                                (sgb.debug_border_map(), 256, 224)
+                            }
+                        } else {
+                            (crate::ppu::debug_vram_rgba(debug.cpu()), 128, 192)
+                        };
                     draw_frame(
                         &vram_context,
                         VideoFrame {
@@ -571,7 +659,9 @@ fn check_keys(session: &mut Session) {
         session.backend.set_paused(!session.backend.paused());
         if session.backend.paused() {
             *CONTROLLER_BUTTONS.lock().unwrap() = [[false; 10]; 4];
-            for (key, _) in CONTROLLER_MAPPING { keys[key] = false; }
+            for (key, _) in CONTROLLER_MAPPING {
+                keys[key] = false;
+            }
         }
     }
     let debug_enabled = DEBUG_ENABLED.with(Cell::get);
@@ -602,7 +692,9 @@ fn check_keys(session: &mut Session) {
         }
     }
     let controllers = CONTROLLER_BUTTONS.lock().unwrap();
-    let ports = session.backend.debug_extension()
+    let ports = session
+        .backend
+        .debug_extension()
         .and_then(|debug| debug.downcast_ref::<GameBoy>())
         .map(|gb| if gb.cpu().sgb.is_some() { 4 } else { 1 })
         .unwrap_or(4);
@@ -671,4 +763,213 @@ fn setup_canvas(id: &str, width: u32, height: u32) -> web_sys::CanvasRenderingCo
         .unwrap()
         .dyn_into()
         .unwrap()
+}
+
+// Experimental compiled blocks import the raw exports (not JS wrappers).
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn configure_gba_jit(imports: js_sys::Object) {
+    rustboy_gba::jit::configure(imports);
+}
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn set_gba_jit_enabled(enabled: bool) {
+    with_session_mut(|session| {
+        if let Some(gba) = session
+            .backend
+            .debug_extension_mut()
+            .and_then(|debug| debug.downcast_mut::<rustboy_gba::GameBoyAdvance>())
+        {
+            gba.set_jit_enabled(enabled);
+        }
+    });
+}
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn get_gba_jit_statistics() -> String {
+    with_session(|session| {
+        session
+            .backend
+            .debug_extension()
+            .and_then(|debug| debug.downcast_ref::<rustboy_gba::GameBoyAdvance>())
+            .map(|gba| gba.jit_statistics())
+    })
+    .flatten()
+    .unwrap_or_default()
+}
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn gba_jit_fetch(cpu: u32, bus: u32, pc: u32) {
+    unsafe { rustboy_gba::jit::fetch(cpu, bus, pc) }
+}
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn gba_jit_finish(cpu: u32, bus: u32) -> i32 {
+    unsafe { rustboy_gba::jit::finish(cpu, bus) }
+}
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn gba_jit_read(bus: u32, address: u32, kind: u32) -> u32 {
+    unsafe { rustboy_gba::jit::read(bus, address, kind) }
+}
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn gba_jit_write(bus: u32, address: u32, value: u32, kind: u32) {
+    unsafe { rustboy_gba::jit::write(bus, address, value, kind) }
+}
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn gba_jit_internal(bus: u32, clocks: u32) {
+    unsafe { rustboy_gba::jit::internal(bus, clocks) }
+}
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn gba_jit_branch(cpu: u32, bus: u32, target: u32, condition: u32) {
+    unsafe { rustboy_gba::jit::branch(cpu, bus, target, condition) }
+}
+
+/// Fixed-work diagnostic, available only in the experimental JIT bundle.
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn benchmark_gba_clocks(budget: u32) -> Result<u32, JsValue> {
+    with_session_mut(|session| {
+        if !session.backend.paused() {
+            return Err(JsValue::from_str("Pause before benchmarking"));
+        }
+        let gba = session
+            .backend
+            .debug_extension_mut()
+            .and_then(|debug| debug.downcast_mut::<rustboy_gba::GameBoyAdvance>())
+            .ok_or_else(|| JsValue::from_str("No GBA session"))?;
+        Ok(gba.run(u64::from(budget)) as u32)
+    })
+    .unwrap_or_else(|| Err(JsValue::from_str("No session")))
+}
+
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn gba_jit_fetch_run(cpu: u32, bus: u32, pc: u32, count: u32, budget: u32) -> u64 {
+    unsafe { rustboy_gba::jit::fetch_run(cpu, bus, pc, count, budget) }
+}
+
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn gba_jit_fetch_mode(cpu: u32, bus: u32, pc: u32, thumb: u32) {
+    unsafe { rustboy_gba::jit::fetch_mode(cpu, bus, pc, thumb) }
+}
+
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn gba_jit_read_full(bus: u32, address: u32, kind: u32, sequential: u32) -> u32 {
+    unsafe { rustboy_gba::jit::read_full(bus, address, kind, sequential) }
+}
+
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn gba_jit_write_full(bus: u32, address: u32, value: u32, kind: u32, sequential: u32) {
+    unsafe { rustboy_gba::jit::write_full(bus, address, value, kind, sequential) }
+}
+
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn gba_jit_control(cpu: u32, bus: u32, value: u32, kind: u32) {
+    unsafe { rustboy_gba::jit::control(cpu, bus, value, kind) }
+}
+
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn gba_jit_status(cpu: u32, bus: u32, value: u32, fields: u32, kind: u32) -> u32 {
+    unsafe { rustboy_gba::jit::status(cpu, bus, value, fields, kind) }
+}
+
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn gba_jit_bank_read(cpu: u32, reg: u32) -> u32 {
+    unsafe { rustboy_gba::jit::bank_read(cpu, reg) }
+}
+
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn gba_jit_bank_write(cpu: u32, reg: u32, value: u32) {
+    unsafe { rustboy_gba::jit::bank_write(cpu, reg, value) }
+}
+
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn gba_jit_exception(cpu: u32, bus: u32, swi: u32) {
+    unsafe { rustboy_gba::jit::exception(cpu, bus, swi) }
+}
+
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn gba_jit_fetch_span(cpu: u32, bus: u32, pc: u32, count: u32, budget: u32, thumb: u32) -> u64 {
+    unsafe { rustboy_gba::jit::fetch_span(cpu, bus, pc, count, budget, thumb) }
+}
+
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn set_gba_full_jit_enabled(enabled: bool) {
+    with_session_mut(|session| {
+        if let Some(gba) = session
+            .backend
+            .debug_extension_mut()
+            .and_then(|debug| debug.downcast_mut::<rustboy_gba::GameBoyAdvance>())
+        {
+            gba.set_full_jit_enabled(enabled);
+        }
+    });
+}
+
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn set_gba_jit_ram_enabled(enabled: bool) {
+    with_session_mut(|session| {
+        if let Some(gba) = session
+            .backend
+            .debug_extension_mut()
+            .and_then(|debug| debug.downcast_mut::<rustboy_gba::GameBoyAdvance>())
+        {
+            gba.set_jit_ram_enabled(enabled);
+        }
+    });
+}
+
+#[wasm_bindgen]
+pub fn set_gba_fast_render_enabled(enabled: bool) {
+    with_session_mut(|session| {
+        if let Some(gba) = session
+            .backend
+            .debug_extension_mut()
+            .and_then(|debug| debug.downcast_mut::<rustboy_gba::GameBoyAdvance>())
+        {
+            gba.set_fast_text_render(enabled);
+        }
+    });
+}
+
+#[wasm_bindgen]
+pub fn set_gba_video_stride(stride: u32) {
+    with_session_mut(|session| session.backend.set_video_frame_stride(stride));
+}
+
+#[wasm_bindgen]
+pub fn get_gba_render_statistics() -> String {
+    with_session(|session| {
+        session
+            .backend
+            .debug_extension()
+            .and_then(|debug| debug.downcast_ref::<rustboy_gba::GameBoyAdvance>())
+            .map(|gba| {
+                let (stride, rendered, skipped) = gba.video_render_statistics();
+                format!("stride={stride} rendered={rendered} skipped={skipped}")
+            })
+    })
+    .flatten()
+    .unwrap_or_default()
+}
+
+#[cfg(feature = "gba-jit")]
+#[wasm_bindgen]
+pub fn gba_jit_refill(bus: u32, target: u32, thumb: u32) {
+    unsafe { rustboy_gba::jit::refill(bus, target, thumb) }
 }

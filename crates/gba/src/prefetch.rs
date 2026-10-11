@@ -1,4 +1,4 @@
-//! Original instruction-granular Game Pak prefetch timing model.
+//! Instruction-granular Game Pak prefetch timing with fixed-width fetches.
 //! The cartridge is immutable: queued halfwords are represented by addresses,
 //! not copied data. Exact CPU pipeline and bus arbitration phases remain separate.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -106,8 +106,69 @@ impl Prefetch {
     }
     #[cfg(test)]
     pub fn fetch(&mut self, address: u32, halves: u8, sequential: bool, wait: u16) -> u32 {
-        self.fetch_with_timing(address, halves, sequential, &GamePakTiming::from(wait))
+        let timing = GamePakTiming::from(wait);
+        match halves {
+            1 => self.fetch_opcode::<1>(address, sequential, &timing),
+            2 => self.fetch_opcode::<2>(address, sequential, &timing),
+            _ => panic!("Invalid opcode width"),
+        }
     }
+    /// A buffered opcode occupies the bus for exactly one clock. The producer
+    /// can finish at most one halfword in that time (all waits are >= 2).
+    #[inline(always)]
+    fn idle_one(&mut self, timing: &GamePakTiming) {
+        let producer = self.producer();
+        if self.count < 8 && Self::cartridge(producer) {
+            self.elapsed += 1;
+            if u32::from(self.elapsed) == timing.halfword_cycles(producer, true) {
+                self.count += 1;
+                self.elapsed = 0;
+            }
+        }
+    }
+    /// Specializing the opcode width removes the general halfword loop from
+    /// Thumb's hot fetch path. Inline into Bus so timing stays beside the load.
+    #[inline(always)]
+    pub fn fetch_opcode<const HALVES: u8>(
+        &mut self,
+        address: u32,
+        sequential: bool,
+        timing: &GamePakTiming,
+    ) -> u32 {
+        debug_assert!(HALVES == 1 || HALVES == 2);
+        if !sequential || self.head != address {
+            *self = Self {
+                head: address,
+                ..Self::default()
+            };
+        }
+        if self.count >= HALVES {
+            self.count -= HALVES;
+            self.head += u32::from(HALVES) * 2;
+            self.idle_one(timing);
+            if !Self::cartridge(self.head) {
+                *self = Self::default();
+            }
+            return 1;
+        }
+        let mut clocks = 0;
+        for n in 0..HALVES {
+            if self.count != 0 {
+                self.count -= 1;
+            } else {
+                clocks += timing.halfword_cycles(self.head, sequential || n != 0)
+                    - u32::from(self.elapsed);
+                self.elapsed = 0;
+            }
+            self.head += 2;
+        }
+        if !Self::cartridge(self.head) {
+            *self = Self::default();
+        }
+        clocks.max(1)
+    }
+    // Keep the original model as an independent differential test oracle.
+    #[cfg(test)]
     pub fn fetch_with_timing(
         &mut self,
         address: u32,
@@ -152,6 +213,54 @@ impl Prefetch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn specialized_fetch_matches_original_for_valid_queues_and_waits() {
+        // Nine timing bits cover all 512 combinations of the three banks'
+        // N/S waits. Include bank/page ends, partial fills and discontinuities.
+        for setting in 0..512 {
+            let wait = setting << 2;
+            let timing = GamePakTiming::from(wait);
+            for area in 0..3 {
+                let base = 0x08000000 + area * 0x02000000;
+                for offset in [0, 2, 0x1fff0, 0x1fffe, 0x20000, 0x1fffff0, 0x1fffffc] {
+                    let head = base + offset;
+                    for count in 0..=8 {
+                        for elapsed in 0..9 {
+                            let initial = Prefetch {
+                                head,
+                                count,
+                                elapsed,
+                            };
+                            if !initial.valid(wait) {
+                                continue;
+                            }
+                            for address in [head, base + 0x400] {
+                                for sequential in [false, true] {
+                                    for halves in [1, 2] {
+                                        if halves == 2 && address & 3 != 0 {
+                                            continue;
+                                        }
+                                        let mut reference = initial;
+                                        let expected = reference.fetch_with_timing(
+                                            address, halves, sequential, &timing,
+                                        );
+                                        let mut actual = initial;
+                                        let clocks = if halves == 1 {
+                                            actual.fetch_opcode::<1>(address, sequential, &timing)
+                                        } else {
+                                            actual.fetch_opcode::<2>(address, sequential, &timing)
+                                        };
+                                        assert_eq!((clocks, actual), (expected, reference),
+                                            "wait={wait:04x} initial={initial:?} address={address:08x} halves={halves} sequential={sequential}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     #[test]
     fn decoded_waits_match_register_formula_for_every_setting_and_page_edge() {
         for wait in 0..=u16::MAX {

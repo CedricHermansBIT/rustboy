@@ -36,9 +36,65 @@ impl FrameClock {
     }
 }
 
+/// Actual emulated time per wall-clock second, averaged over half a second.
+#[derive(Default)]
+pub struct SpeedMeter {
+    previous_ms: Option<f64>,
+    elapsed_ms: f64,
+    ticks: u64,
+    pub ratio: Option<f64>,
+}
+
+impl SpeedMeter {
+    pub fn record(&mut self, timestamp_ms: f64, ticks: u64, clock_hz: u64) {
+        let elapsed = self
+            .previous_ms
+            .replace(timestamp_ms)
+            .map(|previous| timestamp_ms - previous);
+        let Some(elapsed) = elapsed.filter(|ms| ms.is_finite() && *ms > 0.0 && *ms <= 250.0) else {
+            // Reacquire after startup, backgrounding or a discontinuous clock.
+            *self = Self {
+                previous_ms: timestamp_ms.is_finite().then_some(timestamp_ms),
+                ..Self::default()
+            };
+            return;
+        };
+        self.elapsed_ms += elapsed;
+        self.ticks += ticks;
+        if self.elapsed_ms >= 500.0 {
+            self.ratio = (clock_hz > 0)
+                .then(|| self.ticks as f64 * 1000.0 / (clock_hz as f64 * self.elapsed_ms));
+            self.elapsed_ms = 0.0;
+            self.ticks = 0;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn actual_speed_counts_completed_work_and_reacquires_after_gaps() {
+        for clock_hz in [4_194_304, 16_777_216] {
+            let mut meter = SpeedMeter::default();
+            meter.record(0.0, 0, clock_hz);
+            // Only 2.5 emulated seconds completed per second, regardless of
+            // which fast-forward multiplier was requested by the frontend.
+            for frame in 1..=10 {
+                meter.record(frame as f64 * 50.0, clock_hz / 8, clock_hz);
+            }
+            assert_eq!(meter.ratio, Some(2.5));
+            meter.record(10_000.0, clock_hz, clock_hz);
+            assert_eq!(meter.ratio, None);
+            for frame in 1..=10 {
+                meter.record(10_000.0 + frame as f64 * 50.0, 0, clock_hz);
+            }
+            assert_eq!(meter.ratio, Some(0.0));
+            meter.record(f64::NAN, 0, clock_hz);
+            assert_eq!(meter.ratio, None);
+        }
+    }
 
     #[test]
     fn emulation_rate_does_not_depend_on_display_refresh() {

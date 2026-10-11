@@ -67,6 +67,53 @@ impl Bus {
     }
 }
 
+/// A scanline-local view records only storage pages actually sampled by the
+/// compositor. Timing and graphics writes remain on the real bus.
+struct Graphics<'a, const TRACK: bool> {
+    bus: &'a Bus,
+    #[cfg(feature = "render-cache")]
+    reads: [std::cell::Cell<u64>; 7],
+}
+impl<'a, const TRACK: bool> Graphics<'a, TRACK> {
+    fn new(bus: &'a Bus) -> Self {
+        Self {
+            bus,
+            #[cfg(feature = "render-cache")]
+            reads: std::array::from_fn(|_| std::cell::Cell::new(0)),
+        }
+    }
+    #[inline]
+    fn mark(&self, page: usize) {
+        #[cfg(feature = "render-cache")]
+        if TRACK {
+            let reads = &self.reads[page / 64];
+            reads.set(reads.get() | (1 << (page % 64)));
+        }
+        #[cfg(not(feature = "render-cache"))]
+        let _ = page;
+    }
+    fn vram8(&self, offset: usize) -> u8 {
+        self.mark(offset / 256);
+        self.bus.vram[offset]
+    }
+    fn vram16(&self, offset: usize) -> u16 {
+        self.mark(offset / 256);
+        // All compositor halfword reads are aligned, hence stay in one page.
+        u16::from_le_bytes([self.bus.vram[offset], self.bus.vram[offset + 1]])
+    }
+    fn palette16(&self, offset: usize) -> u16 {
+        // Palette pages are registered once by compose_line.
+        u16::from_le_bytes([self.bus.palette[offset], self.bus.palette[offset + 1]])
+    }
+    fn oam16(&self, offset: usize) -> u16 {
+        // Object evaluation walks all OAM; register its four pages once.
+        u16::from_le_bytes([self.bus.oam[offset], self.bus.oam[offset + 1]])
+    }
+    fn io16(&self, offset: usize) -> u16 {
+        self.bus.io16(offset)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Dot {
     color: u16,
@@ -79,17 +126,20 @@ impl Dot {
         self.priority * 8 + if self.layer == 4 { 0 } else { self.layer + 1 }
     }
 }
-fn half(data: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([data[offset], data[offset + 1]])
-}
-fn palette(bus: &Bus, index: usize) -> u16 {
-    half(&bus.palette, (index & 511) * 2) & 0x7fff
+fn palette<const TRACK: bool>(bus: &Graphics<'_, TRACK>, index: usize) -> u16 {
+    bus.palette16((index & 511) * 2) & 0x7fff
 }
 fn signed_ref(bus: &Bus, offset: usize) -> i32 {
     let value = u32::from_le_bytes(bus.io[offset..offset + 4].try_into().unwrap());
     (value.wrapping_shl(4) as i32) >> 4
 }
-fn bg_coordinates(bus: &Bus, affine: Affine, bg: usize, x: i32, mosaic: bool) -> (i32, i32) {
+fn bg_coordinates<const TRACK: bool>(
+    bus: &Graphics<'_, TRACK>,
+    affine: Affine,
+    bg: usize,
+    x: i32,
+    mosaic: bool,
+) -> (i32, i32) {
     let base = 0x20 + (bg - 2) * 0x10;
     let a = bus.io16(base) as i16 as i32;
     let c = bus.io16(base + 4) as i16 as i32;
@@ -103,8 +153,8 @@ fn bg_coordinates(bus: &Bus, affine: Affine, bg: usize, x: i32, mosaic: bool) ->
         wrap_reference(origin[1].wrapping_add(c * x)) >> 8,
     )
 }
-fn background(
-    bus: &Bus,
+fn background<const TRACK: bool>(
+    bus: &Graphics<'_, TRACK>,
     affine: Affine,
     bg: usize,
     mode: u16,
@@ -131,7 +181,7 @@ fn background(
         let map = ((cnt >> 8) & 31) as usize * 0x800
             + block as usize * 0x800
             + (((y as usize / 8) & 31) * 32 + ((x as usize / 8) & 31)) * 2;
-        let entry = half(&bus.vram, map & 0xffff);
+        let entry = bus.vram16(map & 0xffff);
         let mut px = x as usize & 7;
         let mut py = y as usize & 7;
         if entry & 0x400 != 0 {
@@ -149,7 +199,7 @@ fn background(
         // repeats its map entry; cross-BG invalid-address bus contention is not
         // modelled here (valid software does not depend on it).
         let byte = if address < 0x10000 {
-            bus.vram[address]
+            bus.vram8(address)
         } else {
             (entry >> ((address & 1) * 8)) as u8
         };
@@ -185,12 +235,12 @@ fn background(
             let map = ((cnt >> 8) & 31) as usize * 0x800
                 + (y as usize / 8) * (size as usize / 8)
                 + x as usize / 8;
-            let tile = bus.vram[map & 0xffff] as usize;
+            let tile = bus.vram8(map & 0xffff) as usize;
             let address = ((cnt >> 2) & 3) as usize * 0x4000
                 + tile * 64
                 + (y as usize & 7) * 8
                 + (x as usize & 7);
-            let index = bus.vram[address & 0xffff] as usize;
+            let index = bus.vram8(address & 0xffff) as usize;
             if index == 0 {
                 return None;
             }
@@ -207,13 +257,13 @@ fn background(
             };
             let index = y as usize * width as usize + x as usize;
             if mode == 4 {
-                let index = bus.vram[page + index] as usize;
+                let index = bus.vram8(page + index) as usize;
                 if index == 0 {
                     return None;
                 }
                 palette(bus, index)
             } else {
-                half(&bus.vram, page + index * 2) & 0x7fff
+                bus.vram16(page + index * 2) & 0x7fff
             }
         }
     };
@@ -232,12 +282,13 @@ struct TextRow {
     scroll_x: usize,
     y: usize,
     width: usize,
+    map_row: usize,
     mosaic_x: usize,
     key: usize,
     colors: [u16; 8],
 }
 impl TextRow {
-    fn new(bus: &Bus, bg: usize, line: usize) -> Self {
+    fn new<const TRACK: bool>(bus: &Graphics<'_, TRACK>, bg: usize, line: usize) -> Self {
         let cnt = bus.io16(8 + bg * 2);
         let mosaic = bus.io16(0x4c);
         let mosaic_y = if cnt & 0x40 != 0 {
@@ -246,11 +297,16 @@ impl TextRow {
             1
         };
         let height = if cnt & 0x8000 != 0 { 512 } else { 256 };
+        let width = if cnt & 0x4000 != 0 { 512 } else { 256 };
+        let y = (line - line % mosaic_y + (bus.io16(0x12 + bg * 4) & 511) as usize) & (height - 1);
         Self {
             cnt,
             scroll_x: (bus.io16(0x10 + bg * 4) & 511) as usize,
-            y: (line - line % mosaic_y + (bus.io16(0x12 + bg * 4) & 511) as usize) & (height - 1),
-            width: if cnt & 0x4000 != 0 { 512 } else { 256 },
+            y,
+            width,
+            map_row: ((cnt >> 8) & 31) as usize * 0x800
+                + (y / 256) * (width / 256) * 0x800
+                + ((y / 8) & 31) * 64,
             mosaic_x: if cnt & 0x40 != 0 {
                 (mosaic & 15) as usize + 1
             } else {
@@ -260,18 +316,26 @@ impl TextRow {
             colors: [0x8000; 8],
         }
     }
-    fn dot(&mut self, bus: &Bus, bg: usize, screen_x: usize) -> Option<Dot> {
-        let x = (screen_x - screen_x % self.mosaic_x + self.scroll_x) & (self.width - 1);
+    fn dot<const TRACK: bool>(
+        &mut self,
+        bus: &Graphics<'_, TRACK>,
+        bg: usize,
+        screen_x: usize,
+    ) -> Option<Dot> {
+        let screen_x = if self.mosaic_x == 1 {
+            screen_x
+        } else {
+            screen_x - screen_x % self.mosaic_x
+        };
+        let x = (screen_x + self.scroll_x) & (self.width - 1);
         let y = self.y;
-        let block = x / 256 + (y / 256) * (self.width / 256);
-        let map = (((self.cnt >> 8) & 31) as usize * 0x800
-            + block * 0x800
-            + (((y / 8) & 31) * 32 + ((x / 8) & 31)) * 2)
-            & 0xffff;
-        let key = map * 8 + (y & 7);
+        let key = x / 8;
         if self.key != key {
             self.key = key;
-            let entry = half(&bus.vram, map);
+            // Vertical/map-base terms are fixed for this scanline. Decode the
+            // horizontal map location once per tile, not once per pixel.
+            let map = (self.map_row + (x / 256) * 0x800 + (key & 31) * 2) & 0xffff;
+            let entry = bus.vram16(map);
             let py = if entry & 0x800 != 0 {
                 7 - (y & 7)
             } else {
@@ -281,11 +345,14 @@ impl TextRow {
             let base = ((self.cnt >> 2) & 3) as usize * 0x4000
                 + (entry & 1023) as usize * if eight { 64 } else { 32 }
                 + py * if eight { 8 } else { 4 };
+            if base < 0x10000 {
+                bus.mark(base / 256);
+            }
             for (pixel, color) in self.colors.iter_mut().enumerate() {
                 let px = if entry & 0x400 != 0 { 7 - pixel } else { pixel };
                 let address = base + if eight { px } else { px / 2 };
                 let byte = if address < 0x10000 {
-                    bus.vram[address]
+                    bus.bus.vram[address]
                 } else {
                     (entry >> ((address & 1) * 8)) as u8
                 };
@@ -319,12 +386,20 @@ impl TextRow {
     }
 }
 
-fn objects(bus: &Bus, line: usize, dots: &mut [Option<Dot>; 240], window: &mut [bool; 240]) {
+fn objects<const TRACK: bool>(
+    bus: &Graphics<'_, TRACK>,
+    line: usize,
+    dots: &mut [Option<Dot>; 240],
+    window: &mut [bool; 240],
+) {
     let display = bus.io16(0);
     if display & 0x1000 == 0 {
         return;
     }
     let mosaic = bus.io16(0x4c);
+    for page in 388..392 {
+        bus.mark(page);
+    }
     let mut budget: i32 = if display & 0x20 != 0 { 954 } else { 1210 };
     const SIZES: [[(i32, i32); 4]; 3] = [
         [(8, 8), (16, 16), (32, 32), (64, 64)],
@@ -332,9 +407,9 @@ fn objects(bus: &Bus, line: usize, dots: &mut [Option<Dot>; 240], window: &mut [
         [(8, 16), (8, 32), (16, 32), (32, 64)],
     ];
     for obj in 0..128 {
-        let a0 = half(&bus.oam, obj * 8);
-        let a1 = half(&bus.oam, obj * 8 + 2);
-        let a2 = half(&bus.oam, obj * 8 + 4);
+        let a0 = bus.oam16(obj * 8);
+        let a1 = bus.oam16(obj * 8 + 2);
+        let a2 = bus.oam16(obj * 8 + 4);
         let affine = a0 & 0x100 != 0;
         let double = a0 & 0x200 != 0;
         let shape = (a0 >> 14) as usize;
@@ -380,10 +455,10 @@ fn objects(bus: &Bus, line: usize, dots: &mut [Option<Dot>; 240], window: &mut [
         let matrix = ((a1 >> 9) & 31) as usize * 32;
         let (pa, pb, pc, pd) = if affine {
             (
-                half(&bus.oam, matrix + 6) as i16 as i32,
-                half(&bus.oam, matrix + 14) as i16 as i32,
-                half(&bus.oam, matrix + 22) as i16 as i32,
-                half(&bus.oam, matrix + 30) as i16 as i32,
+                bus.oam16(matrix + 6) as i16 as i32,
+                bus.oam16(matrix + 14) as i16 as i32,
+                bus.oam16(matrix + 22) as i16 as i32,
+                bus.oam16(matrix + 30) as i16 as i32,
             )
         } else {
             (0, 0, 0, 0)
@@ -433,7 +508,7 @@ fn objects(bus: &Bus, line: usize, dots: &mut [Option<Dot>; 240], window: &mut [
                 } else {
                     (px as usize & 7) / 2
                 };
-            let byte = bus.vram[0x10000 + ((address - 0x10000) & 0x7fff)];
+            let byte = bus.vram8(0x10000 + ((address - 0x10000) & 0x7fff));
             let index = if eight {
                 byte as usize
             } else {
@@ -471,7 +546,12 @@ fn inside(position: usize, range: u16, limit: usize) -> bool {
     }
     position >= start && position < end
 }
-fn window_mask(bus: &Bus, x: usize, y: usize, obj_window: bool) -> u8 {
+fn window_mask<const TRACK: bool>(
+    bus: &Graphics<'_, TRACK>,
+    x: usize,
+    y: usize,
+    obj_window: bool,
+) -> u8 {
     let display = bus.io16(0);
     if display & 0xe000 == 0 {
         return 63;
@@ -511,9 +591,15 @@ fn brighten(color: u16, coefficient: u16, increase: bool) -> u16 {
 }
 #[cfg_attr(feature = "profile-rendering", inline(never))]
 pub(crate) fn render_line(bus: &Bus, line: u16, pixels: &mut [u8]) {
-    render_line_origins(bus, line, pixels, bus.affine);
+    let graphics = Graphics::<false>::new(bus);
+    compose_line(&graphics, line, pixels, bus.affine);
 }
-fn render_line_origins(bus: &Bus, line: u16, pixels: &mut [u8], affine: Affine) {
+fn compose_line<const TRACK: bool>(
+    bus: &Graphics<'_, TRACK>,
+    line: u16,
+    pixels: &mut [u8],
+    affine: Affine,
+) {
     if line >= 160 {
         return;
     }
@@ -523,6 +609,9 @@ fn render_line_origins(bus: &Bus, line: u16, pixels: &mut [u8], affine: Affine) 
     if display & 0x80 != 0 {
         row.fill(255);
         return;
+    }
+    for page in 384..388 {
+        bus.mark(page);
     }
     let mut objs = [None; 240];
     let mut obj_windows = [false; 240];
@@ -535,6 +624,67 @@ fn render_line_origins(bus: &Bus, line: u16, pixels: &mut [u8], affine: Affine) 
         _ => 0,
     } & ((display >> 8) & 15);
     let bld = bus.io16(0x50);
+    if bus.bus.fast_text_render
+        && mode == 0
+        && bld & 0xc0 == 0
+        && !objs.iter().flatten().any(|dot| dot.semi)
+    {
+        compose_text_opaque(bus, line, row, display, enabled, &objs, &obj_windows);
+        green_swap(bus, row);
+        return;
+    }
+    // With no effective color operation, only the foremost pixel is
+    // observable. Disabled targets and identity coefficients count too. Specialize the same compositor so those scanlines
+    // omit runner-up tracking and blending while retaining all layer fetches.
+    let alpha = bus.io16(0x52);
+    let alpha_changes_color =
+        bld & 0x3f00 != 0 && ((alpha & 31).min(16) != 16 || ((alpha >> 8) & 31).min(16) != 0);
+    let primary_effect = bld & 0x3f != 0
+        && match (bld >> 6) & 3 {
+            1 => alpha_changes_color,
+            2 | 3 => bus.io16(0x54) & 31 != 0,
+            _ => false,
+        };
+    if !primary_effect && !(alpha_changes_color && objs.iter().flatten().any(|dot| dot.semi)) {
+        compose_pixels::<TRACK, false>(
+            bus,
+            line,
+            row,
+            affine,
+            display,
+            enabled,
+            bld,
+            &objs,
+            &obj_windows,
+        );
+    } else {
+        compose_pixels::<TRACK, true>(
+            bus,
+            line,
+            row,
+            affine,
+            display,
+            enabled,
+            bld,
+            &objs,
+            &obj_windows,
+        );
+    }
+    green_swap(bus, row);
+}
+#[allow(clippy::too_many_arguments)]
+fn compose_pixels<const TRACK: bool, const EFFECTS: bool>(
+    bus: &Graphics<'_, TRACK>,
+    line: u16,
+    row: &mut [u8],
+    affine: Affine,
+    display: u16,
+    enabled: u16,
+    bld: u16,
+    objs: &[Option<Dot>; 240],
+    obj_windows: &[bool; 240],
+) {
+    let mode = display & 7;
     let alpha = bus.io16(0x52);
     let eva = (alpha & 31).min(16);
     let evb = ((alpha >> 8) & 31).min(16);
@@ -548,14 +698,20 @@ fn render_line_origins(bus: &Bus, line: u16, pixels: &mut [u8], affine: Affine) 
     let mut text_rows: [TextRow; 4] =
         std::array::from_fn(|bg| TextRow::new(bus, bg, line as usize));
     for x in 0..240 {
-        let mask = window_mask(bus, x, line as usize, obj_windows[x]);
+        let mask = if display & 0xe000 == 0 {
+            0x3f
+        } else {
+            window_mask(bus, x, line as usize, obj_windows[x])
+        };
         let mut first = backdrop;
         let mut second: Option<Dot> = None;
         let mut insert = |dot: Dot| {
             if dot.key() < first.key() {
-                second = Some(first);
+                if EFFECTS {
+                    second = Some(first);
+                }
                 first = dot;
-            } else if second.is_none_or(|below| dot.key() < below.key()) {
+            } else if EFFECTS && second.is_none_or(|below| dot.key() < below.key()) {
                 second = Some(dot);
             }
         };
@@ -577,7 +733,7 @@ fn render_line_origins(bus: &Bus, line: u16, pixels: &mut [u8], affine: Affine) 
             }
         }
         let mut color = first.color;
-        if mask & 32 != 0 {
+        if EFFECTS && mask & 32 != 0 {
             let target1 = bld & (1 << first.layer) != 0;
             let target2 = second.filter(|below| bld & (1 << (below.layer + 8)) != 0);
             let effect = (bld >> 6) & 3;
@@ -587,12 +743,22 @@ fn render_line_origins(bus: &Bus, line: u16, pixels: &mut [u8], affine: Affine) 
                 color = brighten(color, evy, effect == 2);
             }
         }
-        for component in 0..3 {
-            let value = ((color >> (component * 5)) & 31) as u8;
-            row[x * 4 + component] = (value << 3) | (value >> 2);
-        }
-        row[x * 4 + 3] = 255;
+        write_color(row, x, color);
     }
+}
+#[inline]
+fn write_color(row: &mut [u8], x: usize, color: u16) {
+    let red = (color & 31) as u8;
+    let green = ((color >> 5) & 31) as u8;
+    let blue = ((color >> 10) & 31) as u8;
+    row[x * 4..x * 4 + 4].copy_from_slice(&[
+        (red << 3) | (red >> 2),
+        (green << 3) | (green >> 2),
+        (blue << 3) | (blue >> 2),
+        255,
+    ]);
+}
+fn green_swap<const TRACK: bool>(bus: &Graphics<'_, TRACK>, row: &mut [u8]) {
     // GREEN_SWAP acts on the final LCD output, not on individual layers or
     // palette entries. Each pair is anchored at an even screen coordinate.
     if bus.io16(2) & 1 != 0 {
@@ -602,5 +768,90 @@ fn render_line_origins(bus: &Bus, line: u16, pixels: &mut [u8], affine: Affine) 
     }
 }
 
+/// With no color effects, lower layers cannot affect an opaque upper pixel.
+/// Prepare layer order once per scanline and stop fetching at the first winner.
+fn compose_text_opaque<const TRACK: bool>(
+    bus: &Graphics<'_, TRACK>,
+    line: u16,
+    row: &mut [u8],
+    display: u16,
+    enabled: u16,
+    objs: &[Option<Dot>; 240],
+    obj_windows: &[bool; 240],
+) {
+    let backdrop = palette(bus, 0);
+    let mut rows: [TextRow; 4] = std::array::from_fn(|bg| TextRow::new(bus, bg, line as usize));
+    let mut order = [0usize; 4];
+    let mut keys = [0u8; 4];
+    let mut count = 0;
+    for (bg, text_row) in rows.iter().enumerate() {
+        if enabled & (1 << bg) == 0 {
+            continue;
+        }
+        let key = ((text_row.cnt & 3) * 8) as u8 + bg as u8 + 1;
+        let mut at = count;
+        while at > 0 && keys[at - 1] > key {
+            keys[at] = keys[at - 1];
+            order[at] = order[at - 1];
+            at -= 1;
+        }
+        keys[at] = key;
+        order[at] = bg;
+        count += 1;
+    }
+    for x in 0..240 {
+        let mask = if display & 0xe000 == 0 {
+            0x3f
+        } else {
+            window_mask(bus, x, line as usize, obj_windows[x])
+        };
+        let object = objs[x].filter(|_| mask & 16 != 0);
+        let object_key = object.map_or(u8::MAX, |dot| dot.key());
+        let mut color = object.map_or(backdrop, |dot| dot.color);
+        for at in 0..count {
+            let bg = order[at];
+            if object_key < keys[at] {
+                break;
+            }
+            if mask & (1 << bg) != 0 {
+                if let Some(dot) = rows[bg].dot(bus, bg, x) {
+                    color = dot.color;
+                    break;
+                }
+            }
+        }
+        write_color(row, x, color);
+    }
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+fn render_line_origins(bus: &Bus, line: u16, pixels: &mut [u8], affine: Affine) {
+    compose_line(&Graphics::<false>::new(bus), line, pixels, affine);
+}
+
+#[cfg(feature = "render-cache")]
+#[cfg_attr(feature = "profile-rendering", inline(never))]
+pub(crate) fn render_cached(
+    bus: &Bus,
+    line: u16,
+    pixels: &mut [u8],
+    cache: &mut crate::render_cache::Cache,
+) {
+    if cache.debug_step {
+        render_line(bus, line, pixels);
+        return;
+    }
+    if cache.matches(bus, line) {
+        return;
+    }
+    if !cache.track(line) {
+        render_line(bus, line, pixels);
+        return;
+    }
+    let graphics = Graphics::<true>::new(bus);
+    compose_line(&graphics, line, pixels, bus.affine);
+    cache.record(bus, line, std::array::from_fn(|i| graphics.reads[i].get()));
+}

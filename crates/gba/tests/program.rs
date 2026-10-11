@@ -9,6 +9,489 @@ fn put_words(machine: &mut GameBoyAdvance, address: u32, words: &[u32]) {
     machine.bus.take_cycles();
 }
 #[test]
+fn bios_null_decompression_returns_to_arm_thumb_and_next_valid_stream_runs() {
+    for thumb in [false, true] {
+        for number in [0x11u8, 0x12, 0x14, 0x15] {
+            let mut rom = vec![0; 0x200];
+            if thumb {
+                rom[..6].copy_from_slice(&[number, 0xdf, number, 0xdf, 0xfe, 0xe7]);
+            } else {
+                for (n, word) in [
+                    0xef000000 | (u32::from(number) << 16),
+                    0xef000000 | (u32::from(number) << 16),
+                    0xeafffffe,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    rom[n * 4..n * 4 + 4].copy_from_slice(&word.to_le_bytes());
+                }
+            }
+            let mut m = GameBoyAdvance::new(rom, None).unwrap();
+            m.cpu
+                .set_cpsr(0x6000001f | if thumb { 0x20 } else { 0 })
+                .unwrap();
+            m.cpu.r[0] = 0;
+            m.cpu.r[1] = 0x02000100;
+            m.cpu.r[4] = 0x12345678;
+            m.cpu.r[14] = 0x08000100;
+            put_words(&mut m, 0x02000100, &[0xeeeeeeee]);
+            let original = m.cpu.r;
+            let flags = m.cpu.cpsr();
+            m.step();
+            assert!(m.fault.is_none(), "{:?}", m.fault);
+            assert_eq!(&m.cpu.r[..15], &original[..15]);
+            assert_eq!(m.cpu.cpsr(), flags);
+            assert_eq!(m.cpu.r[15], 0x08000000 + if thumb { 2 } else { 4 });
+            assert_eq!(m.bus.peek32(0x02000100), 0xeeeeeeee);
+
+            // Resume through the next real SWI with a valid original stream.
+            let stream = if number <= 0x12 {
+                [0x10, 4, 0, 0, 0, b'A', b'B', b'C', b'D']
+            } else {
+                [0x30, 4, 0, 0, 3, b'A', b'B', b'C', b'D']
+            };
+            m.bus.ewram[..stream.len()].copy_from_slice(&stream);
+            m.cpu.r[0] = 0x02000000;
+            m.step();
+            assert!(m.fault.is_none(), "{:?}", m.fault);
+            assert_eq!(&m.bus.ewram[0x100..0x104], b"ABCD");
+            assert_eq!(m.cpu.cpsr(), flags);
+            assert_eq!(m.cpu.r[4], 0x12345678);
+            assert_eq!(m.cpu.r[15], 0x08000000 + if thumb { 4 } else { 8 });
+        }
+    }
+}
+#[test]
+fn bios_sound_hooks_execute_arm_thumb_nested_swis_and_replay_inside_callback() {
+    use rustboy_emulator_api::Emulator;
+    for caller_thumb in [false, true] {
+        for hook_thumb in [false, true] {
+            let mut rom = vec![0; 0x200];
+            if caller_thumb {
+                rom[..6].copy_from_slice(&[0x1a, 0xdf, 0x1c, 0xdf, 0xfe, 0xe7]);
+            } else {
+                for (i, op) in [0xef1a0000u32, 0xef1c0000, 0xeafffffe]
+                    .into_iter()
+                    .enumerate()
+                {
+                    rom[i * 4..i * 4 + 4].copy_from_slice(&op.to_le_bytes());
+                }
+            }
+            if hook_thumb {
+                for (i, op) in [0x6801u16, 0x3101, 0x6001, 0x2010, 0xdf08, 0x4770]
+                    .into_iter()
+                    .enumerate()
+                {
+                    rom[0x100 + i * 2..0x102 + i * 2].copy_from_slice(&op.to_le_bytes());
+                }
+            } else {
+                for (i, op) in [
+                    0xe5901000u32,
+                    0xe2811001,
+                    0xe5801000,
+                    0xe3a00010,
+                    0xef080000,
+                    0xe12fff1e,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    rom[0x100 + i * 4..0x104 + i * 4].copy_from_slice(&op.to_le_bytes());
+                }
+            }
+            let mut m = GameBoyAdvance::new(rom, None).unwrap();
+            m.cpu
+                .set_cpsr(0x2000001f | if caller_thumb { 0x20 } else { 0 })
+                .unwrap();
+            m.cpu.r[0] = 0x02001000;
+            m.step();
+            put_words(
+                &mut m,
+                0x02001020,
+                &[0x08000100 | u32::from(hook_thumb), 0x03000200, 0],
+            );
+            for i in 1..13 {
+                m.cpu.r[i] = 0x12120000 + i as u32;
+            }
+            m.cpu.r[14] = 0x080001f0;
+            let original = m.cpu.r;
+            let flags = m.cpu.cpsr();
+            let resume = 0x08000000 + if caller_thumb { 4 } else { 8 };
+            let mut saved = None;
+            for _ in 0..200 {
+                m.step();
+                assert!(m.fault.is_none(), "{:?}", m.fault);
+                if m.cpu.r[15] == 0x08000100 {
+                    saved = Some((m.export_state(), m.clocks));
+                }
+                if m.cpu.r[15] == resume {
+                    break;
+                }
+            }
+            assert_eq!(m.cpu.r[15], resume);
+            assert_eq!(m.cpu.cpsr(), flags);
+            assert_eq!(&m.cpu.r[..15], &original[..15]);
+            assert_eq!(m.bus.peek32(0x03000200), 1);
+            assert_eq!(m.bus.peek32(0x02001000), 0x68736d53);
+            let completed = m.export_state();
+            let (saved, clocks) = saved.expect("hook must run on guest CPU");
+            let remaining = m.clocks - clocks;
+            m.import_state(&saved).unwrap();
+            m.run(remaining);
+            assert!(m.export_state() == completed, "callback replay differs");
+        }
+    }
+}
+#[test]
+fn private_bios_sound_entries_cannot_be_called_as_cartridge_swis() {
+    for number in [0x80u8, 0x81, 0x82, 0xa6, 0xa7, 0xa8] {
+        let mut rom = vec![0; 192];
+        rom[..4].copy_from_slice(&(0xef000000u32 | (u32::from(number) << 16)).to_le_bytes());
+        let mut m = GameBoyAdvance::new(rom, None).unwrap();
+        m.step();
+        assert!(
+            m.fault.is_some(),
+            "private SWI {number:x} must reject cartridge calls"
+        );
+    }
+}
+#[test]
+fn bios_music_guest_player_chain_fifo_audio_and_jump_entries_replay() {
+    use rustboy_emulator_api::Emulator;
+    let mut rom = vec![0; 0x200];
+    for (i, op) in [
+        0xef1a0000u32,
+        0xef200000,
+        0xef210000,
+        0xef1c0000,
+        0xef1d0000,
+        0xeafffffe,
+        0xef2a0000,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        rom[i * 4..i * 4 + 4].copy_from_slice(&op.to_le_bytes());
+    }
+    // A cartridge hook appended after two BIOS players must still execute.
+    for (i, op) in [0xe5901000u32, 0xe2811001, 0xe5801000, 0xe12fff1e]
+        .into_iter()
+        .enumerate()
+    {
+        rom[0x100 + i * 4..0x104 + i * 4].copy_from_slice(&op.to_le_bytes());
+    }
+    let mut m = GameBoyAdvance::new(rom, None).unwrap();
+    const A: u32 = 0x02001000;
+    const SONG: u32 = 0x02008000;
+    const TONES: u32 = 0x02008100;
+    const STREAM: u32 = 0x02008200;
+    const WAVE: u32 = 0x02009000;
+    m.cpu.r[0] = A;
+    m.step();
+    put_words(&mut m, A + 0x20, &[0x08000100, 0x03000200, 0]);
+    for (player, track) in [(0x02004000, 0x02005000), (0x02004100, 0x02005100)] {
+        m.cpu.r[15] = 0x08000004;
+        m.cpu.r[0] = player;
+        m.cpu.r[1] = track;
+        m.cpu.r[2] = 1;
+        for _ in 0..100 {
+            m.step();
+            if m.cpu.r[15] == 0x08000008 {
+                break;
+            }
+        }
+        assert_eq!(m.bus.peek32(player + 0x34), 0x68736d53);
+    }
+    put_words(&mut m, SONG, &[1, TONES, STREAM]);
+    put_words(&mut m, TONES, &[0, WAVE, 0xff80ffff]);
+    put_words(&mut m, WAVE, &[0x40000000, 16000 * 1024, 0, 4, 0xe020c040]);
+    for (i, b) in [0xbd, 0, 0xbe, 127, 0xcf, 60, 127, 0xb0, 0xb2]
+        .into_iter()
+        .chain((STREAM + 7).to_le_bytes())
+        .enumerate()
+    {
+        m.bus.write8(STREAM + i as u32, b);
+    }
+    for player in [0x02004000, 0x02004100] {
+        m.cpu.r[15] = 0x08000008;
+        m.cpu.r[0] = player;
+        m.cpu.r[1] = SONG;
+        for _ in 0..100 {
+            m.step();
+            if m.cpu.r[15] == 0x0800000c {
+                break;
+            }
+        }
+        assert_eq!(m.bus.peek32(player + 4), 0);
+        assert_eq!(m.bus.peek16(player + 0x20), 150);
+    }
+    for _ in 0..3 {
+        m.cpu.r[15] = 0x0800000c;
+        for _ in 0..300 {
+            m.step();
+            assert!(m.fault.is_none(), "{:?}", m.fault);
+            if m.cpu.r[15] == 0x08000010 {
+                break;
+            }
+        }
+        assert_eq!(m.cpu.r[15], 0x08000010);
+        for _ in 0..100 {
+            m.step(); // Pending DMA may precede the VSync instruction.
+            if m.cpu.r[15] == 0x08000014 {
+                break;
+            }
+        }
+        assert_eq!(m.cpu.r[15], 0x08000014);
+        m.run(FRAME_CYCLES);
+    }
+    assert_eq!(m.bus.peek32(0x03000200), 3);
+    assert_eq!(m.bus.peek32(0x0200400c), m.bus.peek32(0x0200410c));
+    assert!(m.bus.peek32(0x0200400c) > 0);
+    let pcm = m.drain_audio().samples;
+    assert!(pcm.iter().all(|v| v.is_finite()));
+    assert!(
+        pcm.iter().any(|v| v.abs() > 0.01),
+        "PCM must pass through timer/FIFO DMA into the APU"
+    );
+    let state = m.export_state();
+    m.run(FRAME_CYCLES);
+    let next = m.export_state();
+    let audio = m.drain_audio().samples;
+    m.import_state(&state).unwrap();
+    m.run(FRAME_CYCLES);
+    assert_eq!(m.export_state(), next);
+    assert_eq!(m.drain_audio().samples, audio);
+    m.cpu.r[15] = 0x08000018;
+    m.cpu.r[0] = 0x02006000;
+    for _ in 0..100 {
+        m.step();
+        if m.cpu.r[15] == 0x0800001c {
+            break;
+        }
+    }
+    let entry = m.bus.peek32(0x02006000);
+    assert_eq!(entry & 1, 1);
+    m.cpu.set_cpsr(0x3f).unwrap();
+    m.cpu.r[15] = entry & !1;
+    m.cpu.r[14] = 0x08000014;
+    m.cpu.r[0] = 0x02004000;
+    m.cpu.r[1] = 0x02005000;
+    for _ in 0..20 {
+        m.step();
+        assert!(m.fault.is_none(), "{:?}", m.fault);
+        if m.cpu.r[15] == 0x08000014 {
+            break;
+        }
+    }
+    assert_eq!(m.cpu.r[15], 0x08000014);
+    assert_eq!(
+        m.cpu.cpsr() & 0x20,
+        0,
+        "Thumb BIOS entry must return to the ARM caller"
+    );
+    assert_eq!(
+        m.bus.peek8(0x02005000),
+        0,
+        "first jump entry terminates the track"
+    );
+}
+#[test]
+fn cartridge_mirror_comparison_accepts_keypad_input_and_replays_after_restore() {
+    use rustboy_emulator_api::Emulator;
+    for prefix in *b"AF" {
+        let mut rom = vec![0; 0x100000];
+        rom[0xac] = prefix;
+        rom[0x200] = 0x7b;
+        // Original probe: compare chip addresses, read the keypad on equality,
+        // and store the observed result. The ROM code runs from a mirror too.
+        for (n, op) in [
+            0xe5d14000u32, // LDRB r4,[r1]
+            0xe5d25000,    // LDRB r5,[r2]
+            0xe1540005,    // CMP r4,r5
+            0xe3a06000,    // MOV r6,#0
+            0x01d360b0,    // LDRHEQ r6,[r3]
+            0xe5876000,    // STR r6,[r7]
+            0xeafffffe,    // B .
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            rom[n * 4..n * 4 + 4].copy_from_slice(&op.to_le_bytes());
+        }
+        let mut m = GameBoyAdvance::new(rom, None).unwrap();
+        m.cpu.r[1] = 0x08000200;
+        m.cpu.r[2] = 0x08300200;
+        m.cpu.r[3] = 0x04000130;
+        m.cpu.r[7] = 0x03000100;
+        if prefix == b'F' {
+            m.cpu.r[15] = 0x0a300000;
+        }
+        m.bus.set_keys(8);
+        let before = m.export_state();
+        for _ in 0..6 {
+            m.step();
+        }
+        assert!(m.fault.is_none());
+        assert_eq!(
+            m.bus.peek32(0x03000100),
+            if prefix == b'F' { 0x3f7 } else { 0 }
+        );
+        let after = m.export_state();
+        let clocks = m.clocks;
+        m.import_state(&before).unwrap();
+        // Public restore releases host buttons; replay the same external input.
+        m.bus.set_keys(8);
+        m.run(clocks);
+        assert!(
+            m.export_state() == after,
+            "cartridge mapping survives restore"
+        );
+    }
+}
+#[test]
+fn video_code_retains_fetched_opcodes_until_branch_and_snapshot_replays_them() {
+    use rustboy_emulator_api::Emulator;
+    for thumb in [false, true] {
+        for start in [0x06000000, 0x06018000, 0x06fe0000] {
+            let mut m = GameBoyAdvance::new(vec![0; 192], None).unwrap();
+            let (words, target, replacement) = if thumb {
+                // STR r0,[r1]; MOVS r5,#11; MOVS r6,#17; BX r2.
+                (vec![0x250b6008, 0x47102611], start + 4, 0x4710262a)
+            } else {
+                // STR r0,[r1]; MOV r5,#11; MOV r6,#17; BX r2.
+                (
+                    vec![0xe5810000, 0xe3a0500b, 0xe3a06011, 0xe12fff12],
+                    start + 8,
+                    0xe3a0602a,
+                )
+            };
+            put_words(&mut m, start, &words);
+            m.cpu.set_cpsr(0x1f | if thumb { 0x20 } else { 0 }).unwrap();
+            m.cpu.r[15] = start;
+            m.cpu.r[0] = replacement;
+            m.cpu.r[1] = target;
+            m.cpu.r[2] = target | u32::from(thumb);
+            m.step(); // Writes an opcode already fetched by the CPU.
+            assert_eq!(m.bus.peek32(target), replacement);
+            let saved = m.export_state();
+            let clocks = m.clocks;
+            m.step();
+            m.step();
+            assert_eq!(m.cpu.r[5], 11);
+            assert_eq!(
+                m.cpu.r[6], 17,
+                "prefetched instruction survives its backing-memory write"
+            );
+            let after = m.export_state();
+            let elapsed = m.clocks - clocks;
+            m.import_state(&saved).unwrap();
+            m.run(elapsed);
+            assert_eq!(
+                m.export_state(),
+                after,
+                "slicing and snapshots retain queued values"
+            );
+            m.step(); // Branch flushes the queue and fetches the changed code.
+            m.step();
+            assert_eq!(m.cpu.r[6], 42);
+            assert!(m.fault.is_none());
+        }
+    }
+}
+#[test]
+fn dma_preserves_video_decode_queue_and_video_region_exit_has_no_stale_state() {
+    use rustboy_emulator_api::Emulator;
+    let mut m = GameBoyAdvance::new(vec![0; 192], None).unwrap();
+    put_words(&mut m, 0x06000000, &[0xe3a0500b, 0xe3a06011, 0xeafffffe]);
+    put_words(&mut m, 0x03000000, &[0xe3a0602a]);
+    m.cpu.r[15] = 0x06000000;
+    m.step();
+    m.bus.write32(0x040000d4, 0x03000000, false);
+    m.bus.write32(0x040000d8, 0x06000004, false);
+    m.bus.write32(0x040000dc, 0x84000001, false);
+    m.bus.take_cycles();
+    m.step(); // DMA replaces the next opcode with MOV r6,#42.
+    assert_eq!(m.bus.peek32(0x06000004), 0xe3a0602a);
+    let saved = m.export_state();
+    m.step();
+    assert_eq!(m.cpu.r[6], 17);
+    m.import_state(&saved).unwrap();
+    m.step();
+    assert_eq!(m.cpu.r[6], 17);
+    m.cpu.r[15] = 0x06fffffc;
+    put_words(&mut m, 0x06fffffc, &[0xe3a07055]);
+    m.step();
+    assert_eq!(m.cpu.r[7], 0x55);
+    assert_eq!(m.cpu.r[15], 0x07000000);
+    let saved = m.export_state();
+    m.import_state(&saved).unwrap();
+    assert_eq!(m.export_state(), saved);
+}
+#[test]
+fn arm_and_thumb_sound_math_and_checksum_services_return_and_replay() {
+    use rustboy_emulator_api::Emulator;
+    for thumb in [false, true] {
+        for (service, key, fine, expected) in [
+            (0x1fu8, 60, 0, 4096u32),
+            (0x1f, 168, 0, 2097152),
+            (0x1f, 168, 128, 2159503),
+            (0x0d, 0, 0, 0xbaae187f),
+        ] {
+            let mut rom = vec![0; 192];
+            if thumb {
+                for (n, op) in [0xdf00 | u16::from(service), 0x2477, 0xe7fe]
+                    .into_iter()
+                    .enumerate()
+                {
+                    rom[n * 2..n * 2 + 2].copy_from_slice(&op.to_le_bytes());
+                }
+            } else {
+                for (n, op) in [
+                    0xef000000 | (u32::from(service) << 16),
+                    0xe3a04077,
+                    0xeafffffe,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    rom[n * 4..n * 4 + 4].copy_from_slice(&op.to_le_bytes());
+                }
+            }
+            let mut m = GameBoyAdvance::new(rom, None).unwrap();
+            let flags = 0xa000001f | if thumb { 0x20 } else { 0 };
+            m.cpu.set_cpsr(flags).unwrap();
+            put_words(&mut m, 0x02000000, &[0xdeadbeef, 0x00400000]);
+            m.cpu.r[0] = 0x02000000;
+            m.cpu.r[1] = key;
+            m.cpu.r[2] = fine;
+            m.cpu.r[5] = 0x13579bdf;
+            let saved = m.export_state();
+            m.step();
+            assert_eq!(m.cpu.cpsr(), flags, "SWI restores caller mode and flags");
+            m.step();
+            assert!(
+                m.fault.is_none(),
+                "service {service:x}, thumb {thumb}: {:?}",
+                m.fault
+            );
+            assert_eq!(m.cpu.r[0], expected);
+            assert_eq!(m.cpu.r[4], 0x77);
+            assert_eq!(m.cpu.r[5], 0x13579bdf);
+            assert_eq!(m.cpu.exceptions, 1);
+            if service == 0x0d {
+                assert_eq!(m.cpu.r[1], 1);
+                assert_eq!(m.cpu.r[3], 0x4000);
+            }
+            let after = m.export_state();
+            let elapsed = m.clocks;
+            m.import_state(&saved).unwrap();
+            m.run(elapsed);
+            assert_eq!(m.export_state(), after, "sliced execution and SWI replay");
+        }
+    }
+}
+#[test]
 fn original_cartridge_captures_a_bitmap_in_160_dma3_scanline_bursts() {
     use rustboy_emulator_api::Emulator;
     // CPU stores configure display and DMA3. Every pixel comes from scheduled

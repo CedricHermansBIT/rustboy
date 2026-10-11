@@ -11,6 +11,11 @@ export function add_breakpoint_pc(addr: number): void;
 
 export function add_breakpoint_reg(reg: string, value: number): void;
 
+/**
+ * Fixed-work diagnostic, available only in the experimental JIT bundle.
+ */
+export function benchmark_gba_clocks(budget: number): number;
+
 export function clear_breakpoints(): void;
 
 export function clear_save_data(): void;
@@ -21,9 +26,47 @@ export function clear_sgb_user_palette(): void;
 
 export function clear_trace(): void;
 
+export function configure_gba_jit(imports: object): void;
+
 export function export_save_data(): Uint8Array;
 
 export function export_state(): Uint8Array;
+
+export function gba_jit_bank_read(cpu: number, reg: number): number;
+
+export function gba_jit_bank_write(cpu: number, reg: number, value: number): void;
+
+export function gba_jit_branch(cpu: number, bus: number, target: number, condition: number): void;
+
+export function gba_jit_control(cpu: number, bus: number, value: number, kind: number): void;
+
+export function gba_jit_exception(cpu: number, bus: number, swi: number): void;
+
+export function gba_jit_fetch(cpu: number, bus: number, pc: number): void;
+
+export function gba_jit_fetch_mode(cpu: number, bus: number, pc: number, thumb: number): void;
+
+export function gba_jit_fetch_run(cpu: number, bus: number, pc: number, count: number, budget: number): bigint;
+
+export function gba_jit_fetch_span(cpu: number, bus: number, pc: number, count: number, budget: number, thumb: number): bigint;
+
+export function gba_jit_finish(cpu: number, bus: number): number;
+
+export function gba_jit_internal(bus: number, clocks: number): void;
+
+export function gba_jit_read(bus: number, address: number, kind: number): number;
+
+export function gba_jit_read_full(bus: number, address: number, kind: number, sequential: number): number;
+
+export function gba_jit_refill(bus: number, target: number, thumb: number): void;
+
+export function gba_jit_status(cpu: number, bus: number, value: number, fields: number, kind: number): number;
+
+export function gba_jit_write(bus: number, address: number, value: number, kind: number): void;
+
+export function gba_jit_write_full(bus: number, address: number, value: number, kind: number, sequential: number): void;
+
+export function get_actual_speed(): number;
 
 export function get_backend_status(): string;
 
@@ -32,9 +75,15 @@ export function get_backend_status(): string;
  */
 export function get_boot_rom_license(): string;
 
+export function get_compatible_state_ids(): string[];
+
 export function get_debug_flags(): number;
 
 export function get_debug_state(): string;
+
+export function get_gba_jit_statistics(): string;
+
+export function get_gba_render_statistics(): string;
 
 export function get_is_cgb(): boolean;
 
@@ -91,6 +140,16 @@ export function set_controller_button(port: number, button: string, pressed: boo
 
 export function set_debug_enabled(enabled: boolean): void;
 
+export function set_gba_fast_render_enabled(enabled: boolean): void;
+
+export function set_gba_full_jit_enabled(enabled: boolean): void;
+
+export function set_gba_jit_enabled(enabled: boolean): void;
+
+export function set_gba_jit_ram_enabled(enabled: boolean): void;
+
+export function set_gba_video_stride(stride: number): void;
+
 export function set_key_state(key_code: number, pressed: boolean): void;
 
 export function set_paused(paused: boolean): void;
@@ -119,16 +178,22 @@ export interface InitOutput {
     readonly add_breakpoint_opcode: (a: number) => void;
     readonly add_breakpoint_pc: (a: number) => void;
     readonly add_breakpoint_reg: (a: number, b: number, c: number) => void;
+    readonly benchmark_gba_clocks: (a: number) => [number, number, number];
     readonly clear_breakpoints: () => void;
     readonly clear_sgb_sound_firmware: () => void;
     readonly clear_sgb_user_palette: () => [number, number];
     readonly clear_trace: () => void;
     readonly export_save_data: () => [number, number];
     readonly export_state: () => [number, number];
+    readonly gba_jit_finish: (a: number, b: number) => number;
+    readonly get_actual_speed: () => number;
     readonly get_backend_status: () => [number, number];
     readonly get_boot_rom_license: () => [number, number];
+    readonly get_compatible_state_ids: () => [number, number];
     readonly get_debug_flags: () => number;
     readonly get_debug_state: () => [number, number];
+    readonly get_gba_jit_statistics: () => [number, number];
+    readonly get_gba_render_statistics: () => [number, number];
     readonly get_is_cgb: () => number;
     readonly get_rom_title: () => [number, number];
     readonly get_save_key: () => [number, number];
@@ -154,6 +219,10 @@ export interface InitOutput {
     readonly set_border_visible: (a: number) => void;
     readonly set_controller_button: (a: number, b: number, c: number, d: number) => [number, number];
     readonly set_debug_enabled: (a: number) => void;
+    readonly set_gba_fast_render_enabled: (a: number) => void;
+    readonly set_gba_full_jit_enabled: (a: number) => void;
+    readonly set_gba_jit_enabled: (a: number) => void;
+    readonly set_gba_jit_ram_enabled: (a: number) => void;
     readonly set_key_state: (a: number, b: number) => void;
     readonly set_paused: (a: number) => void;
     readonly set_sgb_sound_firmware: (a: number, b: number) => [number, number, number];
@@ -161,18 +230,38 @@ export interface InitOutput {
     readonly set_vram_view: (a: number, b: number) => [number, number];
     readonly toggle_trace: () => void;
     readonly trace_len: () => number;
-    readonly get_speed: () => number;
     readonly set_speed: (a: number) => void;
+    readonly gba_jit_fetch_span: (a: number, b: number, c: number, d: number, e: number, f: number) => bigint;
+    readonly gba_jit_fetch_run: (a: number, b: number, c: number, d: number, e: number) => bigint;
+    readonly gba_jit_status: (a: number, b: number, c: number, d: number, e: number) => number;
+    readonly gba_jit_write_full: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly set_gba_video_stride: (a: number) => void;
+    readonly gba_jit_bank_write: (a: number, b: number, c: number) => void;
+    readonly gba_jit_exception: (a: number, b: number, c: number) => void;
+    readonly gba_jit_fetch: (a: number, b: number, c: number) => void;
+    readonly gba_jit_read: (a: number, b: number, c: number) => number;
+    readonly gba_jit_refill: (a: number, b: number, c: number) => void;
+    readonly gba_jit_bank_read: (a: number, b: number) => number;
+    readonly gba_jit_internal: (a: number, b: number) => void;
+    readonly gba_jit_branch: (a: number, b: number, c: number, d: number) => void;
+    readonly gba_jit_control: (a: number, b: number, c: number, d: number) => void;
+    readonly gba_jit_fetch_mode: (a: number, b: number, c: number, d: number) => void;
+    readonly gba_jit_read_full: (a: number, b: number, c: number, d: number) => number;
+    readonly gba_jit_write: (a: number, b: number, c: number, d: number) => void;
+    readonly configure_gba_jit: (a: any) => void;
+    readonly get_speed: () => number;
     readonly clear_save_data: () => void;
     readonly wasm_bindgen_a3ec65c79b425d3b___convert__closures_____invoke___f64______true_: (a: number, b: number, c: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+    readonly __wbindgen_export: WebAssembly.Table;
     readonly __wbindgen_exn_store: (a: number) => void;
     readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_destroy_closure: (a: number, b: number) => void;
     readonly __externref_table_dealloc: (a: number) => void;
+    readonly __externref_drop_slice: (a: number, b: number) => void;
     readonly __wbindgen_start: () => void;
 }
 

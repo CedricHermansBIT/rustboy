@@ -35,3 +35,9 @@ test('refuses empty, missing, multiply-parented and cyclic profile nodes', () =>
   cyclic.nodes[3].children.push(1);
   assert.throws(() => summarizeRendering(cyclic), /cyclic/);
 });
+
+test('recognizes the dependency cache renderer boundary', () => {
+  const data = profile();
+  data.nodes.find(node => node.callFrame.functionName.endsWith('::ppu::render_line')).callFrame.functionName = 'rustboy_gba[hash]::ppu::render_cached';
+  assert.equal(summarizeRendering(data).renderingSamples, summarizeRendering(profile()).renderingSamples);
+});

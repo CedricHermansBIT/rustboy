@@ -116,7 +116,8 @@ fn partial_command_busy_program_and_output_replay_in_snapshots() {
     m.import_state(&output).unwrap();
     finish(&mut m);
     assert_eq!(m.bus.peek32(0x02010000 + 128), expected);
-    let position = output.len() - 38 - 115 - 5 - 6 - 5 - 5; // EEPROM precedes PSG, BIOS, prefetch, data-bus and memory-control state.
+    // EEPROM precedes PSG, BIOS, prefetch, data-bus, memory-control and wait-resume state.
+    let position = output.len() - 38 - 115 - 5 - 6 - 5 - 5 - 4 - 13 - 4;
     let mut invalid = output.clone();
     invalid[position] = 7;
     let length = invalid.len();
@@ -140,4 +141,31 @@ fn large_rom_only_maps_last_256_bytes_and_does_not_add_sram() {
     assert_eq!(m.bus.read16(0x0dffff00, false), 1);
     m.bus.write8(0x0e000000, 0);
     assert_eq!(m.bus.read8(0x0e000000), 255);
+}
+#[test]
+fn dma_read_turnaround_high_returns_programmed_data_and_replays() {
+    for bits in [6, 14] {
+        let mut m = machine();
+        let value = 0x1020304050607080;
+        send(&mut m, &command(bits, false, 31, value));
+        finish(&mut m);
+        m.run(108368);
+        let mut request = command(bits, true, 31, 0);
+        *request.last_mut().unwrap() = 0xffff;
+        send(&mut m, &request);
+        finish(&mut m);
+        let saved = m.export_state();
+        for replay in [false, true] {
+            if replay {
+                m.import_state(&saved).unwrap();
+            }
+            dma(&mut m, 0x0dffff00, 0x02010000, 68);
+            finish(&mut m);
+            let mut got = 0;
+            for n in 4..68 {
+                got = (got << 1) | u64::from(m.bus.peek16(0x02010000 + n * 2));
+            }
+            assert_eq!(got, value);
+        }
+    }
 }

@@ -169,8 +169,10 @@ dependencies = [
 name = "rustboy-gba"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "png",
  "rustboy-emulator-api",
+ "wasm-bindgen",
 ]
 
 [[package]]

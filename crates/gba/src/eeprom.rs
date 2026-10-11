@@ -114,10 +114,16 @@ impl Backup {
         e.input_len = 0;
         e.expected = 0;
         let bits = usize::from(e.address_bits);
-        if e.input[0] != 1 || e.input[usize::from(count) - 1] != 0 {
+        if e.input[0] != 1 {
             return;
         }
         let read = e.input[1] == 1;
+        // The final read-command clock changes direction to output. Its input
+        // value is not another address bit. SDK callers can leave it high;
+        // rejecting that value discards valid reads after successful writes.
+        if !read && e.input[usize::from(count) - 1] != 0 {
+            return;
+        }
         if usize::from(count) != bits + if read { 3 } else { 67 } {
             return;
         }
@@ -255,5 +261,32 @@ mod tests {
             assert_eq!(b.eeprom.peek(), 0);
         }
         assert_eq!(b.eeprom.output_left, 68);
+    }
+    #[test]
+    fn read_turnaround_accepts_either_input_level_in_both_geometries() {
+        for bits in [6, 14] {
+            let mut b = Backup::detect(b"EEPROM_V124");
+            let value = 0x0123456789abcdef;
+            command(&mut b, bits, false, 31, value);
+            b.clock_eeprom(WRITE_CLOCKS);
+            for last in [0, 1] {
+                b.begin_eeprom(u32::from(bits) + 3);
+                b.eeprom_bit(1);
+                b.eeprom_bit(1);
+                for n in (0..bits).rev() {
+                    b.eeprom_bit(31 >> n);
+                }
+                b.eeprom_bit(last);
+                for _ in 0..4 {
+                    assert_eq!(b.eeprom.read(), 0);
+                }
+                let mut got = 0;
+                for _ in 0..64 {
+                    got = (got << 1) | u64::from(b.eeprom.read());
+                }
+                assert_eq!(got, value);
+                assert!(b.eeprom.valid(b.data.len()));
+            }
+        }
     }
 }

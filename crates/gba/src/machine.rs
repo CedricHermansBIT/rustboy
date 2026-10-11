@@ -15,6 +15,10 @@ pub struct MissingBiosException {
 }
 
 pub struct GameBoyAdvance {
+    #[cfg(all(feature = "jit", target_arch = "wasm32"))]
+    pub(crate) jit: crate::jit::Cache,
+    #[cfg(feature = "render-cache")]
+    pub(crate) rendering: crate::render_cache::Cache,
     pub cpu: Cpu,
     pub bus: Bus,
     pub clocks: u64,
@@ -22,12 +26,22 @@ pub struct GameBoyAdvance {
     /// Stop rather than executing zero-filled exception vectors as fake firmware.
     pub fault: Option<MissingBiosException>,
     pub(crate) pixels: Vec<u8>,
+    video_stride: u32,
+    render_this_frame: bool,
+    rendered_frames: u64,
+    skipped_frames: u64,
     pub(crate) line: u16,
     pub(crate) line_clocks: u16,
     pub(crate) wait_mask: Option<u16>,
     /// The suspended IntrWait caller, not inferred from the current CPU mode.
     pub(crate) wait_resume_pc: u32,
     pub(crate) paused: bool,
+    /// Diagnostic only; rebuilt on restore and never part of hardware state.
+    pub(crate) accelerated_instructions: u64,
+    #[cfg(feature = "idle-loops")]
+    pub(crate) idle: crate::idle::Detector,
+    #[cfg(all(feature = "idle-loops", not(target_arch = "wasm32")))]
+    pub(crate) idle_policy: crate::idle::Policy,
     #[cfg(feature = "decoded-blocks")]
     pub(crate) decoded: Box<crate::decoded::Cache>,
 }
@@ -53,17 +67,30 @@ impl GameBoyAdvance {
             cpu.r[15] = 0x08000000;
         }
         Ok(Self {
+            #[cfg(all(feature = "jit", target_arch = "wasm32"))]
+            jit: crate::jit::Cache::default(),
+            #[cfg(feature = "render-cache")]
+            rendering: crate::render_cache::Cache::default(),
             cpu,
             bus,
             clocks: 0,
             frames: 0,
             fault: None,
             pixels: vec![255; 240 * 160 * 4],
+            video_stride: 1,
+            render_this_frame: true,
+            rendered_frames: 0,
+            skipped_frames: 0,
             line: 0,
             line_clocks: 0,
             wait_mask: None,
             wait_resume_pc: 0,
             paused: false,
+            accelerated_instructions: 0,
+            #[cfg(feature = "idle-loops")]
+            idle: crate::idle::Detector::default(),
+            #[cfg(all(feature = "idle-loops", not(target_arch = "wasm32")))]
+            idle_policy: crate::idle::Policy::default(),
             #[cfg(feature = "decoded-blocks")]
             decoded: Box::default(),
         })
@@ -73,7 +100,41 @@ impl GameBoyAdvance {
             .trim_end_matches('\0')
             .to_owned()
     }
+    /// Reused/composed scanlines. Counters are not hardware state.
+    pub fn rendering_counts(&self) -> (u64, u64) {
+        #[cfg(feature = "render-cache")]
+        {
+            (self.rendering.hits, self.rendering.misses)
+        }
+        #[cfg(not(feature = "render-cache"))]
+        {
+            (0, 0)
+        }
+    }
+    pub fn accelerated_instructions(&self) -> u64 {
+        self.accelerated_instructions
+    }
     pub fn step(&mut self) -> u64 {
+        let rendering = self.render_this_frame;
+        self.render_this_frame = true;
+        #[cfg(feature = "render-cache")]
+        {
+            self.rendering.debug_step = true;
+        }
+        let clocks = self.step_inner();
+        self.render_this_frame = rendering;
+        #[cfg(feature = "render-cache")]
+        {
+            self.rendering.debug_step = false;
+            self.rendering.clear(); // No proof spans direct host memory edits.
+        }
+        clocks
+    }
+    pub(crate) fn step_inner(&mut self) -> u64 {
+        #[cfg(feature = "idle-loops")]
+        {
+            self.idle = crate::idle::Detector::default();
+        }
         if self.fault.is_some() || self.bus.memory_locked {
             return 0;
         }
@@ -142,7 +203,12 @@ impl GameBoyAdvance {
                     self.bus.peek8(address.wrapping_add(2))
                 };
                 self.bus.bios_access = true;
-                match crate::bios::service(number, &mut self.cpu, &mut self.bus) {
+                let result =
+                    crate::bios::sound::private(number, address, &mut self.cpu, &mut self.bus)
+                        .unwrap_or_else(|| {
+                            crate::bios::service(number, &mut self.cpu, &mut self.bus)
+                        });
+                match result {
                     Ok(effect) => {
                         if !matches!(effect, crate::bios::Effect::Reset) {
                             self.cpu.return_swi(&mut self.bus);
@@ -162,6 +228,62 @@ impl GameBoyAdvance {
                             crate::bios::Effect::Reset => {
                                 self.wait_mask = None;
                                 self.wait_resume_pc = 0;
+                            }
+                            crate::bios::Effect::SoundMain(area) => {
+                                // All suspended state is guest RAM: IRQ nesting and
+                                // snapshots need no host continuation or new format.
+                                let frame = self.cpu.r[13].wrapping_sub(68);
+                                if !crate::bios::sound::stack_valid(&self.bus, frame) {
+                                    self.fault = Some(MissingBiosException {
+                                        instruction_address: address,
+                                        vector,
+                                        reason: "BIOS sound callback stack must fit in RAM",
+                                    });
+                                } else {
+                                    for (i, value) in self.cpu.r.into_iter().enumerate() {
+                                        self.bus.write32(frame + i as u32 * 4, value, true);
+                                    }
+                                    self.bus.write32(frame + 64, self.cpu.cpsr(), true);
+                                    self.cpu.r[13] = frame;
+                                    self.cpu.r[4] = area;
+                                    self.cpu.set_cpsr(self.cpu.cpsr() & !0x20).unwrap();
+                                    self.cpu.write_result(
+                                        &mut self.bus,
+                                        15,
+                                        crate::bios::sound::MAIN,
+                                        false,
+                                    );
+                                }
+                            }
+                            crate::bios::Effect::SoundReturn => {
+                                let frame = self.cpu.r[13];
+                                if !crate::bios::sound::stack_valid(&self.bus, frame) {
+                                    self.fault = Some(MissingBiosException {
+                                        instruction_address: address,
+                                        vector,
+                                        reason: "BIOS sound callback stack is invalid",
+                                    });
+                                } else {
+                                    let registers = std::array::from_fn(|i| {
+                                        self.bus.peek32(frame + i as u32 * 4)
+                                    });
+                                    let flags = self.bus.peek32(frame + 64);
+                                    if self.cpu.set_cpsr(flags).is_err() {
+                                        self.fault = Some(MissingBiosException {
+                                            instruction_address: address,
+                                            vector,
+                                            reason: "BIOS sound callback processor mode is invalid",
+                                        });
+                                    } else {
+                                        self.cpu.r = registers;
+                                        self.cpu.write_result(
+                                            &mut self.bus,
+                                            15,
+                                            registers[15],
+                                            false,
+                                        );
+                                    }
+                                }
                             }
                             _ => {}
                         }
@@ -183,20 +305,36 @@ impl GameBoyAdvance {
                 });
             }
         }
+        #[cfg(feature = "render-cache")]
+        self.bus.sync_graphics();
     }
     /// CPU clock budget, including whole-instruction overshoot. No host sleep,
-    /// rendering callback or allocation in the execution loop.
+    /// rendering callback. Derived scanline dependencies are retained for reuse.
     pub fn run(&mut self, budget: u64) -> u64 {
+        #[cfg(all(feature = "jit", target_arch = "wasm32"))]
+        if !self.jit.batch_active {
+            self.jit.new_epoch();
+        }
+        #[cfg(feature = "render-cache")]
+        self.bus.sync_graphics();
+        #[cfg(feature = "idle-loops")]
+        {
+            self.idle = crate::idle::Detector::default();
+        }
         let start = self.clocks;
         while self.clocks.wrapping_sub(start) < budget && self.fault.is_none() {
             let clocks = if self.can_run_cpu_slice() {
                 self.run_cpu_slice(budget - self.clocks.wrapping_sub(start))
             } else {
-                self.step()
+                self.step_inner()
             };
             if clocks == 0 {
                 break;
             }
+        }
+        #[cfg(feature = "idle-loops")]
+        {
+            self.idle = crate::idle::Detector::default();
         }
         self.clocks.wrapping_sub(start)
     }
@@ -234,7 +372,16 @@ impl GameBoyAdvance {
             clocks -= advance;
             if self.line_clocks == 1006 {
                 if self.line < 160 {
-                    self.render_line();
+                    if self.render_this_frame {
+                        self.render_line();
+                    }
+                    if self.line == 159 {
+                        if self.render_this_frame {
+                            self.rendered_frames += 1;
+                        } else {
+                            self.skipped_frames += 1;
+                        }
+                    }
                 }
                 let stat = self.bus.io16(4) | 2;
                 self.bus.set_io(4, stat);
@@ -249,6 +396,10 @@ impl GameBoyAdvance {
                 self.line_clocks = 0;
                 self.line = (self.line + 1) % 228;
                 if self.line == 0 || self.line == 160 {
+                    if self.line == 0 {
+                        self.render_this_frame =
+                            self.frames.is_multiple_of(u64::from(self.video_stride));
+                    }
                     self.bus.reload_affine();
                 } else if self.line < 160 {
                     self.bus.advance_affine(self.line);
@@ -276,7 +427,22 @@ impl GameBoyAdvance {
             }
         }
     }
+    pub fn set_fast_text_render(&mut self, enabled: bool) {
+        self.bus.fast_text_render = enabled;
+    }
+    pub fn set_video_frame_stride(&mut self, stride: u32) {
+        self.video_stride = stride.clamp(1, 16);
+        if self.video_stride == 1 {
+            self.render_this_frame = true;
+        }
+    }
+    pub fn video_render_statistics(&self) -> (u32, u64, u64) {
+        (self.video_stride, self.rendered_frames, self.skipped_frames)
+    }
     fn render_line(&mut self) {
+        #[cfg(feature = "render-cache")]
+        crate::ppu::render_cached(&self.bus, self.line, &mut self.pixels, &mut self.rendering);
+        #[cfg(not(feature = "render-cache"))]
         crate::ppu::render_line(&self.bus, self.line, &mut self.pixels);
     }
 }
@@ -285,6 +451,61 @@ impl GameBoyAdvance {
 mod tests {
     use super::*;
     use crate::cpu::Memory;
+    #[test]
+    fn presentation_skips_preserve_hardware_and_selected_frames() {
+        use rustboy_emulator_api::Emulator;
+        for stride in [1, 2, 4, 8] {
+            let mut reference = machine();
+            reference.bus.halted = true;
+            reference.bus.set_io(0, 0);
+            reference.bus.write16(0x04000100, 0xff80, false);
+            reference.bus.write16(0x04000102, 0xc0, false);
+            // Repeating HBlank DMA remains active even on undisplayed frames.
+            reference.bus.write32(0x040000d4, 0x02000000, false);
+            reference.bus.write32(0x040000d8, 0x05000000, false);
+            reference.bus.write16(0x040000dc, 1, false);
+            reference.bus.write16(0x040000de, 0xa740, false);
+            reference.bus.take_cycles();
+            let saved = reference.export_state();
+            let mut skipped = machine();
+            skipped.import_state(&saved).unwrap();
+            skipped.set_video_frame_stride(stride);
+            let mut previous = skipped.pixels.clone();
+            for frame in 0..16 {
+                let color = (frame as u16 * 0x421) & 0x7fff;
+                for m in [&mut reference, &mut skipped] {
+                    m.bus.ewram[..4].copy_from_slice(&u32::from(color).to_le_bytes());
+                    m.bus.palette[..2].copy_from_slice(&color.to_le_bytes());
+                    m.run_frame();
+                }
+                if frame % stride == 0 {
+                    assert_eq!(
+                        skipped.pixels, reference.pixels,
+                        "stride={stride}, frame={frame}"
+                    );
+                    previous = skipped.pixels.clone();
+                } else {
+                    assert_eq!(skipped.pixels, previous, "skipped frame {frame}");
+                }
+                let shown = skipped.pixels.clone();
+                skipped.pixels.clone_from(&reference.pixels);
+                assert_eq!(
+                    skipped.export_state(),
+                    reference.export_state(),
+                    "hardware stride={stride}, frame={frame}"
+                );
+                skipped.pixels = shown;
+            }
+            assert_eq!(
+                skipped.video_render_statistics(),
+                (stride, 16 / u64::from(stride), 16 - 16 / u64::from(stride))
+            );
+            skipped.set_video_frame_stride(1);
+            skipped.run_frame();
+            reference.run_frame();
+            assert_eq!(skipped.pixels, reference.pixels, "resume full rendering");
+        }
+    }
     fn machine() -> GameBoyAdvance {
         let mut rom = vec![0; 192];
         rom[..4].copy_from_slice(&0xeafffffeu32.to_le_bytes());

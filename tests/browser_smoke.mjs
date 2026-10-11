@@ -121,6 +121,19 @@ try {
     }
     throw new Error(`Browser assertion timed out: ${expression}`);
   }
+  async function checkActualSpeed(system) {
+    await evaluate("openSettings(); document.querySelector('#show-actual-speed').click()");
+    assert.equal(await evaluate("document.querySelector('#actual-speed').hidden"), false);
+    await until("document.querySelector('#actual-speed').textContent === 'Paused'");
+    assert.equal(await evaluate("localStorage.getItem('rustboy_show_actual_speed')"), 'true');
+    await evaluate("document.querySelector('#settings-close').click(); Module._set_speed(8)");
+    await until("Number.isFinite(Module._get_actual_speed()) && /^Actual: [0-9]+\\.[0-9]{2}× \\([0-9]+%\\)$/.test(document.querySelector('#actual-speed').textContent)");
+    assert.ok(await evaluate("(() => { updateActualSpeed(); const speed = Module._get_actual_speed(); return document.querySelector('#actual-speed').textContent === `Actual: ${speed.toFixed(2)}× (${Math.round(speed * 100)}%)`; })()"), 'badge uses measured speed instead of requested 8×');
+    await evaluate("Module._set_speed(1); openSettings(); document.querySelector('#show-actual-speed').click(); document.querySelector('#settings-close').click()");
+    assert.equal(await evaluate("document.querySelector('#actual-speed').hidden"), true);
+    assert.equal(await evaluate("localStorage.getItem('rustboy_show_actual_speed')"), 'false');
+    console.log(`${system}: actual speed measurement, pause label and toggle passed`);
+  }
   await call('Page.navigate', {url: `http://127.0.0.1:${server.address().port}${basePath}/`});
   await until("typeof window.mem === 'function'");
   assert.equal(await evaluate("!!document.querySelector('#rustboy-canvas')"), true);
@@ -267,6 +280,7 @@ try {
     await until("(() => { const c=document.querySelector('#rustboy-canvas'); const p=c.getContext('2d').getImageData(239,159,1,1).data; return p[0]===255 && p[1]===0 && p[2]===0; })()");
     assert.equal(await evaluate("document.querySelector('#rustboy-canvas').height"),160);
     await until("window.gbaPsgSamples > 2000 && window.gbaPsgEnergy/window.gbaPsgSamples > 0.001");
+    await checkActualSpeed('GBA');
     assert.equal(await evaluate("window.gbaPsgFinite"),true,'PSG PCM reaches the browser stereo queue');
     await evaluate("queueAudioSamples=window.gbaOriginalAudioQueue");
     assert.ok(await evaluate("Module._get_state_id().startsWith('gba-')"));
@@ -276,10 +290,52 @@ try {
     assert.ok(await evaluate("Module._get_save_key().startsWith('rustboy_save_gba_') && Module._export_save_data().length===131072 && Module._export_save_data()[0x1234]===0x5a"));
     await evaluate("(async () => { const wasm=await import('./out/rustboy.js'); wasm.save_game(); window.gbaSaveKey=Module._get_save_key(); window.gbaPersisted=localStorage.getItem(gbaSaveKey); })()");
     assert.ok(await evaluate("gbaPersisted?.length > 100000"));
-    await evaluate("window.gbaSavedBytes=Module._export_save_data(); gbaSavedBytes[0x1234]=0x33; Module._import_save_data(gbaSavedBytes)");
+    await evaluate("localStorage.setItem('rustboy_auto_resume','0'); window.gbaSavedBytes=Module._export_save_data(); gbaSavedBytes[0x1234]=0x33; Module._import_save_data(gbaSavedBytes)");
     await call('DOM.setFileInputFiles',{nodeId,files:[gbaPath]});
     await until("Module._export_save_data()[0x1234]===0x5a");
     assert.ok(await evaluate("Module._get_save_key()===gbaSaveKey && localStorage.getItem(gbaSaveKey)===gbaPersisted"));
+    // Model the previous HLE BIOS identity without weakening binary validation.
+    // A fresh page must find it, import the checked state, and retain the source.
+    const legacyState = await evaluate(`(async () => {
+      Module._set_paused(true);
+      const ids=compatibleStateIds();
+      if(ids.length!==2) throw Error('Expected current and previous HLE firmware identities');
+      const bytes=Module._export_state(), view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+      view.setBigUint64(16,BigInt('0x'+ids[1].split('-')[2]),true);
+      view.setUint32(40,0x1234abcd,true);
+      let sum=0xcbf29ce484222325n;
+      for(const byte of bytes.subarray(0,-8)) sum=BigInt.asUintN(64,(sum^BigInt(byte))*0x100000001b3n);
+      view.setBigUint64(bytes.length-8,sum,true);
+      const record={key:ids[1]+':auto',romId:ids[1],slot:'auto',timestamp:1234567890000,data:bytes.slice().buffer};
+      await stateRecord('put',record); await stateRecord('delete',ids[0]+':auto');
+      localStorage.setItem('rustboy_auto_resume','1');
+      blockedAutosaveId=ids[0]; // Preserve the fixture through pagehide autosave.
+      window.saveReloadToken=true;
+      return {key:record.key,size:bytes.length,batteryKey:Module._get_save_key()};
+    })()`);
+    await call('Page.reload');
+    await until("typeof window.saveReloadToken === 'undefined' && typeof Module !== 'undefined' && typeof Module?._load_rom_data === 'function'");
+    const savedDocument=await call('DOM.getDocument');
+    nodeId=(await call('DOM.querySelector',{nodeId:savedDocument.root.nodeId,selector:'#rom-file-input'})).nodeId;
+    await call('DOM.setFileInputFiles',{nodeId,files:[gbaPath]});
+    await until("controlConsole === 'gba' && !pickerOpen && Module._is_paused()");
+    assert.equal(await evaluate("new DataView(Module._export_state().buffer).getUint32(40,true)"),0x1234abcd,'legacy exact-position autosave restored after a cold reload');
+    assert.equal(await evaluate(`(async () => (await stateRecord('get',${JSON.stringify(legacyState.key)})).data.byteLength)()`),legacyState.size);
+    assert.equal(await evaluate('Module._get_save_key()'),legacyState.batteryKey,'cartridge persistence key survives BIOS identity migration');
+    await evaluate('openSaveManager()');
+    assert.ok(await evaluate("document.querySelector('#battery-save-status').textContent.includes('In-game save available')"));
+    assert.notEqual(await evaluate("document.querySelector('#state-slots small').textContent"),'Empty');
+    await evaluate('closeSaveManager(); window.gbaUploadedId=Module._get_state_id()');
+    const preserved = await evaluate(`(async () => {
+      const key=currentStateId()+':auto', bad=new Uint8Array([1,2,3]);
+      await stateRecord('put',{key,romId:currentStateId(),slot:'auto',timestamp:Date.now(),data:bad.buffer});
+      const restored=await loadState('auto',true), saved=await saveState('auto',true);
+      const record=await stateRecord('get',key);
+      await stateRecord('delete',key); blockedAutosaveId='';
+      return {restored,saved,data:Array.from(new Uint8Array(record.data))};
+    })()`);
+    assert.deepEqual(preserved,{restored:false,saved:false,data:[1,2,3]},'failed restore preserves the original autosave instead of overwriting it');
+    console.log('Save recovery: old BIOS identity resumes after reload, battery save is visible, rejected autosaves remain intact');
     const speedChecks = await evaluate(`(async () => {
       Module._set_paused(true);
       const baseline = Module._export_state();
@@ -338,23 +394,151 @@ try {
         [[255,0,0,255],[0,255,0,255],[0,0,255,255]],`mode ${mode} preserves distinct source coordinates`);
     }
     console.log('GBA browser: patterned CPU-driven rendering in all six display modes passed');
+    for (const prefix of ['A','F']) {
+      // Original cartridge probe: execute in a ROM mirror, compare low/high
+      // chip addresses, then keep painting green for equal data, red otherwise.
+      // Normal boards execute at the base and keep their unmapped ROM values.
+      const code=[], literals=[];
+      const literal=(reg,value)=>{literals.push({at:code.length,reg,value});code.push(0);};
+      literal(0,0x04000000);literal(6,0x403);code.push(0xe1c060b0);
+      literal(1,0x08000200);literal(2,0x08300200);literal(3,0x06000000);
+      const loop=code.length;
+      code.push(0xe5d14000,0xe5d25000,0xe1540005,0xe3a0601f,0x03a06e3e,0xe1c360b0);
+      code.push(0xea000000|((loop-code.length-2)&0xffffff));
+      for(const {at,reg,value} of literals) {
+        code[at]=0xe59f0000|(reg<<12)|(code.length*4-(at*4+8));code.push(value);
+      }
+      const fixture=new Uint8Array(0x100000),view=new DataView(fixture.buffer);
+      view.setUint32(0,prefix==='F'?0xea0c003e:0xea00003e,true);
+      fixture[0xac]=prefix.charCodeAt(0);fixture[0xb2]=0x96;fixture[0x200]=0x7b;
+      code.forEach((word,n)=>view.setUint32(0x100+n*4,word,true));
+      const file=path.join(temporary,`original-cartridge-mapping-${prefix}.gba`);
+      await fs.writeFile(file,fixture);
+      const previous=await evaluate('Module._get_state_id()');
+      await call('DOM.setFileInputFiles',{nodeId,files:[file]});
+      await until(`Module._get_state_id()!==${JSON.stringify(previous)} && (() => { const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset).getBigUint64(309,true)>=2n; })()`);
+      assert.deepEqual(await evaluate("Array.from(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,1,1).data)"),prefix==='F'?[0,255,0,255]:[255,0,0,255]);
+      const comparison=await evaluate(`(async()=>{
+        const wasm=await import('./out/rustboy.js'); Module._set_paused(true);
+        const original=Module._export_state();const states=[];const stats=[];
+        wasm.set_gba_full_jit_enabled(true);
+        for(const enabled of [false,true]) {
+          Module._import_state(original);Module._set_paused(true);wasm.set_gba_jit_enabled(enabled);
+          wasm.benchmark_gba_clocks(280896*4);states.push(Module._export_state());stats.push(wasm.get_gba_jit_statistics());
+        }
+        wasm.set_gba_full_jit_enabled(false);wasm.set_gba_jit_enabled(true);Module._set_paused(false);
+        return {same:states[0].length===states[1].length&&states[0].every((v,n)=>v===states[1][n]),stats};
+      })()`);
+      assert.equal(comparison.same,true,`cartridge ${prefix} mapping matches interpreter/JIT state`);
+      assert.match(comparison.stats[1],/instructions=[1-9]/,'mirrored ROM executes compiled code');
+    }
+    console.log('GBA browser: original mirrored-cartridge and normal-ROM-hole fixtures match interpreter/JIT snapshots');
+    {
+      // This original VRAM program overwrites its third instruction before
+      // execution. ARM7 has fetched it already, so the original MOV wins.
+      const code=[], literals=[];
+      const literal=(reg,value)=>{literals.push({at:code.length,reg,value});code.push(0);};
+      literal(3,0x06002000);
+      for(const [offset,word] of [[0,0xe5810000],[4,0xe3a0500b],[8,0xe3a06011],[12,0xe12fff12]]) {
+        literal(4,word);code.push(0xe5834000|offset);
+      }
+      literal(0,0xe3a0602a);code.push(0xe2831008);
+      const returnAddress=code.length;code.push(0,0xe12fff13);
+      code[returnAddress]=0xe28f2000; // ADR r2 points past the following BX.
+      literal(4,0x06000000);code.push(0xe5846000);
+      literal(4,0x04000000);literal(1,0x403);code.push(0xe1c410b0,0xeafffffe);
+      for(const {at,reg,value} of literals) {
+        code[at]=0xe59f0000|(reg<<12)|(code.length*4-(at*4+8));code.push(value);
+      }
+      const fixture=new Uint8Array(512), view=new DataView(fixture.buffer);
+      view.setUint32(0,0xea00003e,true);fixture[0xb2]=0x96;
+      code.forEach((word,n)=>view.setUint32(0x100+n*4,word,true));
+      const file=path.join(temporary,'original-video-pipeline.gba');await fs.writeFile(file,fixture);
+      const previous=await evaluate('Module._get_state_id()');
+      await call('DOM.setFileInputFiles',{nodeId,files:[file]});
+      await until(`Module._get_state_id()!==${JSON.stringify(previous)} && (() => { const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset).getBigUint64(309,true)>=2n; })()`);
+      assert.deepEqual(await evaluate("Array.from(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,1,1).data)"),[140,0,0,255],'CPU executes fetched VRAM opcode after a self-modifying store');
+      console.log('GBA browser: original self-modifying VRAM program retains its fetched instruction');
+    }
+    // Original ARM program checks sound math and BIOS identification through
+    // real SWIs. Copy the results to VRAM so snapshot layout changes do not
+    // silently turn these assertions into reads of unrelated state.
+    {
+      const fixture=new Uint8Array(512), image=new DataView(fixture.buffer);
+      const words=[0xe59f0030,0xe3a0103c,0xe3a02000,0xef1f0000,
+        0xe1a05000,0xef0d0000,0xe59f401c,0xe5845000,0xe5840004,
+        0xe59f4014,0xe59f1014,0xe1c410b0,0xeafffffe,
+        0,0x08000180,0x06000000,0x04000000,0x403];
+      words.forEach((word,n)=>image.setUint32(n*4,word,true));fixture[0xb2]=0x96;
+      image.setUint32(0x180,0xdeadbeef,true);image.setUint32(0x184,0x00400000,true);
+      const file=path.join(temporary,'original-sound-bios.gba');await fs.writeFile(file,fixture);
+      const previous=await evaluate('Module._get_state_id()');
+      await call('DOM.setFileInputFiles',{nodeId,files:[file]});
+      await until(`Module._get_state_id()!==${JSON.stringify(previous)} && (() => { const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset).getBigUint64(309,true)>=2n; })()`);
+      const results=await evaluate(`(() => {
+        const s=Module._export_state(), view=new DataView(s.buffer,s.byteOffset,s.byteLength);
+        if(s[4]!==14)throw new Error('Update BIOS fixture snapshot layout');
+        const vram=567+view.getUint32(563,true)*8+0x40000+0x8000+0x400;
+        return [view.getUint32(vram,true),view.getUint32(vram+4,true)];
+      })()`);
+      assert.deepEqual(results,[4096,0xbaae187f],'MidiKey2Freq reads WaveData +4; GetBiosChecksum identifies a GBA');
+      console.log('GBA browser: original SWI cartridge verifies instrument frequency and BIOS checksum');
+    }
+    // Two CPU-programmed HBlank DMAs reproduce the scroll-register idiom used
+    // by Phantasy Star. A zero DMA open-bus value leaves this pixel red.
+    {
+      const settings=[[0x05000000,31<<16],[0x05000004,31<<5],[0x04000008,0x100],
+        [0x06000840,0x00010001],[0x03000100,8],
+        [0x040000bc,0x03000100],[0x040000c0,0x04000016],[0x040000c4,0xa3400001],
+        [0x040000c8,0x04000016],[0x040000cc,0x04000012],[0x040000d0,0xa3400001],
+        [0x04000000,0x100]];
+      for(let row=0;row<8;row++) settings.unshift([0x06000000+row*4,0x11111111],[0x06000020+row*4,0x22222222]);
+      const words=[];
+      for(const _ of settings) words.push(0,0,0xe5801000);
+      words.push(0xeafffffe);
+      settings.forEach(([address,value],n)=>{
+        const at=n*3;
+        words[at]=0xe59f0000|(words.length*4-(at*4+8)); words.push(address);
+        words[at+1]=0xe59f1000|(words.length*4-((at+1)*4+8)); words.push(value);
+      });
+      const fixture=new Uint8Array(32768), view=new DataView(fixture.buffer);
+      view.setUint32(0,0xea00003e,true); fixture[0xb2]=0x96;
+      words.forEach((word,n)=>view.setUint32(0x100+n*4,word,true));
+      const file=path.join(temporary,'original-dma-scroll-latch.gba'); await fs.writeFile(file,fixture);
+      const previous=await evaluate('Module._get_state_id()');
+      await call('DOM.setFileInputFiles',{nodeId,files:[file]});
+      await until(`Module._get_state_id()!==${JSON.stringify(previous)} && (()=>{const p=document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,1,1,1).data; return p[0]===0 && p[1]===255;})()`);
+      assert.equal(await evaluate(`(()=>{Module._set_paused(true);const s=Module._export_state();Module._import_state(s);return new DataView(Module._export_state().buffer).getUint32(s.length-12,true);})()`),0x00080008);
+      await evaluate('Module._set_paused(false)');
+      console.log('GBA browser: chained HBlank DMAs retain write-only scroll data across channels and state restore');
+    }
     const dataServices=[
       [0x10,[0xa5],[3,3,0x30,0x30]],
+      [0x11,[0x10,4,0,0,0,0xe0,3,31,0],[0xe0,3,31,0]],
+      [0x12,[0x10,4,0,0,0,0xe0,3,31,0],[0xe0,3,31,0]],
       [0x13,[0x28,4,0,0,3,0x80,102,0xc0,72,117,0,0,0,0,0,0xb0],[72,117,102,102]],
+      [0x14,[0x30,4,0,0,3,0xe0,3,31,0],[0xe0,3,31,0]],
+      [0x15,[0x30,4,0,0,3,0xe0,3,31,0],[0xe0,3,31,0]],
       [0x16,[0x81,4,0,0,250,10,255,2],[250,4,3,5]],
       [0x17,[0x81,4,0,0,250,10,255,2],[250,4,3,5]],
       [0x18,[0x82,8,0,0,255,255,2,0,255,255,0,128],[255,255,1,0]],
     ];
     for (const [service,data,expected] of dataServices) {
       const fixture=new Uint8Array(512);const image=new DataView(fixture.buffer);
-      // SWI 16h is byte-writing WRAM only; copy its result to video with LDR/STR.
-      const destination=service===0x16?0x03000000:0x06000000;
+      // Byte-writing services target WRAM; copy their result to video with LDR/STR.
+      const writesBytes=[0x11,0x14,0x16].includes(service);
+      const destination=writesBytes?0x03000000:0x06000000;
       const words=[0xe59f0018,0xe59f1018,0xe59f2018,0xef000000|(service<<16),
         0xe59f0014,0xe59f1014,0xe1c010b0,0xea000005,
         0x08000080,destination,0x080000a0,0x04000000,0x403,0];
-      if (service===0x16) words.push(0xe59f0010,0xe5902000,0xe59f100c,0xe5812000,0xeafffffe,0,0x03000000,0x06000000);
+      if (writesBytes) words.push(0xe59f0010,0xe5902000,0xe59f100c,0xe5812000,0xeafffffe,0,0x03000000,0x06000000);
       else words.push(0xeafffffe);
       // Branch at 1Ch lands at the continuation at 38h.
+      if ([0x11,0x12,0x14,0x15].includes(service)) {
+        // A null asset must return normally before the valid stream is decoded.
+        // Prepending shifts code and its literals together, preserving offsets.
+        words.unshift(0xe3a00000,0xe3a01403,0xef000000|(service<<16));
+      }
       words.forEach((word,n)=>image.setUint32(n*4,word,true));
       fixture.set(data,128);fixture.set([1,0,1,4,2,0,0,0],160);fixture[0xb2]=0x96;
       const file=path.join(temporary,`original-swi-${service.toString(16)}.gba`);await fs.writeFile(file,fixture);
@@ -369,7 +553,7 @@ try {
       }
       assert.deepEqual(await evaluate("(() => { const c=document.querySelector('#rustboy-canvas').getContext('2d'); return [0,1].map(x=>Array.from(c.getImageData(x,0,1,1).data)); })()"),pixels,`SWI ${service.toString(16)} output reaches display`);
     }
-    console.log('GBA browser: five original BIOS data services execute through cartridge SWIs and render their output');
+    console.log('GBA browser: nine original BIOS data services render their output; null LZ/RL sources return before valid streams');
     {
       const settings=[[0x04000200,0x1000],[0x04000132,0x4001]];
       const words=[];
@@ -389,7 +573,7 @@ try {
       await until('Module._export_state()[333]===2');
       await evaluate('window.stoppedGbaState=Module._export_state(); Module._import_state(stoppedGbaState)');
       await new Promise(resolve=>setTimeout(resolve,150));
-      assert.equal(await evaluate('(() => { const s=Module._export_state(); return s[4]===11 && s[333]===2 && s.every((byte,n)=>byte===stoppedGbaState[n]); })()'),true,'STOP freezes all serialized clocks/state across browser callbacks and restore');
+      assert.equal(await evaluate('(() => { const s=Module._export_state(); return s[4]===14 && s[333]===2 && s.every((byte,n)=>byte===stoppedGbaState[n]); })()'),true,'STOP freezes all serialized clocks/state across browser callbacks and restore');
       await call('Input.dispatchKeyEvent',{type:'keyDown',key:'k',code:'KeyK'});
       await until('(() => { const s=Module._export_state(); return s[333]===0 && new DataView(s.buffer,s.byteOffset).getUint32(40,true)===0x77; })()');
       await call('Input.dispatchKeyEvent',{type:'keyUp',key:'k',code:'KeyK'});
@@ -494,10 +678,10 @@ try {
     await until("Module._get_state_id()!==beforePrefetchId && (()=>{ const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset,s.byteLength).getBigUint64(309,true)>=2n; })()");
     assert.equal(await evaluate(`(() => {
       Module._set_paused(true);
-      const s=Module._export_state(), at=s.length-24;
+      const s=Module._export_state(), at=s.length-45;
       const head=new DataView(s.buffer,s.byteOffset,s.byteLength).getUint32(at,true);
       Module._import_state(s);
-      return s[4]===11 && head>=0x08000100 && head<0x08000200 && s[at+4]<=8 && s[at+5]<3
+      return s[4]===14 && head>=0x08000100 && head<0x08000200 && s[at+4]<=8 && s[at+5]<3
         && Module._export_state().every((byte,n)=>byte===s[n]);
     })()`),true,'CPU-enabled cartridge prefetch state round-trips through WASM');
     console.log('GBA browser: original WAITCNT-enabled multiply cartridge executes and replays prefetch state');
@@ -553,12 +737,109 @@ try {
       await call('DOM.setFileInputFiles',{nodeId,files:[file]});
       await until("Module._get_state_id()!==beforeMemoryId && (()=>{ const s=Module._export_state(); return new DataView(s.buffer,s.byteOffset,s.byteLength).getBigUint64(309,true)>=2n; })()");
       assert.deepEqual(await evaluate("Array.from(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,2,1).data)"),[255,0,0,255,0,255,255,255],'original cartridge reads normal/remapped RAM');
-      assert.equal(await evaluate('(() => { Module._set_paused(true); const s=Module._export_state(); Module._import_state(s); return new DataView(s.buffer,s.byteOffset,s.byteLength).getUint32(s.length-13,true); })()'),control,'memory-control register survives WASM state replay');
+      assert.equal(await evaluate('(() => { Module._set_paused(true); const s=Module._export_state(); Module._import_state(s); return new DataView(s.buffer,s.byteOffset,s.byteLength).getUint32(s.length-34,true); })()'),control,'memory-control register survives WASM state replay');
     }
     console.log('GBA browser: original memory-control cartridges verify 64K register mirror and RAM mapping');
   }
+  if (process.env.RUSTBOY_GBA_JIT_VERIFY && !process.env.RUSTBOY_GBA_PROFILE) {
+    const fixture = new Uint8Array(32768);
+    const image = new DataView(fixture.buffer);
+    [0xe59f0000,0xe12fff10,0x08000101].forEach((word,n) => image.setUint32(n*4,word,true));
+    fixture[0xb2]=0x96;
+    const code=[], literals=[];
+    const literal=(reg,value) => { literals.push({at:code.length,reg,value}); code.push(0); };
+    literal(0,0x04000100); literal(1,0x80); code.push(0x8041); // timer 0 enable
+    literal(2,0x06000000); literal(3,0x03000101); // VRAM and unaligned RAM
+    literal(4,0x04000204); literal(1,0x4000); code.push(0x8021); // prefetch
+    const loop=code.length;
+    code.push(0x3501,0x006e,0x601d,0x681f,0x407e,0x8016,0x8807,0x2f00);
+    code.push(0xd100 | ((loop-code.length-2)&255));
+    code.push(0xe000 | ((loop-code.length-2)&0x7ff));
+    let end=(0x100+code.length*2+3)&~3;
+    for (const {at,reg,value} of literals) {
+      code[at]=0x4800|(reg<<8)|((end-((0x100+at*2+4)&~3))>>2);
+      image.setUint32(end,value,true); end+=4;
+    }
+    code.forEach((word,n) => image.setUint16(0x100+n*2,word,true));
+    const file=path.join(temporary,'original-jit-timing.gba'); await fs.writeFile(file,fixture);
+    await evaluate('window.jitPreviousId=Module._get_state_id()');
+    await call('DOM.setFileInputFiles',{nodeId,files:[file]});
+    await until("Module._get_state_id() !== jitPreviousId && Module._get_state_id().startsWith('gba-') && !Module._is_paused()");
+    await evaluate(`(async () => {
+      const wasm=await import('./out/rustboy.js');
+      if (!wasm.benchmark_gba_clocks) throw new Error('Build --features gba-jit');
+      Module._set_paused(true); const original=Module._export_state();
+      wasm.set_gba_jit_enabled(true); wasm.set_gba_full_jit_enabled(true); wasm.benchmark_gba_clocks(280896);
+      for (const budget of [1,2,4,17,31,1232,4096,280896,280896*3]) {
+        const results=[];
+        for (const enabled of [false,true]) {
+          Module._import_state(original); Module._set_paused(true);
+          wasm.set_gba_jit_enabled(enabled); wasm.benchmark_gba_clocks(budget);
+          results.push(Module._export_state());
+        }
+        if (results[0].length!==results[1].length || results[0].some((byte,n)=>byte!==results[1][n]))
+          throw new Error('JIT timer/MMIO/prefetch/RAM/VRAM state differs, budget='+budget);
+      }
+      if (!/full_instructions=[1-9]/.test(wasm.get_gba_jit_statistics())) throw new Error('No compiled Thumb execution');
+      if (!/failures=0/.test(wasm.get_gba_jit_statistics())) throw new Error('Compilation failed');
+    })()`);
+    console.log('GBA JIT: original Thumb cartridge matches complete hardware state with timer/MMIO/prefetch/unaligned RAM/VRAM across nine budgets');
+    // Original ARM cartridge: copies executable code into IWRAM, changes it
+    // through a guest store, and runs connected arithmetic/branch/multiply paths.
+    const arm = new Uint8Array(32768), armView = new DataView(arm.buffer);
+    arm[0xb2]=0x96; armView.setUint32(0,0xea00003e,true);
+    const ramProgram=[0xe3a04000,0xe3a01003,0xe2844001,0xe0020194,0xe1b032c2,
+      0x1a000000,0xe0255002,0xe2966001,0xe31400ff,0x1a000001,0xe22aa003,0xe589a000,0xeafffff4];
+    ramProgram.splice(ramProgram.length-1,0,0xe5874001,0xe5970001,0xe1d700b1,0xe1d700d1,0xe1d700f1,
+      0xe5c84001,0xe1c840b2,0xe8870003,0xe8970003);
+    ramProgram[ramProgram.length-1]=0xea000000|((2-(ramProgram.length-1)-2)&0xffffff);
+    const boot=[], pool=[];
+    const armLiteral=(reg,value)=>{pool.push({at:boot.length,reg,value});boot.push(0);};
+    armLiteral(0,0x04000102);armLiteral(1,0x80);boot.push(0xe1c010b0);
+    armLiteral(9,0x03000108);armLiteral(10,0xe2844002);
+    armLiteral(7,0x02004000);armLiteral(8,0x03004000);
+    armLiteral(0,0x03000100);armLiteral(1,0x08000400);armLiteral(2,0x08000400+ramProgram.length*4);
+    boot.push(0xe4913004,0xe4803004,0xe1510002,0x1afffffb);
+    armLiteral(0,0x03000100);boot.push(0xe12fff10);
+    for (const {at,reg,value} of pool) {boot[at]=0xe59f0000|(reg<<12)|(boot.length*4-at*4-8);boot.push(value);}
+    boot.forEach((word,n)=>armView.setUint32(0x100+n*4,word,true));
+    ramProgram.forEach((word,n)=>armView.setUint32(0x400+n*4,word,true));
+    const armFile=path.join(temporary,'original-arm-regions.gba');await fs.writeFile(armFile,arm);
+    await evaluate('window.jitPreviousId=Module._get_state_id()');
+    await call('DOM.setFileInputFiles',{nodeId,files:[armFile]});
+    await until("Module._get_state_id() !== jitPreviousId && !Module._is_paused()");
+    await evaluate(`(async()=>{
+      const wasm=await import('./out/rustboy.js');Module._set_paused(true);
+      const original=Module._export_state();
+      const invalidations=()=>Number(/invalidations=([0-9]+)/.exec(wasm.get_gba_jit_statistics())[1]);
+      const beforeInvalidations=invalidations();
+      wasm.set_gba_jit_enabled(true);wasm.benchmark_gba_clocks(280896);
+      if(invalidations()<=beforeInvalidations)throw new Error('Guest code rewrite did not invalidate an ARM region');
+      for(const budget of [1,2,3,4,5,17,31,1006,1232,4096,280896,842688]) {
+        let expected;
+        for(const {enabled,ram,render} of [{enabled:false,ram:false,render:false},
+          {enabled:true,ram:false,render:false},{enabled:true,ram:true,render:false},{enabled:true,ram:true,render:true}]) {
+          Module._import_state(original);Module._set_paused(true);wasm.set_gba_jit_enabled(enabled);
+          wasm.set_gba_full_jit_enabled(false);wasm.set_gba_jit_ram_enabled(ram);wasm.set_gba_fast_render_enabled(render);
+          wasm.benchmark_gba_clocks(budget);const ending=Module._export_state();
+          if(expected&&(ending.length!==expected.length||ending.some((byte,n)=>byte!==expected[n])))
+            throw new Error('ARM region hardware state differs, budget='+budget+' offset='+ending.findIndex((byte,n)=>byte!==expected[n]));
+          expected=ending;
+        }
+      }
+      if(!/instructions=[1-9]/.test(wasm.get_gba_jit_statistics()))throw new Error('No compiled ARM execution');
+      if(!/failures=0/.test(wasm.get_gba_jit_statistics()))throw new Error('ARM compilation failed');
+    })()`);
+    console.log('GBA ARM JIT: self-modifying code, RAM transfers, connected branches, multiply, rendering and timer state match across twelve budgets and four execution modes');
+  }
   // Explicit opt-in only. Never copies the supplied game into public assets.
   if (process.env.RUSTBOY_GBA_PROFILE) {
+    const profileFrames=Number(process.env.RUSTBOY_GBA_PROFILE_FRAMES || 120);
+    const workFrames=Number(process.env.RUSTBOY_GBA_FIXED_WORK_FRAMES || 120);
+    const profileSpeeds=(process.env.RUSTBOY_GBA_PROFILE_SPEEDS || '1,4,8').split(',').map(Number);
+    assert.ok(Number.isInteger(profileFrames)&&profileFrames>=120&&profileFrames<=1200,'profile frames must be 120..1200');
+    assert.ok(Number.isInteger(workFrames)&&workFrames>=120&&workFrames<=1200,'fixed-work frames must be 120..1200');
+    assert.ok(profileSpeeds.length>0&&profileSpeeds.every(speed=>[1,2,4,8].includes(speed)),'invalid profile speed');
     const local = path.resolve(process.env.RUSTBOY_GBA_PROFILE);
     await fs.access(local);
     await call('DOM.setFileInputFiles', {nodeId, files: [local]});
@@ -575,7 +856,7 @@ try {
       const wasm = await import('./out/rustboy.js');
       const clocks = () => {
         const bytes = Module._export_state();
-        if (![5, 6, 7, 8, 9, 10, 11].includes(bytes[4])) throw new Error('Update profile snapshot offsets');
+        if (![5, 6, 7, 8, 9, 10, 11, 12, 13].includes(bytes[4])) throw new Error('Update profile snapshot offsets');
         return Number(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(301, true));
       };
       Module._set_paused(true);
@@ -596,7 +877,7 @@ try {
           Module._set_paused(false);
           await new Promise(resolve => requestAnimationFrame(function sample() {
             const now = performance.now(); delays.push(now-previous); previous=now;
-            if (delays.length < 120) requestAnimationFrame(sample); else resolve();
+            if (delays.length < ${profileFrames}) requestAnimationFrame(sample); else resolve();
           }));
           elapsed = performance.now()-start; Module._set_paused(true);
         },
@@ -604,15 +885,84 @@ try {
           const achievedSpeed = (clocks()-before)/16777216/(elapsed/1000);
           delays.sort((a,b) => a-b);
           return {requestedSpeed: requested, achievedSpeed,
-            medianCallbackMs: delays[60], p95CallbackMs: delays[114],
-            maxCallbackMs: delays[119], status: wasm.get_backend_status()};
+            medianCallbackMs: delays[Math.floor(delays.length*.5)], p95CallbackMs: delays[Math.floor(delays.length*.95)],
+            maxCallbackMs: delays[delays.length-1], status: wasm.get_backend_status(), jit: wasm.get_gba_jit_statistics?.(), rendering:wasm.get_gba_render_statistics?.()};
         }
       };
     })()`);
+    if (process.env.RUSTBOY_GBA_JIT_VERIFY) {
+      const results = await evaluate(`(async () => {
+        const wasm = await import('./out/rustboy.js');
+        if (!wasm.benchmark_gba_clocks) throw new Error('Build --features gba-jit');
+        Module._set_paused(true);
+        const original = Module._export_state();
+        const results = [];
+        let expected;
+        // Warm the code cache, then restore all hardware state. Compiled ROM
+        // code is independent of registers and is revalidated on public run.
+        wasm.set_gba_jit_enabled(true);
+        wasm.set_gba_full_jit_enabled(true);
+        wasm.benchmark_gba_clocks(280896 * ${workFrames});
+        if (${Boolean(process.env.RUSTBOY_GBA_RAM_JIT_VERIFY)}) {
+          Module._import_state(original);Module._set_paused(true);
+          wasm.set_gba_full_jit_enabled(false);wasm.set_gba_jit_ram_enabled(false);
+          wasm.benchmark_gba_clocks(280896 * ${workFrames});
+        }
+        const modes=${process.env.RUSTBOY_GBA_FETCH_VERIFY ? "[1,8,8,1,1,8].map(stride=>({enabled:true,full:false,ram:true,render:false,stride}))" : process.env.RUSTBOY_GBA_RAM_JIT_VERIFY ? "[0,1,2,3,4,4,3,2,1,0,1,3,0,4,2].map(mode=>({enabled:mode!==0,full:false,ram:mode>=2,render:mode===3,stride:mode===4?8:1}))" : process.env.RUSTBOY_GBA_FULL_JIT_VERIFY ? "[{enabled:false,full:false},{enabled:true,full:false},{enabled:true,full:true},{enabled:true,full:true},{enabled:false,full:false},{enabled:true,full:false},{enabled:true,full:false},{enabled:true,full:true},{enabled:false,full:false}]" : "[false,true,true,false,false,true].map(enabled=>({enabled,full:true}))"};
+        for (const {enabled,full,ram=true,render=true,stride=1} of modes) {
+          Module._import_state(original); Module._set_paused(true);
+          wasm.set_gba_jit_enabled(enabled);
+          wasm.set_gba_full_jit_enabled(full);
+          wasm.set_gba_jit_ram_enabled(ram);
+          wasm.set_gba_fast_render_enabled(render);
+          wasm.set_gba_video_stride(stride);
+          const start = performance.now();
+          const clocks = wasm.benchmark_gba_clocks(280896 * ${workFrames});
+          const ms = performance.now() - start;
+          const ending = Module._export_state();
+          const sameHardware = (a,b) => {
+            if (a.length!==b.length || a[4]!==14 || b[4]!==14) throw new Error('Update frame-skip snapshot layout');
+            const videoStart=567+new DataView(a.buffer,a.byteOffset,a.byteLength).getUint32(563,true)*8+0x60c00;
+            const videoEnd=videoStart+240*160*4;
+            return a.every((byte,n)=>n>=videoStart&&n<videoEnd || n>=a.length-8 || byte===b[n]);
+          };
+          if (expected && (stride===1
+              ? ending.length !== expected.length || ending.some((byte,n) => byte !== expected[n])
+              : !sameHardware(ending,expected))) {
+            const offset = ending.findIndex((byte,n) => byte !== expected[n]);
+            throw new Error('JIT hardware snapshot differs at byte ' + offset + ' enabled=' + enabled);
+          }
+          if(stride===1)expected = ending;
+          // Compare deterministic hardware across separately built binaries.
+          // Omit only the presentation buffer and its containing checksum.
+          const videoStart=567+new DataView(ending.buffer,ending.byteOffset,ending.byteLength).getUint32(563,true)*8+0x60c00;
+          const hardware = new Uint8Array(ending.length-240*160*4-8);
+          hardware.set(ending.subarray(0,videoStart));
+          hardware.set(ending.subarray(videoStart+240*160*4,ending.length-8),videoStart);
+          const hardwareHash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',hardware)),byte=>byte.toString(16).padStart(2,'0')).join('');
+          const snapshotHash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',ending)),byte=>byte.toString(16).padStart(2,'0')).join('');
+          results.push({enabled, full, ram, render, stride, hardwareHash, snapshotHash, rendering:wasm.get_gba_render_statistics(), ms, clocks, speed: clocks / 16777216 / (ms / 1000), stats: wasm.get_gba_jit_statistics()});
+        }
+        Module._import_state(original); Module._set_paused(true);
+        wasm.set_gba_jit_enabled(true);
+        wasm.set_gba_full_jit_enabled(!${Boolean(process.env.RUSTBOY_GBA_RAM_JIT_VERIFY || process.env.RUSTBOY_GBA_FETCH_VERIFY)});
+        wasm.set_gba_jit_ram_enabled(true);
+        wasm.set_gba_fast_render_enabled(false);
+        return results;
+      })()`);
+      console.log('GBA JIT fixed-work state comparison (skipping excludes host pixels/checksum):', JSON.stringify(results));
+      assert.ok(results.some(row => /instructions=[1-9]/.test(row.stats)), 'JIT must execute compiled instructions');
+      assert.ok(results.every(row => /failures=0/.test(row.stats)), 'all hot blocks compile');
+      for(const row of results.filter(row=>row.stride>1)) {
+        const stats=/stride=(\d+) rendered=(\d+) skipped=(\d+)/.exec(row.rendering);
+        assert.equal(Number(stats[1]),8);
+        assert.ok(Number(stats[2])<=Math.ceil(workFrames/8)+2&&Number(stats[3])>=Math.floor(workFrames/8)*7-2,'only selected video frames are composed');
+      }
+    }
     const metrics = [];
     let profiling = false;
     try {
-      for (const requested of [1, 4, 8]) {
+      for (const requested of profileSpeeds) {
         await evaluate(`globalThis[Symbol.for('rustboy.test.gba.profile')].prepare(${requested})`);
         if (requested === 8 && process.env.RUSTBOY_GBA_CPU_PROFILE) {
           await call('Profiler.enable');
@@ -640,8 +990,18 @@ try {
     for (const metric of metrics) {
       assert.ok(!metric.status.includes('stopped'), metric.status);
       assert.ok(metric.achievedSpeed > 0, 'GBA continues executing');
+      if(metric.rendering&&metric.requestedSpeed>1) {
+        const stride=Number(/stride=(\d+)/.exec(metric.rendering)[1]);
+        assert.ok(stride>=metric.requestedSpeed&&stride<=16,'UI adapts frame skipping to callback work');
+        const stats=/rendered=(\d+) skipped=(\d+)/.exec(metric.rendering);
+        assert.ok(Number(stats[2])>Number(stats[1]),'fast-forward skips undisplayed frames');
+      }
     }
     console.log('Local GBA fast-forward profile:', JSON.stringify(metrics));
+    if (process.env.RUSTBOY_GBA_PROFILE_SCREENSHOT) {
+      const data=await evaluate("document.querySelector('#rustboy-canvas').toDataURL('image/png').split(',')[1]");
+      await fs.writeFile(path.resolve(process.env.RUSTBOY_GBA_PROFILE_SCREENSHOT),Buffer.from(data,'base64'),{flag:'wx'});
+    }
   }
   if (process.env.RUSTBOY_SGB_FIRMWARE) {
     const firmware = path.resolve(process.env.RUSTBOY_SGB_FIRMWARE);
@@ -1002,6 +1362,7 @@ try {
     await evaluate("Module._set_paused(true); openSettings(); document.querySelector('#settings-close').click()");
     assert.equal(await evaluate("Module._is_paused()"), true, 'closing settings preserves a deliberate pause');
     await evaluate("Module._set_paused(false)");
+    await checkActualSpeed('Game Boy');
     assert.deepEqual(exceptions, [], 'gameplay browser errors');
   }
   if (process.env.RUSTBOY_SGB_FIRMWARE) {
@@ -1035,6 +1396,12 @@ try {
     assert.equal(await evaluate("innerWidth"), 390, 'mobile preview uses device-width viewport');
     assert.ok(await evaluate("(() => { const r = document.querySelector('#emulator-settings').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight; })()"), 'settings fit the mobile viewport');
   }
+  await evaluate("openSettings(); document.querySelector('#show-actual-speed').click(); window.actualSpeedReloadPending = true");
+  await call('Page.reload');
+  await until("!window.actualSpeedReloadPending && typeof Module !== 'undefined' && Module?._get_actual_speed && document.querySelector('#show-actual-speed')");
+  assert.equal(await evaluate("document.querySelector('#show-actual-speed').checked && !document.querySelector('#actual-speed').hidden"), true, 'actual speed toggle survives reload');
+  await evaluate("openSettings(); document.querySelector('#show-actual-speed').click(); document.querySelector('#settings-close').click()");
+  assert.equal(await evaluate("document.querySelector('#actual-speed').hidden"), true);
   assert.deepEqual(exceptions, [], 'settings and initialization browser errors');
   console.log('Browser smoke: WASM initialization, canvas, upload error handling' + (gamePath ? ', rendering, pause/resume' : '') + (process.env.RUSTBOY_NO_BOOT ? (process.env.RUSTBOY_ROM || process.env.RUSTBOY_HOMEBREW ? ', bundled boot without external firmware' : ', RustBoy wordmark and bundled boot without external firmware') : '') + ', grouped settings, keyboard isolation passed');
 } finally {

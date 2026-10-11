@@ -734,6 +734,169 @@ The full eleven-scenario browser gate passes, including GB/CGB, SGB
 border/palette/audio/multiplayer and local GBA picker regressions. The separate
 local GB ROM acceptance suite was not rerun for this milestone.
 
+### BIOS PCM driver and music services (2026-10-11)
+
+The original replacement implements SoundDriverInit/Mode/Main/VSync/Clear
+(1Ah–1Eh), MusicPlayerOpen/Start/Stop/Continue/FadeOut (20h–24h), and
+SoundDriverVSyncOff/On/GetJumpList (28h–2Ah). The PCM mixer supports signed
+8-bit samples, looping, interpolation, stereo gains, ADSR and reverb, using
+MP2k’s RAM channel/player/track ABI. It feeds the existing FIFO/DMA/timer/APU
+hardware. Sequencer and PSG callbacks run on the guest ARM/Thumb CPU through
+original small firmware thunks, so nested SWIs, IRQs, slicing and mid-callback
+snapshot restore retain their context on the guest stack.
+
+The original music parser handles stock waits/notes, running status, patterns,
+repeat/goto/MEMACC, instrument selection, pitch/volume/pan/modulation and
+pause/resume/fade. Thirty stock command jump entries are callable. Six
+undocumented extension helper slots, extra extended commands and native BIOS
+sequencer PSG instruments still stop explicitly; cartridge-provided PSG hooks
+execute normally. Mixing, timing and undocumented clobbers are approximations,
+not bit-equivalence with Nintendo firmware. MultiBoot and HardReset remain
+unimplemented. References are behavioral/data-format documentation only:
+[GBATEK sound functions](https://rust-console.github.io/gbatek-gbaonly/#bios-sound-functions),
+[BIOS behavioral reference](https://retrointernals.github.io/gba-bios-reference/),
+[MP2k format](https://loveemu.github.io/vgmdocs/Summary_of_GBA_Standard_Sound_Driver_MusicPlayer2000.html).
+
+The local Phantasy Star Collection intro, previously stopped at SoundDriverInit
+around frame 621, completes 1,800 diagnostic frames with active PCM voices and
+nonzero audio. Original tests exercise all sample rates, envelopes, stereo,
+interpolation, music commands, malformed data, ARM/Thumb callbacks with nested
+SWIs, multiple BIOS players, FIFO output and deterministic snapshot replay.
+This validates those paths, not every song or the entire game collection.
+
+Adding the thunks changes the replacement firmware identity. The core accepts
+checked older IRQ-only HLE snapshots and exports their compatible lookup ID;
+the browser searches both identities without changing cartridge save keys.
+It waits for IndexedDB transaction commit, displays cartridge save availability,
+and preserves autosaves that fail restoration. Original browser tests cover a
+cold reload from the previous firmware ID and failed-restore protection.
+
+### Phantasy Star dialog alignment and the DMA transfer latch (2026-10-11)
+
+Phantasy Star Collection uses paired repeating HBlank DMA transfers: DMA1
+writes BG1VOFS from a ROM table, then DMA2 reads that write-only register into
+BG0VOFS. An undriven DMA read retains the transfer register shared by all four
+channels. Returning zero instead left the two text layers at different vertical
+offsets, producing two copies of each dialog. Implementing the shared DMA latch
+removes the duplicate in the captured opening dialog under the native reference
+interpreter, without modifying cartridge bytes or special-casing the game.
+The behavior is described by the original hardware investigation in
+[mGBA’s DMA article](https://mgba.io/2018/03/09/holy-grail-bugs-revisited/#the-great-gba-dma-disaster).
+No emulator implementation was copied.
+
+DMA halfword reads replicate the driven value into both transfer-register lanes;
+undriven BIOS/unused/write-only reads retain the previous DMA value. CPU bus
+history and BIOS permissions remain separate. Snapshot version 14 adds the
+four-byte latch, retains versions 1–13, and preserves ROM/firmware lookup IDs.
+Older states initialize the absent history to zero; subsequent driven transfers
+reconstruct it. Tests cover paired HBlank channels, invalid sources, mixed I/O
+words, wrapped counters and restoring between the two transfers. An original
+browser cartridge checks the same scrolling sequence through CPU writes and
+actual WASM output. Exact DMA startup and bus arbitration phases remain work.
+
+The captured dialog also replays identically in the optimized WASM bundle:
+native and browser canvas RGBA output match byte for byte. Validation passed
+252 GBA tests with JIT and idle-loop features, the repository checks, focused
+native/WASM Clippy checks and the browser regression suite, including legacy
+save recovery and the paired-DMA state replay.
+
+The bounded inspector can isolate a captured frame’s BG/OBJ layers with
+`GBA_STATE=path GBA_VIDEO_LAYERS=hex-mask GBA_FRAME_PNG=new-path ... inspect ...`.
+It freezes cartridge execution and leaves DMA raster transfers active; disable
+those transfers separately when inspecting static register values.
+
+### Yoshi's Island null decompression source (2026-10-11)
+
+Super Mario Advance 3 reaches a Thumb LZ77UnCompWRAM call at `0812F6D0h`
+with `r0=0` and `r1=0201BC00h` during its opening sequence. The replacement
+service previously read its own firmware at address zero as a stream header,
+then stopped with "Invalid BIOS decompression header". LZ77/RL now return
+without reading the stream or writing the destination when the source is in
+the protected/unused range below `02000000h`, consistent with our CpuSet guard.
+Ordinary malformed streams in RAM or cartridge space still report errors.
+This changes the BIOS service implementation, not cartridge data or save IDs.
+
+Original tests cover all four LZ/RL entry points, preserved destination memory,
+ARM/Thumb return state and a subsequent valid stream. Four browser cartridges
+perform null calls followed by real decompression and display the results.
+The local game probe previously stopped at frame 1922; the same input sequence
+now completes 3600 frames and displays the opening Yoshi's Island story.
+Replaying the same frame-1921 snapshot in the previous WASM bundle reproduces
+the fault at frame 1922; the rebuilt optimized bundle completes the next ten
+frames without a fault. All 254 GBA tests with JIT/idle-loop features, focused
+Clippy checks, inspector tests and the browser regression suite passed.
+The inspector also retains CPU fault diagnostics when an input sequence stops
+early, rather than hiding them behind its generic workload error.
+
+### Metroid startup, sound math and executable video memory
+
+MidiKey2Freq (SWI 1Fh) now reads WaveData's frequency at offset +4 and uses
+integer semitone ratios, octave shifts and fractional-key interpolation.
+GetBiosChecksum (0Dh) returns the documented GBA checksum, BAAE187Fh.
+These are independently authored replacement services; their timing is
+approximate and the sound-driver SWIs are still incomplete. Specifications:
+[GBATEK BIOS services](https://rust-console.github.io/gbatek-gbaonly/#bios-functions).
+
+Classic NES Metroid's actual Game Pak Error had two additional causes. ARM and
+Thumb code executing in VRAM now retains decoded/fetched instruction values
+across CPU and DMA writes. Branches and exceptions flush that queue. This is
+a functional VRAM pipeline baseline, not a complete pipeline or bus-timing
+model for all memory regions. EEPROM reads also accept either input level on
+the final turnaround clock; rejecting high discarded the game's valid reads
+after programming. Write-command stop-bit validation is retained. The fixes
+apply to hardware behavior without cartridge-name overrides or ROM patches.
+The VRAM issue is also described in the original investigation of
+[Classic NES hardware checks](https://mgba.io/2014/12/28/classic-nes/#trick-5-prefetch-abuse).
+
+Snapshot version 13 appends the VRAM queue; versions 1–12 remain readable and
+start with an empty queue. New states preserve already-fetched instructions,
+including values that differ from memory. Invalid queue addresses, alignment,
+instruction widths and booleans are rejected atomically.
+
+Local private-ROM probes now reach Classic NES Metroid's title screen, Zero
+Mission gameplay (including movement), and Fusion's new-game introduction.
+This does not establish complete-game compatibility. Original tests cover
+ARM/Thumb SWIs, the integer frequency math, self-modifying VRAM and its mirrors,
+branch refetch, DMA changes, region exit, state replay/migration/validation,
+and both EEPROM geometries with high read-turnaround input. Browser fixtures
+exercise the sound/checksum SWIs and self-modifying VRAM through actual WASM.
+Private cartridges, states and screenshots stay outside version control.
+
+Validation (2026-10-10): 235 GBA tests pass with JIT/idle-loop features, plus
+the repository check gate, warnings-denied WASM Clippy, browser upload/BIOS
+fixtures and ARM/Thumb JIT state comparisons. The optimized web bundle was
+rebuilt; local browser probes confirm the Classic NES title, Zero Mission
+gameplay and Fusion intro. Complete-game playthroughs remain unverified.
+
+### Classic NES cartridge mapping and menu input
+
+The next Classic NES Metroid blocker was missing cartridge ROM mirrors. The
+game compares ROM bytes at the base and at +3 MiB before latching controller
+input; the old out-of-range mapping made that comparison fail and discarded
+valid keypad presses. Classic NES/Famicom cartridge wiring now masks ROM
+addresses to the image's power-of-two capacity, selected by the documented
+game-code prefix `F`. This is cartridge address decoding, with no ROM patch,
+input bypass or title-name check. Ordinary cartridge holes retain their
+address-derived values; partial non-power-of-two dumps do not infer mirroring.
+See [GBATEK cartridge protections](https://mgba-emu.github.io/gbatek/#gba-cart-protections).
+
+Data reads, debugger peeks, instruction fetches, DMA and JIT compilation use
+the same mapping, preserving wait-area/page-boundary timing and EEPROM
+precedence. Mapping is derived from the immutable cartridge, so snapshot
+version 13 and its ROM identity remain unchanged. Original regression probes
+cover mirrored and normal boards, all three wait areas, chip-boundary reads,
+DMA, fetches, keypad gating and state replay. Browser fixtures compare the
+interpreter and compiled execution of a program running in a ROM mirror.
+
+Local Metroid probes now pass the title and Start/Continue selection into
+the opening room, with Samus movement verified. This extends
+startup coverage; a complete-game playthrough remains unverified.
+Validation (2026-10-10): 237 GBA tests, the repository check gate and
+warnings-denied WASM Clippy pass. The optimized browser bundle passes the
+original mapping fixtures, full interpreter/JIT snapshot comparisons and
+the existing browser suite; local browser play also reaches the opening
+room from reset with the production JIT enabled.
+
 ### BIOS data-service compatibility
 
 Original implementations now add BitUnPack (10h), Huffman decoding (13h), and

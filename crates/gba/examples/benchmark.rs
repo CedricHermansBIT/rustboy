@@ -92,8 +92,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         let result_hash = hash(&result);
         expected = Some(result);
         times.push(seconds);
-        println!("trial={} seconds={seconds:.6} speed={:.3} clocks={clocks} instructions={} result={result_hash:016x}", trial + 1,
-            clocks as f64 / CLOCK_HZ as f64 / seconds, machine.cpu.instructions - instructions);
+        println!("trial={} seconds={seconds:.6} speed={:.3} clocks={clocks} instructions={} result={result_hash:016x} accelerated={} rendered={:?}", trial + 1,
+            clocks as f64 / CLOCK_HZ as f64 / seconds, machine.cpu.instructions - instructions, machine.accelerated_instructions(), machine.rendering_counts());
     }
     times.sort_by(f64::total_cmp);
     let median = times[times.len() / 2];

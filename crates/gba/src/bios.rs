@@ -8,6 +8,8 @@ use crate::{
 mod data;
 #[path = "bios_math.rs"]
 mod math;
+#[path = "bios_sound.rs"]
+pub(crate) mod sound;
 
 /// Our tiny ARM IRQ dispatcher executes on the emulated CPU, so handlers may be
 /// ARM/Thumb, run for arbitrary time, use peripherals and return normally.
@@ -28,6 +30,7 @@ pub(crate) fn irq_firmware() -> Vec<u8> {
     for (n, op) in words.into_iter().enumerate() {
         bytes[0x100 + n * 4..0x104 + n * 4].copy_from_slice(&op.to_le_bytes());
     }
+    sound::firmware(&mut bytes);
     bytes
 }
 
@@ -37,6 +40,8 @@ pub(crate) enum Effect {
     Stop,
     Wait { mask: u16, discard: bool },
     Reset,
+    SoundMain(u32),
+    SoundReturn,
 }
 
 pub(crate) fn service(number: u8, cpu: &mut Cpu, bus: &mut Bus) -> Result<Effect, &'static str> {
@@ -49,6 +54,14 @@ pub(crate) fn service(number: u8, cpu: &mut Cpu, bus: &mut Bus) -> Result<Effect
                 0x02000000
             };
             bus.iwram[0x7e00..].fill(0);
+            #[cfg(all(feature = "jit", target_arch = "wasm32"))]
+            {
+                bus.jit_memory_version = bus.jit_memory_version.wrapping_add(1);
+            }
+            #[cfg(all(feature = "jit", target_arch = "wasm32"))]
+            for version in &mut bus.jit_iwram_versions[126..] {
+                *version = version.wrapping_add(1);
+            }
             let instructions = cpu.instructions;
             let exceptions = cpu.exceptions;
             *cpu = Cpu::default();
@@ -116,12 +129,32 @@ pub(crate) fn service(number: u8, cpu: &mut Cpu, bus: &mut Bus) -> Result<Effect
             bus.internal(64);
         }
         0xb | 0xc => copy(bus, cpu.r[0], cpu.r[1], cpu.r[2], number == 0xc),
+        0xd => {
+            // Documented retail GBA checksum: a service result, not firmware
+            // bytes. Summing our replacement IRQ stub would identify the HLE
+            // implementation rather than the emulated GBA hardware.
+            cpu.r[0] = 0xbaae187f;
+            cpu.r[1] = 1;
+            cpu.r[3] = 0x4000;
+            bus.internal(40960); // Functional approximation, not exact timing.
+        }
         0xe | 0xf => affine_set(bus, cpu.r[0], cpu.r[1], cpu.r[2], cpu.r[3], number == 0xe)?,
         0x10 => data::unpack(bus, cpu.r[0], cpu.r[1], cpu.r[2])?,
         0x13 => data::huffman(bus, cpu.r[0], cpu.r[1])?,
         0x11 | 0x12 | 0x14 | 0x15 => decompress(bus, cpu.r[0], cpu.r[1], number)?,
         0x16..=0x18 => data::differential(bus, cpu.r[0], cpu.r[1], number)?,
         0x19 => bus.write16(0x04000088, if cpu.r[0] == 0 { 0 } else { 0x200 }, false),
+        0x1a..=0x1e | 0x20..=0x24 | 0x28..=0x2a => {
+            return sound::service(number, cpu, bus);
+        }
+        0x1f => {
+            let address = cpu.r[0].wrapping_add(4);
+            let base = bus
+                .read32(address & !3, false)
+                .rotate_right((address & 3) * 8);
+            cpu.r[0] = math::midi_frequency(base, cpu.r[1], cpu.r[2]);
+            bus.internal(128); // HLE sound math, not firmware instruction timing.
+        }
         _ => return Err("BIOS service not implemented yet"),
     }
     Ok(Effect::Return)
@@ -294,6 +327,12 @@ fn decompress(
     destination: u32,
     number: u8,
 ) -> Result<(), &'static str> {
+    // The BIOS rejects protected/unused source regions before examining the
+    // stream. Games can pass a null asset pointer and expect a harmless return.
+    // Reading our replacement firmware as a compression header instead faults.
+    if source < 0x02000000 {
+        return Ok(());
+    }
     let header = bus.read32(source, false);
     let length = (header >> 8) as usize;
     let lz = number <= 0x12;
@@ -519,6 +558,31 @@ mod tests {
         assert_eq!(b.iwram[0], 0xee);
     }
     #[test]
+    fn protected_decompression_sources_return_without_reading_or_writing() {
+        let mut b = bus();
+        b.iwram[..32].fill(0xee);
+        b.vram[..32].fill(0xdd);
+        b.bios_latch = 0x12345678;
+        for number in [0x11, 0x12, 0x14, 0x15] {
+            for source in [0, 0x100, 0x3ffc, 0x01000000, 0x01fffffc] {
+                let mut c = Cpu::default();
+                c.r[0] = source;
+                c.r[1] = if number & 1 == 0 {
+                    0x06000000
+                } else {
+                    0x03000000
+                };
+                assert!(matches!(
+                    service(number, &mut c, &mut b),
+                    Ok(Effect::Return)
+                ));
+                assert_eq!(&b.iwram[..32], &[0xee; 32]);
+                assert_eq!(&b.vram[..32], &[0xdd; 32]);
+                assert_eq!(b.bios_latch, 0x12345678);
+            }
+        }
+    }
+    #[test]
     fn soft_reset_selects_ram_and_reinitializes_stacks() {
         let mut b = bus();
         let mut c = Cpu::default();
@@ -530,5 +594,41 @@ mod tests {
         assert_eq!(c.cpsr(), 0x1f);
         assert!(b.iwram[0x7e00..].iter().all(|b| *b == 0));
         assert!(c.r[..13].iter().all(|r| *r == 0));
+    }
+    #[test]
+    fn midi_reads_wave_frequency_through_bus_with_arm_word_rotation() {
+        let mut b = bus();
+        for wave in [0x02000000, 0x03000000] {
+            b.write32(wave, 0xdeadbeef, false);
+            b.write32(wave + 4, 0x12345678, false);
+            for offset in 0..4 {
+                let mut c = Cpu::default();
+                c.r[0] = wave + offset;
+                c.r[1] = 168;
+                c.r[2] = 0;
+                c.r[4] = 0xcafebabe;
+                let flags = c.cpsr();
+                b.take_cycles();
+                assert!(matches!(service(0x1f, &mut c, &mut b), Ok(Effect::Return)));
+                assert_eq!(c.r[0], 0x12345678u32.rotate_right(offset * 8) >> 1);
+                assert!(b.take_cycles() > 128, "wave read must pay bus wait states");
+                assert_eq!(c.r[4], 0xcafebabe);
+                assert_eq!(c.cpsr(), flags);
+            }
+        }
+    }
+    #[test]
+    fn checksum_identifies_gba_and_preserves_non_scratch_registers() {
+        let mut b = bus();
+        let mut c = Cpu::default();
+        c.r.fill(0x12345678);
+        let flags = c.cpsr();
+        assert!(matches!(service(0x0d, &mut c, &mut b), Ok(Effect::Return)));
+        assert_eq!(c.r[0], 0xbaae187f);
+        assert_eq!(c.r[1], 1);
+        assert_eq!(c.r[3], 0x4000);
+        assert_eq!(c.r[2], 0x12345678);
+        assert!(c.r[4..].iter().all(|r| *r == 0x12345678));
+        assert_eq!(c.cpsr(), flags);
     }
 }

@@ -9,10 +9,19 @@ description = "Independently authored headless Game Boy Advance hardware for Rus
 # Preserve a compositor boundary for sampling profilers; no clocks or pixels
 # are skipped. Disabled in normal builds so ordinary inlining is unaffected.
 profile-rendering = []
+jit = ["dep:wasm-bindgen", "dep:js-sys"]
 decoded-blocks = []
+# Root web defaults enable this; keep the headless reference selectable.
+idle-loops = []
+# Dependency-based pixel reuse, opt-in while WASM bookkeeping is investigated.
+render-cache = []
 
 [dependencies]
 rustboy-emulator-api = { path = "../emulator-api" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "0.2.92", optional = true }
+js-sys = { version = "0.3.69", optional = true }
 
 [dev-dependencies]
 png = "0.18.1"

@@ -39,6 +39,19 @@ export function add_breakpoint_reg(reg, value) {
     wasm.add_breakpoint_reg(ptr0, len0, value);
 }
 
+/**
+ * Fixed-work diagnostic, available only in the experimental JIT bundle.
+ * @param {number} budget
+ * @returns {number}
+ */
+export function benchmark_gba_clocks(budget) {
+    const ret = wasm.benchmark_gba_clocks(budget);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return ret[0] >>> 0;
+}
+
 export function clear_breakpoints() {
     wasm.clear_breakpoints();
 }
@@ -63,6 +76,13 @@ export function clear_trace() {
 }
 
 /**
+ * @param {object} imports
+ */
+export function configure_gba_jit(imports) {
+    wasm.configure_gba_jit(imports);
+}
+
+/**
  * @returns {Uint8Array}
  */
 export function export_save_data() {
@@ -80,6 +100,192 @@ export function export_state() {
     var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
     wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
     return v1;
+}
+
+/**
+ * @param {number} cpu
+ * @param {number} reg
+ * @returns {number}
+ */
+export function gba_jit_bank_read(cpu, reg) {
+    const ret = wasm.gba_jit_bank_read(cpu, reg);
+    return ret >>> 0;
+}
+
+/**
+ * @param {number} cpu
+ * @param {number} reg
+ * @param {number} value
+ */
+export function gba_jit_bank_write(cpu, reg, value) {
+    wasm.gba_jit_bank_write(cpu, reg, value);
+}
+
+/**
+ * @param {number} cpu
+ * @param {number} bus
+ * @param {number} target
+ * @param {number} condition
+ */
+export function gba_jit_branch(cpu, bus, target, condition) {
+    wasm.gba_jit_branch(cpu, bus, target, condition);
+}
+
+/**
+ * @param {number} cpu
+ * @param {number} bus
+ * @param {number} value
+ * @param {number} kind
+ */
+export function gba_jit_control(cpu, bus, value, kind) {
+    wasm.gba_jit_control(cpu, bus, value, kind);
+}
+
+/**
+ * @param {number} cpu
+ * @param {number} bus
+ * @param {number} swi
+ */
+export function gba_jit_exception(cpu, bus, swi) {
+    wasm.gba_jit_exception(cpu, bus, swi);
+}
+
+/**
+ * @param {number} cpu
+ * @param {number} bus
+ * @param {number} pc
+ */
+export function gba_jit_fetch(cpu, bus, pc) {
+    wasm.gba_jit_fetch(cpu, bus, pc);
+}
+
+/**
+ * @param {number} cpu
+ * @param {number} bus
+ * @param {number} pc
+ * @param {number} thumb
+ */
+export function gba_jit_fetch_mode(cpu, bus, pc, thumb) {
+    wasm.gba_jit_fetch_mode(cpu, bus, pc, thumb);
+}
+
+/**
+ * @param {number} cpu
+ * @param {number} bus
+ * @param {number} pc
+ * @param {number} count
+ * @param {number} budget
+ * @returns {bigint}
+ */
+export function gba_jit_fetch_run(cpu, bus, pc, count, budget) {
+    const ret = wasm.gba_jit_fetch_run(cpu, bus, pc, count, budget);
+    return BigInt.asUintN(64, ret);
+}
+
+/**
+ * @param {number} cpu
+ * @param {number} bus
+ * @param {number} pc
+ * @param {number} count
+ * @param {number} budget
+ * @param {number} thumb
+ * @returns {bigint}
+ */
+export function gba_jit_fetch_span(cpu, bus, pc, count, budget, thumb) {
+    const ret = wasm.gba_jit_fetch_span(cpu, bus, pc, count, budget, thumb);
+    return BigInt.asUintN(64, ret);
+}
+
+/**
+ * @param {number} cpu
+ * @param {number} bus
+ * @returns {number}
+ */
+export function gba_jit_finish(cpu, bus) {
+    const ret = wasm.gba_jit_finish(cpu, bus);
+    return ret;
+}
+
+/**
+ * @param {number} bus
+ * @param {number} clocks
+ */
+export function gba_jit_internal(bus, clocks) {
+    wasm.gba_jit_internal(bus, clocks);
+}
+
+/**
+ * @param {number} bus
+ * @param {number} address
+ * @param {number} kind
+ * @returns {number}
+ */
+export function gba_jit_read(bus, address, kind) {
+    const ret = wasm.gba_jit_read(bus, address, kind);
+    return ret >>> 0;
+}
+
+/**
+ * @param {number} bus
+ * @param {number} address
+ * @param {number} kind
+ * @param {number} sequential
+ * @returns {number}
+ */
+export function gba_jit_read_full(bus, address, kind, sequential) {
+    const ret = wasm.gba_jit_read_full(bus, address, kind, sequential);
+    return ret >>> 0;
+}
+
+/**
+ * @param {number} bus
+ * @param {number} target
+ * @param {number} thumb
+ */
+export function gba_jit_refill(bus, target, thumb) {
+    wasm.gba_jit_refill(bus, target, thumb);
+}
+
+/**
+ * @param {number} cpu
+ * @param {number} bus
+ * @param {number} value
+ * @param {number} fields
+ * @param {number} kind
+ * @returns {number}
+ */
+export function gba_jit_status(cpu, bus, value, fields, kind) {
+    const ret = wasm.gba_jit_status(cpu, bus, value, fields, kind);
+    return ret >>> 0;
+}
+
+/**
+ * @param {number} bus
+ * @param {number} address
+ * @param {number} value
+ * @param {number} kind
+ */
+export function gba_jit_write(bus, address, value, kind) {
+    wasm.gba_jit_write(bus, address, value, kind);
+}
+
+/**
+ * @param {number} bus
+ * @param {number} address
+ * @param {number} value
+ * @param {number} kind
+ * @param {number} sequential
+ */
+export function gba_jit_write_full(bus, address, value, kind, sequential) {
+    wasm.gba_jit_write_full(bus, address, value, kind, sequential);
+}
+
+/**
+ * @returns {number}
+ */
+export function get_actual_speed() {
+    const ret = wasm.get_actual_speed();
+    return ret;
 }
 
 /**
@@ -116,6 +322,16 @@ export function get_boot_rom_license() {
 }
 
 /**
+ * @returns {string[]}
+ */
+export function get_compatible_state_ids() {
+    const ret = wasm.get_compatible_state_ids();
+    var v1 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v1;
+}
+
+/**
  * @returns {number}
  */
 export function get_debug_flags() {
@@ -131,6 +347,38 @@ export function get_debug_state() {
     let deferred1_1;
     try {
         const ret = wasm.get_debug_state();
+        deferred1_0 = ret[0];
+        deferred1_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
+ * @returns {string}
+ */
+export function get_gba_jit_statistics() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const ret = wasm.get_gba_jit_statistics();
+        deferred1_0 = ret[0];
+        deferred1_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
+ * @returns {string}
+ */
+export function get_gba_render_statistics() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const ret = wasm.get_gba_render_statistics();
         deferred1_0 = ret[0];
         deferred1_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
@@ -435,6 +683,41 @@ export function set_debug_enabled(enabled) {
 }
 
 /**
+ * @param {boolean} enabled
+ */
+export function set_gba_fast_render_enabled(enabled) {
+    wasm.set_gba_fast_render_enabled(enabled);
+}
+
+/**
+ * @param {boolean} enabled
+ */
+export function set_gba_full_jit_enabled(enabled) {
+    wasm.set_gba_full_jit_enabled(enabled);
+}
+
+/**
+ * @param {boolean} enabled
+ */
+export function set_gba_jit_enabled(enabled) {
+    wasm.set_gba_jit_enabled(enabled);
+}
+
+/**
+ * @param {boolean} enabled
+ */
+export function set_gba_jit_ram_enabled(enabled) {
+    wasm.set_gba_jit_ram_enabled(enabled);
+}
+
+/**
+ * @param {number} stride
+ */
+export function set_gba_video_stride(stride) {
+    wasm.set_gba_video_stride(stride);
+}
+
+/**
  * @param {number} key_code
  * @param {boolean} pressed
  */
@@ -516,6 +799,14 @@ function __wbg_get_imports() {
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
         },
+        __wbg___wbindgen_function_table_835d55ec5a39f2a5: function() {
+            const ret = wasm.__wbindgen_export;
+            return ret;
+        },
+        __wbg___wbindgen_is_function_3baa9db1a987f47d: function(arg0) {
+            const ret = typeof(arg0) === 'function';
+            return ret;
+        },
         __wbg___wbindgen_is_null_52ff4ec04186736f: function(arg0) {
             const ret = arg0 === null;
             return ret;
@@ -564,6 +855,10 @@ function __wbg_get_imports() {
                 wasm.__wbindgen_free(deferred0_0, deferred0_1, 1);
             }
         },
+        __wbg_exports_7c385eccaec5cbd0: function(arg0) {
+            const ret = arg0.exports;
+            return ret;
+        },
         __wbg_getContext_2441572296f243cc: function() { return handleError(function (arg0, arg1, arg2) {
             const ret = arg0.getContext(getStringFromWasm0(arg1, arg2));
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
@@ -572,12 +867,24 @@ function __wbg_get_imports() {
             const ret = arg0.getElementById(getStringFromWasm0(arg1, arg2));
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
         },
+        __wbg_get_26e270372286f6a8: function() { return handleError(function (arg0, arg1) {
+            const ret = arg0.get(arg1 >>> 0);
+            return ret;
+        }, arguments); },
+        __wbg_get_87b5dd07e22f00f0: function() { return handleError(function (arg0, arg1) {
+            const ret = Reflect.get(arg0, arg1);
+            return ret;
+        }, arguments); },
         __wbg_globalThis_d76c93eb4fcb97ff: function() { return handleError(function () {
             const ret = globalThis.globalThis;
             return ret;
         }, arguments); },
         __wbg_global_d5571d09e84f338f: function() { return handleError(function () {
             const ret = global.global;
+            return ret;
+        }, arguments); },
+        __wbg_grow_c1cb7e835d4ac40f: function() { return handleError(function (arg0, arg1) {
+            const ret = arg0.grow(arg1 >>> 0);
             return ret;
         }, arguments); },
         __wbg_height_61b2af758a7c9a73: function(arg0) {
@@ -624,6 +931,10 @@ function __wbg_get_imports() {
             const ret = result;
             return ret;
         },
+        __wbg_length_2f4b3bb297ecc96b: function(arg0) {
+            const ret = arg0.length;
+            return ret;
+        },
         __wbg_length_7279b60cd63bd0ba: function(arg0) {
             const ret = arg0.length;
             return ret;
@@ -639,12 +950,24 @@ function __wbg_get_imports() {
             const ret = new Error();
             return ret;
         },
+        __wbg_new_3269f0dc942b4af9: function() { return handleError(function (arg0) {
+            const ret = new WebAssembly.Module(arg0);
+            return ret;
+        }, arguments); },
+        __wbg_new_9d707884b6697ad0: function() { return handleError(function (arg0, arg1) {
+            const ret = new WebAssembly.Instance(arg0, arg1);
+            return ret;
+        }, arguments); },
         __wbg_new_f3375b05b49ca4cb: function(arg0) {
             const ret = new Uint8Array(arg0);
             return ret;
         },
         __wbg_new_no_args_4856846a7397439f: function(arg0, arg1) {
             const ret = new Function(getStringFromWasm0(arg0, arg1));
+            return ret;
+        },
+        __wbg_new_with_byte_offset_and_length_c74776d039a72b10: function(arg0, arg1, arg2) {
+            const ret = new Uint8Array(arg0, arg1 >>> 0, arg2 >>> 0);
             return ret;
         },
         __wbg_new_with_u8_clamped_array_and_sh_c36d660d5c67aa92: function() { return handleError(function (arg0, arg1, arg2, arg3) {
@@ -679,6 +1002,9 @@ function __wbg_get_imports() {
         }, arguments); },
         __wbg_setProperty_89d64b0d2949fe69: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
             arg0.setProperty(getStringFromWasm0(arg1, arg2), getStringFromWasm0(arg3, arg4));
+        }, arguments); },
+        __wbg_set_313b3c42c80f0f1b: function() { return handleError(function (arg0, arg1, arg2) {
+            arg0.set(arg1 >>> 0, arg2);
         }, arguments); },
         __wbg_set_8ab55bbf9f2507cd: function(arg0, arg1, arg2) {
             arg0.set(arg1, arg2 >>> 0);
@@ -823,6 +1149,17 @@ function debugString(val) {
 function getArrayF32FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getFloat32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
+function getArrayJsValueFromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    const mem = getDataViewMemory0();
+    const result = [];
+    for (let i = ptr; i < ptr + 4 * len; i += 4) {
+        result.push(wasm.__wbindgen_externrefs.get(mem.getUint32(i, true)));
+    }
+    wasm.__externref_drop_slice(ptr, len);
+    return result;
 }
 
 function getArrayU8FromWasm0(ptr, len) {

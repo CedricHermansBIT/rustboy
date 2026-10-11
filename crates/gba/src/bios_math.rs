@@ -1,5 +1,5 @@
-//! Independently authored integer vectoring math for replacement BIOS services.
-//! This computes mathematical angles, not Nintendo's polynomial rounding/bugs.
+//! Independently authored integer math for replacement BIOS services.
+//! Angle services compute mathematical angles, not firmware polynomial rounding.
 
 // round(atan(2^-n) * 2^32 / TAU), generated from the mathematical definition.
 // These are not firmware tables. Full-turn Q32 keeps rounding below the final
@@ -60,9 +60,60 @@ pub(super) fn arctan2(x: i32, y: i32) -> u16 {
     }
 }
 
+// round(2^(31 + semitone/12)), independently generated from equal temperament.
+// The octave shift and integer interpolation avoid floating-point variation
+// in the playback path. These mathematical constants are not firmware bytes.
+const SEMITONES: [u32; 12] = [
+    0x80000000, 0x879c7c97, 0x8facd61e, 0x9837f052, 0xa14517cc, 0xaadc0848, 0xb504f334, 0xbfc886bb,
+    0xcb2ff52a, 0xd744fccb, 0xe411f03a, 0xf1a1bf39,
+];
+
+/// WaveData frequency is referenced to MIDI key 180. Hardware interpolates
+/// adjacent semitone ratios linearly in Q32, then takes the high product word.
+pub(super) fn midi_frequency(base: u32, key: u32, fine: u32) -> u32 {
+    let (key, fine) = if key > 178 {
+        (178, 0)
+    } else {
+        (key, fine & 255)
+    };
+    let ratio = |note: u32| SEMITONES[(note % 12) as usize] >> (14 - note / 12);
+    let low = ratio(key);
+    let high = ratio(key + 1);
+    let interpolated = low + ((u64::from(high - low) * u64::from(fine)) >> 8) as u32;
+    ((u64::from(base) * u64::from(interpolated)) >> 32) as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn midi_octaves_clamping_and_full_width_interpolation() {
+        for base in [0, 1, 0x00400000, 0x12345678, u32::MAX] {
+            for key in (0..=168).step_by(12) {
+                assert_eq!(midi_frequency(base, key, 0), base >> (15 - key / 12));
+            }
+            for key in [179, 180, 255, u32::MAX] {
+                assert_eq!(midi_frequency(base, key, 255), midi_frequency(base, 178, 0));
+            }
+            for key in 0..=178 {
+                let low = 2f64.powf((f64::from(key) - 180.) / 12.);
+                let high = 2f64.powf((f64::from(key) + 1. - 180.) / 12.);
+                let mut previous = 0;
+                for fine in 0..=255 {
+                    let actual = midi_frequency(base, key, fine);
+                    let ideal = (f64::from(base) * (low + (high - low) * f64::from(fine) / 256.))
+                        .floor() as u32;
+                    assert!(
+                        actual.abs_diff(ideal) <= 2,
+                        "base {base:x}, key {key}, fine {fine}"
+                    );
+                    assert!(actual >= previous);
+                    assert_eq!(actual, midi_frequency(base, key, fine + 256));
+                    previous = actual;
+                }
+            }
+        }
+    }
     #[test]
     fn axes_diagonals_zero_and_signed_extremes() {
         for (x, y, angle) in [

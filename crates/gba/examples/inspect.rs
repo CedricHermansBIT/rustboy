@@ -1,6 +1,6 @@
 //! Bounded diagnostic, not a game player. No game or proprietary BIOS bundled.
 use rustboy_emulator_api::Emulator;
-use rustboy_gba::{GameBoyAdvance, CLOCK_HZ, FRAME_CYCLES};
+use rustboy_gba::{cpu::Memory, GameBoyAdvance, CLOCK_HZ, FRAME_CYCLES};
 use std::{error::Error, io::Write, time::Instant};
 
 /// Relative emulated frame : complete pressed-key mask (GBA KEYINPUT order).
@@ -11,17 +11,31 @@ fn input_sequence(value: &str, frames: u64) -> Result<Vec<(u64, u16)>, Box<dyn E
         if events.len() >= 256 {
             return Err("GBA_INPUT_SEQUENCE is limited to 256 events".into());
         }
-        let (frame, mask) = entry.split_once(':').ok_or("Use GBA_INPUT_SEQUENCE=frame:hexmask,...")?;
+        let (frame, mask) = entry
+            .split_once(':')
+            .ok_or("Use GBA_INPUT_SEQUENCE=frame:hexmask,...")?;
         let frame: u64 = frame.parse()?;
         let mask = u16::from_str_radix(mask.trim_start_matches("0x"), 16)?;
-        if frame >= frames || mask > 0x3ff || events.last().is_some_and(|&(previous, _)| previous >= frame) {
-            return Err("Input frames must be increasing and within the run; key mask must be <=03ff".into());
+        if frame >= frames
+            || mask > 0x3ff
+            || events
+                .last()
+                .is_some_and(|&(previous, _)| previous >= frame)
+        {
+            return Err(
+                "Input frames must be increasing and within the run; key mask must be <=03ff"
+                    .into(),
+            );
         }
         events.push((frame, mask));
     }
     Ok(events)
 }
-fn run_inputs(machine: &mut GameBoyAdvance, budget: u64, events: &[(u64, u16)]) -> Result<(), Box<dyn Error>> {
+fn run_inputs(
+    machine: &mut GameBoyAdvance,
+    budget: u64,
+    events: &[(u64, u16)],
+) -> Result<(), Box<dyn Error>> {
     let start = machine.clocks;
     for &(frame, mask) in events {
         let target = frame * FRAME_CYCLES;
@@ -58,6 +72,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(path) = std::env::var_os("GBA_STATE") {
         machine.import_state(&std::fs::read(path)?)?;
     }
+    // Optional layer isolation of a captured frame: freeze cartridge execution
+    // while the video scheduler renders the requested BG/OBJ mask (bits 0..4).
+    if let Ok(value) = std::env::var("GBA_VIDEO_LAYERS") {
+        let layers = u16::from_str_radix(value.trim_start_matches("0x"), 16)?;
+        if layers > 0x1f || std::env::var_os("GBA_STATE").is_none() {
+            return Err("GBA_VIDEO_LAYERS requires a state and a mask <=1f".into());
+        }
+        machine.bus.write16(
+            0x04000000,
+            (machine.bus.io16(0) & !0x1f00) | (layers << 8),
+            false,
+        );
+        machine.bus.write16(0x04000200, 0, false);
+        machine.bus.write16(0x04000208, 0, false);
+        machine.bus.halted = true;
+    }
     println!(
         "GBA development backend: {} (graphics/audio/BIOS services incomplete)",
         machine.title()
@@ -88,13 +118,20 @@ fn main() -> Result<(), Box<dyn Error>> {
             ))
         })
         .transpose()?;
-    let sequence = std::env::var("GBA_INPUT_SEQUENCE").ok()
-        .map(|value| input_sequence(&value, frames)).transpose()?;
-    if sequence.is_some() && (trace_irq || trace_range.is_some() || watch.is_some() || start_at.is_some()) {
+    let sequence = std::env::var("GBA_INPUT_SEQUENCE")
+        .ok()
+        .map(|value| input_sequence(&value, frames))
+        .transpose()?;
+    if sequence.is_some()
+        && (trace_irq || trace_range.is_some() || watch.is_some() || start_at.is_some())
+    {
         return Err("Input sequences cannot be combined with tracing or GBA_START_AT".into());
     }
+    let mut input_result = Ok(());
     if let Some(events) = sequence {
-        run_inputs(&mut machine, budget, &events)?;
+        // Keep fault/register diagnostics available when an input event or the
+        // final workload stops early, rather than returning only a generic error.
+        input_result = run_inputs(&mut machine, budget, &events);
     } else if trace_irq || trace_range.is_some() || watch.is_some() || start_at.is_some() {
         let mut traced = false;
         let mut remaining = 0u32;
@@ -132,6 +169,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                         old_value.unwrap(),
                         machine.clocks
                     );
+                    if addr == 0x040000de && value & 0x8000 != 0 {
+                        let source = u32::from(machine.bus.io16(0xd4))
+                            | (u32::from(machine.bus.io16(0xd6)) << 16);
+                        println!(
+                            "DMA3 source={source:08X} destination={:08X} count={} last_bit={} first bits={:?}",
+                            u32::from(machine.bus.io16(0xd8))
+                                | (u32::from(machine.bus.io16(0xda)) << 16),
+                            machine.bus.io16(0xdc),
+                            machine.bus.peek16(source.wrapping_add(u32::from(machine.bus.io16(0xdc)).saturating_sub(1) * 2)) & 1,
+                            (0..18)
+                                .map(|n| machine.bus.peek16(source + n * 2) & 1)
+                                .collect::<Vec<_>>()
+                        );
+                    }
                     watch_lines -= 1;
                 }
             }
@@ -206,11 +257,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
         return Err("Diagnostic stopped on a CPU/BIOS fault".into());
     }
+    input_result?;
     if machine.clocks.wrapping_sub(initial_clocks) < budget {
         return Err("Diagnostic did not finish its requested workload".into());
     }
     if let Some(path) = std::env::var_os("GBA_SAVE_STATE") {
-        std::fs::OpenOptions::new().write(true).create_new(true).open(path)?
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?
             .write_all(&machine.export_state())?;
     }
     Ok(())
@@ -221,12 +276,19 @@ mod tests {
     use super::*;
     #[test]
     fn input_masks_have_bounded_increasing_frame_times() {
-        assert_eq!(input_sequence("0:0008,5:0000,120:0x0001,125:0000", 130).unwrap(),
-            [(0, 8), (5, 0), (120, 1), (125, 0)]);
-        for value in ["", "0", "a:0", "0:xyz", "0:400", "130:0", "5:0,5:1", "5:0,4:1"] {
+        assert_eq!(
+            input_sequence("0:0008,5:0000,120:0x0001,125:0000", 130).unwrap(),
+            [(0, 8), (5, 0), (120, 1), (125, 0)]
+        );
+        for value in [
+            "", "0", "a:0", "0:xyz", "0:400", "130:0", "5:0,5:1", "5:0,4:1",
+        ] {
             assert!(input_sequence(value, 130).is_err(), "{value}");
         }
-        let many = (0..257).map(|frame| format!("{frame}:0")).collect::<Vec<_>>().join(",");
+        let many = (0..257)
+            .map(|frame| format!("{frame}:0"))
+            .collect::<Vec<_>>()
+            .join(",");
         assert!(input_sequence(&many, 300).is_err());
     }
     #[test]
@@ -234,7 +296,10 @@ mod tests {
         use rustboy_gba::cpu::Memory;
         for start in [0, u64::MAX - 100] {
             let mut rom = vec![0; 192];
-            for (index, op) in [0xe1d100b0u32, 0xe5820000, 0xeafffffc].into_iter().enumerate() {
+            for (index, op) in [0xe1d100b0u32, 0xe5820000, 0xeafffffc]
+                .into_iter()
+                .enumerate()
+            {
                 rom[index * 4..index * 4 + 4].copy_from_slice(&op.to_le_bytes());
             }
             let mut sliced = GameBoyAdvance::new(rom.clone(), None).unwrap();

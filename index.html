@@ -63,7 +63,7 @@
       #screen-area.vram-active #vram-canvas { height: 65vh; }
 
       /* Speed badge */
-      #speed-badge {
+      #speed-badge, #actual-speed {
         position: absolute;
         top: 10px; right: 10px;
         background: rgba(0,0,0,0.7);
@@ -76,6 +76,8 @@
         transition: opacity 0.3s;
       }
       #speed-badge.hidden { opacity: 0; }
+      #actual-speed { left: 10px; right: auto; color: #fff; font-variant-numeric: tabular-nums; }
+      #actual-speed[hidden] { display: none; }
       #backend-status {
         position: absolute; bottom: 0; left: 8px; right: 8px; z-index: 10;
         padding: 5px 8px; border-radius: 4px; background: rgba(0,0,0,0.85);
@@ -96,6 +98,7 @@
         animation: pulse 1s infinite alternate;
       }
       #trace-badge.hidden { display: none; }
+      #actual-speed:not([hidden]) ~ #trace-badge { top: 44px; }
 
       /* Side panels */
       .side-panel {
@@ -740,6 +743,7 @@
         <canvas id="rustboy-canvas"></canvas>
         <canvas id="vram-canvas"></canvas>
         <div id="speed-badge" class="hidden">1×</div>
+        <div id="actual-speed" hidden title="Measured emulation speed relative to real time">Actual: —</div>
         <p id="backend-status" class="hint" role="status" hidden></p>
         <div id="trace-badge" class="hidden">⏺ REC</div>
         <div id="touch-controls" class="hidden" aria-hidden="true">
@@ -898,6 +902,7 @@
       <header><h2 id="settings-title">Settings</h2><button class="ui-button" id="settings-close" type="button">Done</button></header>
       <details class="settings-section" open>
         <summary>Appearance</summary>
+        <label class="settings-row" for="show-actual-speed"><span>Show actual speed</span><input id="show-actual-speed" type="checkbox" /></label>
         <label class="settings-row" for="show-sgb-border"><span>SGB decorations</span><input id="show-sgb-border" data-sgb-border type="checkbox" checked /></label>
         <label class="settings-row" for="sgb-user-palette"><span>SGB palette</span><select id="sgb-user-palette"><option value="game">Game palette</option><option value="warm">Warm</option><option value="cool">Cool</option><option value="gray">Grayscale</option></select></label>
         <p class="hint">Palette choices apply to Super Game Boy games. Games can request their own colors.</p>
@@ -939,6 +944,7 @@
       <div class="save-panel">
         <header><h2 id="save-manager-title">Saves</h2><button id="save-manager-close" type="button">Close</button></header>
         <label><input id="auto-resume" type="checkbox" checked /> Automatically resume the latest autosave</label>
+        <p id="battery-save-status" class="hint" role="status"></p>
         <div id="state-slots"></div>
         <div class="save-data-actions">
           <label>Battery save (.sav) and save-state backups</label>
@@ -1488,47 +1494,40 @@
       let saveInterval = null;
 
       /* ── Save states (binary data lives in IndexedDB) ── */
-      const STATE_DB = 'rustboy_states';
       const STATE_STORE = 'states';
       const AUTO_RESUME_KEY = 'rustboy_auto_resume';
-      let stateDbPromise = null;
+      let stateStorePromise = null;
       let stateAutosaveInterval = null;
-      function openStateDb() {
-        if (stateDbPromise) return stateDbPromise;
-        stateDbPromise = new Promise((resolve, reject) => {
-          const req = indexedDB.open(STATE_DB, 1);
-          req.onupgradeneeded = () => req.result.createObjectStore(STATE_STORE, { keyPath: 'key' });
-          req.onsuccess = () => resolve(req.result);
-          req.onerror = () => reject(req.error);
-        });
-        return stateDbPromise;
+      let blockedAutosaveId = '';
+      function stateStore() {
+        return stateStorePromise ||= import('./web/save-states.mjs').then(({StateStore}) => new StateStore(indexedDB));
       }
+      async function openStateDb() { return (await stateStore()).open(); }
       async function stateRecord(mode, value) {
-        const db = await openStateDb();
-        return new Promise((resolve, reject) => {
-          const tx = db.transaction(STATE_STORE, mode === 'get' ? 'readonly' : 'readwrite');
-          const store = tx.objectStore(STATE_STORE);
-          const req = mode === 'get' ? store.get(value) : mode === 'put' ? store.put(value) : store.delete(value);
-          req.onsuccess = () => resolve(req.result);
-          req.onerror = () => reject(req.error);
-        });
+        return (await stateStore()).record(mode, value);
       }
       function currentStateId() { return Module?._get_state_id?.() || ''; }
-      function stateKey(slot) { const id = currentStateId(); return id ? `${id}:${slot}` : ''; }
+      function compatibleStateIds() {
+        return Array.from(Module?._get_compatible_state_ids?.() || [currentStateId()]);
+      }
+      async function findState(slot, identities = compatibleStateIds()) { return (await stateStore()).find(slot, identities); }
       function screenshot() {
         try { return document.getElementById('rustboy-canvas').toDataURL('image/jpeg', .72); }
         catch (_) { return ''; }
       }
       async function saveState(slot, quiet = false) {
         if (!romLoaded || !Module?._export_state) return false;
+        const romId = currentStateId();
+        if (slot === 'auto' && quiet && blockedAutosaveId === romId) return false;
         try {
           const bytes = Module._export_state();
           if (!bytes?.length) throw new Error('No emulator state available');
-          await stateRecord('put', { key: stateKey(slot), romId: currentStateId(), slot,
+          await stateRecord('put', { key: `${romId}:${slot}`, romId, slot,
             libraryKey: currentRomInfo ? romLibraryKey(currentRomInfo.name, currentRomInfo.folder) : '',
             title: Module._get_rom_title?.() || currentRomInfo?.name || 'Game', timestamp: Date.now(),
             preview: screenshot(), data: bytes.slice().buffer });
           if (!quiet) toast(slot === 'auto' ? 'Autosave updated' : `Saved state ${slot}`);
+          if (slot === 'auto' && blockedAutosaveId === romId) blockedAutosaveId = '';
           await refreshStateIndex();
           return true;
         } catch (e) { if (!quiet) toast(`Could not save state: ${e.message || e}`, true); return false; }
@@ -1536,17 +1535,29 @@
       async function loadState(slot, quiet = false) {
         if (!romLoaded || !Module?._import_state) return false;
         try {
-          const record = await stateRecord('get', stateKey(slot));
+          const romId = currentStateId();
+          const record = await findState(slot);
           if (!record) return false;
+          if (romId !== currentStateId()) return false;
           Module._import_state(new Uint8Array(record.data));
+          blockedAutosaveId = '';
           clearAudioQueue();
           if (!quiet) toast(slot === 'auto' ? 'Autosave resumed' : `Loaded state ${slot}`);
           updatePauseButton();
           return true;
-        } catch (e) { if (!quiet) toast(`Could not load state: ${e.message || e}`, true); return false; }
+        } catch (e) {
+          if (slot === 'auto') blockedAutosaveId = currentStateId();
+          toast(`Could not resume ${slot === 'auto' ? 'autosave' : `state ${slot}`}: ${e.message || e}. Your saved copy is preserved.`, true);
+          return false;
+        }
       }
       async function deleteState(slot) {
-        try { await stateRecord('delete', stateKey(slot)); toast(`Deleted ${slot === 'auto' ? 'autosave' : `state ${slot}`}`); refreshSaveManager(); buildList(); }
+        const identities = compatibleStateIds();
+        try {
+          await (await stateStore()).deleteSlot(slot, identities);
+          if (slot === 'auto') blockedAutosaveId = '';
+          toast(`Deleted ${slot === 'auto' ? 'autosave' : `state ${slot}`}`); refreshSaveManager(); buildList();
+        }
         catch (e) { toast('Could not delete state', true); }
       }
       function clearAudioQueue() {
@@ -1571,6 +1582,7 @@
       async function finishRomLoad() {
         clearAudioQueue();
         releaseAllTouchActions();
+        blockedAutosaveId = '';
         if (autoResumeEnabled()) await loadState('auto', true).then(restored => { if (restored) toast('Resumed autosave'); });
         clearInterval(stateAutosaveInterval);
         stateAutosaveInterval = setInterval(() => saveState('auto', true), 30000);
@@ -2076,6 +2088,7 @@
           const tab = ROM_TABS[activeTab];
           const romInfo = { name: rom.name, folder: tab.folder, tab: activeTab };
           const data = await Module._fetch_library_rom(rom, tab.folder);
+          await saveState('auto', true);
           await Module._load_rom_data(data, rom.name);
           currentRomInfo = romInfo;
           addToRecent(romInfo);
@@ -2096,6 +2109,7 @@
         // Uploaded ROMs cannot be reopened from the built-in picker, and must
         // not inherit the previously selected ROM's recent/save association.
         try {
+          await saveState('auto', true);
           await Module._load_rom_data(new Uint8Array(buf), name);
           currentRomInfo = { name, folder: 'uploads', tab: 'uploads', uploaded: true };
           romLoaded = true;
@@ -2294,14 +2308,21 @@
         updatePauseButton(); resumeAudioContext();
       }
       async function refreshSaveManager() {
+        const battery = loadSaveData(Module?._get_save_key?.() || '');
+        document.getElementById('battery-save-status').textContent = battery?.length
+          ? `In-game save available (${Math.ceil(battery.length / 1024)} KiB). It loads when you open this game.`
+          : 'No in-game save stored yet. Save states below resume the exact moment you saved.';
+        const identities = compatibleStateIds(), romId = currentStateId();
         const container = document.getElementById('state-slots'); container.innerHTML = '';
         for (const slot of ['auto', '1', '2', '3']) {
-          let record = null; try { record = await stateRecord('get', stateKey(slot)); } catch (_) {}
+          let record = null, storageError = null;
+          try { record = await findState(slot, identities); } catch (error) { storageError = error; }
+          if (romId !== currentStateId()) return;
           const card = document.createElement('div'); card.className = 'state-slot';
           const image = document.createElement('img'); image.alt = '';
           if (record?.preview) image.src = record.preview; else image.style.visibility = 'hidden';
           const title = document.createElement('strong'); title.textContent = slot === 'auto' ? 'Autosave' : `Slot ${slot}`;
-          const date = document.createElement('small'); date.textContent = record ? new Date(record.timestamp).toLocaleString() : 'Empty';
+          const date = document.createElement('small'); date.textContent = storageError ? 'Save storage unavailable' : record ? new Date(record.timestamp).toLocaleString() : 'Empty';
           const actions = document.createElement('div'); actions.className = 'state-actions';
           const save = document.createElement('button'); save.textContent = 'Save'; save.onclick = async () => { await saveState(slot); await refreshSaveManager(); };
           const load = document.createElement('button'); load.textContent = 'Load'; load.disabled = !record; load.onclick = async () => { if (await loadState(slot)) closeSaveManager(); };
@@ -2316,11 +2337,11 @@
       document.getElementById('export-saves').addEventListener('click', async () => {
         try {
           Module?._save_game?.();
-          const romId = currentStateId(), title = Module?._get_rom_title?.() || 'game';
+          const romId = currentStateId(), identities = compatibleStateIds(), title = Module?._get_rom_title?.() || 'game';
           const batteryKey = Module._get_save_key(), battery = localStorage.getItem(batteryKey);
           const states = [];
           for (const slot of ['auto','1','2','3']) {
-            const record = await stateRecord('get', stateKey(slot));
+            const record = await findState(slot, identities);
             if (record) states.push({ ...record, data: bytesToBase64(new Uint8Array(record.data)) });
           }
           const blob = new Blob([JSON.stringify({ format: 'rustboy-backup', version: 1, romId, title, battery, states })], { type: 'application/json' });
@@ -2334,26 +2355,54 @@
         try {
           const backup = JSON.parse(await saveImportFile.files[0].text());
           if (backup.format !== 'rustboy-backup' || backup.version !== 1) throw new Error('Unsupported backup file');
-          if (backup.romId !== currentStateId()) throw new Error('Backup belongs to another ROM');
+          const identities = compatibleStateIds();
+          if (!identities.includes(backup.romId)) throw new Error('Backup belongs to another ROM or firmware');
+          const states = (backup.states || []).map(record => {
+            if (!identities.includes(record.romId) || !['auto','1','2','3'].includes(record.slot)) throw new Error('Invalid backup state identity');
+            return { ...record, key: `${record.romId}:${record.slot}`, data: base64ToBytes(record.data).buffer };
+          });
           if (backup.battery) {
-            localStorage.setItem(Module._get_save_key(), backup.battery);
             Module?._import_save_data?.(base64ToBytes(backup.battery));
+            localStorage.setItem(Module._get_save_key(), backup.battery);
           }
-          for (const record of backup.states || []) await stateRecord('put', { ...record, data: base64ToBytes(record.data).buffer });
+          for (const record of states) await stateRecord('put', record);
+          blockedAutosaveId = '';
           await refreshStateIndex(); await refreshSaveManager(); toast('Save backup imported');
         } catch (e) { toast(`Import failed: ${e.message || e}`, true); }
         saveImportFile.value = '';
       });
       document.getElementById('delete-saves').addEventListener('click', async () => {
         if (!confirm('Delete the battery save and all save states for this game?')) return;
+        const identities = compatibleStateIds();
         try {
           localStorage.removeItem(Module._get_save_key());
           localStorage.removeItem(`rustboy_save_${Module._get_rom_title()}`);
           Module?._clear_save_data?.();
-          for (const slot of ['auto','1','2','3']) await stateRecord('delete', stateKey(slot));
+          for (const slot of ['auto','1','2','3']) await (await stateStore()).deleteSlot(slot, identities);
+          blockedAutosaveId = '';
           await refreshStateIndex(); await refreshSaveManager(); toast('Game saves deleted');
         } catch (e) { toast('Could not delete saves', true); }
       });
+
+      /* Measured speed is independent of the requested fast-forward setting. */
+      const actualSpeed = document.querySelector('#actual-speed');
+      const actualSpeedCheckbox = document.querySelector('#show-actual-speed');
+      try { actualSpeedCheckbox.checked = localStorage.getItem('rustboy_show_actual_speed') === 'true'; } catch {}
+      function updateActualSpeed() {
+        actualSpeed.hidden = !actualSpeedCheckbox.checked;
+        if (actualSpeed.hidden) return;
+        if (!romLoaded) { actualSpeed.textContent = 'Actual: —'; return; }
+        if (Module?._is_paused?.()) { actualSpeed.textContent = 'Paused'; return; }
+        const ratio = Module?._get_actual_speed?.();
+        actualSpeed.textContent = Number.isFinite(ratio)
+          ? `Actual: ${ratio.toFixed(2)}× (${Math.round(ratio * 100)}%)` : 'Actual: —';
+      }
+      actualSpeedCheckbox.addEventListener('change', () => {
+        try { localStorage.setItem('rustboy_show_actual_speed', String(actualSpeedCheckbox.checked)); } catch {}
+        updateActualSpeed();
+      });
+      updateActualSpeed();
+      setInterval(updateActualSpeed, 250);
 
       /* ── Speed badge ── */
       const speedBadge = document.getElementById('speed-badge');
@@ -2597,7 +2646,15 @@
       import { loadCartridge, validateUploadSize } from './web/rom-loader.mjs';
       import { fetchLibraryRom } from './web/library-rom.mjs';
       import { ControllerInputs } from './web/controller-input.mjs';
-      init().then(() => {
+      init().then(wasm => {
+        Rustboy.configure_gba_jit?.({env: {
+          memory: wasm.memory, fetch: wasm.gba_jit_fetch, finish: wasm.gba_jit_finish,
+          read: wasm.gba_jit_read, write: wasm.gba_jit_write,
+          fetch_mode: wasm.gba_jit_fetch_mode, read_full: wasm.gba_jit_read_full, write_full: wasm.gba_jit_write_full,
+          control: wasm.gba_jit_control, status: wasm.gba_jit_status, bank_read: wasm.gba_jit_bank_read, bank_write: wasm.gba_jit_bank_write,
+          refill: wasm.gba_jit_refill, exception: wasm.gba_jit_exception, fetch_span: wasm.gba_jit_fetch_span,
+          internal: wasm.gba_jit_internal, branch: wasm.gba_jit_branch, fetch_run: wasm.gba_jit_fetch_run,
+        }});
         const hardware = document.querySelector('#hardware-model');
         const backendStatus=document.querySelector('#backend-status');
         const updateBackendStatus=()=>{
@@ -2639,11 +2696,13 @@
           _get_debug_state: Rustboy.get_debug_state,
           _save_game: Rustboy.save_game,
           _get_speed: Rustboy.get_speed,
+          _get_actual_speed: Rustboy.get_actual_speed,
           _get_is_cgb: Rustboy.get_is_cgb,
           _get_sgb_status: Rustboy.get_sgb_status,
           _export_state: Rustboy.export_state,
           _import_state: data => { const result = Rustboy.import_state(data); clearControllerInputs(); return result; },
           _get_state_id: Rustboy.get_state_id,
+          _get_compatible_state_ids: Rustboy.get_compatible_state_ids,
           _get_rom_title: Rustboy.get_rom_title,
           _get_save_key: Rustboy.get_save_key,
           _export_save_data: Rustboy.export_save_data,

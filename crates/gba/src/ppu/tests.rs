@@ -1,4 +1,146 @@
 use super::*;
+#[test]
+fn opaque_text_compositor_matches_general_layers_windows_objects_and_mosaic() {
+    let mut bus = bus();
+    let mut seed = 0x95a2c371u32;
+    let mut random = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    let mut expected = vec![0; 240 * 160 * 4];
+    let mut actual = expected.clone();
+    for scene in 0..32 {
+        for data in [&mut bus.vram, &mut bus.palette] {
+            for byte in data.iter_mut() {
+                *byte = random() as u8;
+            }
+        }
+        for object in 0..128 {
+            let a0 = (random() as u16 & 0xe3ff) | if scene % 7 == 0 { 0x400 } else { 0 };
+            put(&mut bus.oam, object * 8, a0);
+            put(&mut bus.oam, object * 8 + 2, random() as u16);
+            put(&mut bus.oam, object * 8 + 4, random() as u16);
+            put(&mut bus.oam, object * 8 + 6, random() as u16);
+        }
+        // Exercise all enabled layer sets, every priority/tie order, transparent
+        // palettes, both tile formats, and the special-effect fallback.
+        bus.set_io(
+            0,
+            ((scene as u16 & 15) << 8) | 0x1040 | if scene & 1 == 0 { 0 } else { 0xe000 },
+        );
+        bus.set_io(2, scene as u16 & 1);
+        for bg in 0..4 {
+            bus.set_io(8 + bg * 2, random() as u16);
+            bus.set_io(0x10 + bg * 4, random() as u16);
+            bus.set_io(0x12 + bg * 4, random() as u16);
+        }
+        for offset in [0x40, 0x42, 0x44, 0x46, 0x48, 0x4a, 0x4c, 0x52, 0x54] {
+            bus.set_io(offset, random() as u16);
+        }
+        bus.set_io(
+            0x50,
+            (random() as u16 & !0xc0) | if scene % 5 == 0 { 0xc0 } else { 0 },
+        );
+        for line in 0..160 {
+            bus.fast_text_render = false;
+            render_line(&bus, line, &mut expected);
+            bus.fast_text_render = true;
+            render_line(&bus, line, &mut actual);
+        }
+        assert_eq!(actual, expected, "text scene={scene}");
+    }
+}
+#[test]
+fn specialized_pixels_match_full_color_compositor_across_all_video_modes() {
+    let mut bus = bus();
+    let mut seed = 0x6520b1a7u32;
+    let mut random = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    let mut pixels = vec![0; 240 * 160 * 4];
+    for scene in 0..96 {
+        for data in [&mut bus.vram, &mut bus.palette] {
+            for byte in data.iter_mut() {
+                *byte = random() as u8;
+            }
+        }
+        for object in 0..128 {
+            put(&mut bus.oam, object * 8, random() as u16);
+            for field in [2, 4, 6] {
+                put(&mut bus.oam, object * 8 + field, random() as u16);
+            }
+        }
+        let display = ((scene % 6) as u16)
+            | ((random() as u16 & 15) << 8)
+            | 0x1040
+            | if scene & 1 == 0 { 0 } else { 0xe000 };
+        bus.set_io(0, display);
+        bus.set_io(2, scene as u16 & 1);
+        for bg in 0..4 {
+            bus.set_io(8 + bg * 2, random() as u16);
+            bus.set_io(0x10 + bg * 4, random() as u16);
+            bus.set_io(0x12 + bg * 4, random() as u16);
+        }
+        for offset in (0x20..0x40)
+            .step_by(2)
+            .chain([0x40, 0x42, 0x44, 0x46, 0x48, 0x4a, 0x4c, 0x52, 0x54])
+        {
+            bus.set_io(offset, random() as u16);
+        }
+        bus.reload_affine();
+        let bld = match scene % 6 {
+            0 => random() as u16 & !0xc0,
+            1 => 0x1e40, // FireRed: no primary targets, alpha identity.
+            2 => random() as u16 & !0x3f,
+            3 => random() as u16 & !0x3f00,
+            _ => random() as u16,
+        };
+        bus.set_io(0x50, bld);
+        if scene % 6 == 1 {
+            bus.set_io(0x52, 16);
+        }
+        if scene % 6 == 4 {
+            bus.set_io(0x54, 0);
+        }
+        for line in [0, 1, 7, 31, 79, 159] {
+            render_line(&bus, line, &mut pixels);
+            let graphics = Graphics::<false>::new(&bus);
+            let mut objs = [None; 240];
+            let mut windows = [false; 240];
+            objects(&graphics, line as usize, &mut objs, &mut windows);
+            let enabled = match display & 7 {
+                0 => 15,
+                1 => 7,
+                2 => 12,
+                _ => 4,
+            } & ((display >> 8) & 15);
+            let mut expected = [0; 240 * 4];
+            compose_pixels::<false, true>(
+                &graphics,
+                line,
+                &mut expected,
+                bus.affine,
+                display,
+                enabled,
+                bus.io16(0x50),
+                &objs,
+                &windows,
+            );
+            green_swap(&graphics, &mut expected);
+            assert_eq!(
+                &pixels[line as usize * 960..(line as usize + 1) * 960],
+                &expected,
+                "effect-free scene={scene} mode={} line={line}",
+                display & 7
+            );
+        }
+    }
+}
 fn bus() -> Bus {
     let mut bus = Bus::new(vec![0; 0xc0], None).unwrap();
     bus.set_io(0, 0);
@@ -80,14 +222,22 @@ fn text_tile_row_cache_matches_uncached_pixels_across_formats_and_wrapping() {
         b.set_io(0x12 + bg * 4, (case * 151) as u16 & 511);
         b.set_io(0x4c, ((case * 7) & 255) as u16);
         let line = case * 97 % 160;
-        let mut cache = TextRow::new(&b, bg, line);
+        let mut cache = TextRow::new(&Graphics::<false>::new(&b), bg, line);
         // Non-monotonic visits exercise cached row replacement as windows
         // can skip pixels and scroll/mosaic can cross map blocks.
         for x in (0..240).chain((0..240).rev()) {
             let describe = |dot: Dot| (dot.color, dot.layer, dot.priority, dot.semi);
             assert_eq!(
-                cache.dot(&b, bg, x).map(describe),
-                background(&b, Affine::default(), bg, 0, x, line).map(describe),
+                cache.dot(&Graphics::<false>::new(&b), bg, x).map(describe),
+                background(
+                    &Graphics::<false>::new(&b),
+                    Affine::default(),
+                    bg,
+                    0,
+                    x,
+                    line
+                )
+                .map(describe),
                 "case={case} x={x} line={line} cnt={cnt:04x}"
             );
         }
@@ -120,7 +270,9 @@ fn affine_power_of_two_wrapping_matches_euclidean_oracle_at_signed_extremes() {
                     (y.rem_euclid(size) / 8 * (size / 8) + x.rem_euclid(size) / 8) as usize;
                 let expected = [31, 0x3e0, 0x7c00][map_index % 3];
                 assert_eq!(
-                    background(&b, affine, 2, 2, 0, 0).unwrap().color,
+                    background(&Graphics::<false>::new(&b), affine, 2, 2, 0, 0)
+                        .unwrap()
+                        .color,
                     expected,
                     "size={size}, origin=({x},{y})"
                 );
@@ -430,7 +582,7 @@ fn bitmap_page_and_index_zero_transparency() {
     bus.vram[0xa000] = 2;
     pal(&mut bus, 2, 31 << 10);
     assert_eq!(
-        background(&bus, Affine::default(), 2, 4, 1, 0).map(|d| d.color),
+        background(&Graphics::<false>::new(&bus), Affine::default(), 2, 4, 1, 0).map(|d| d.color),
         None
     );
     assert_eq!(pixel(&bus, 0, 0), RED);

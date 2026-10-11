@@ -16,7 +16,7 @@ export function summarizeRendering(profile) {
       parents.set(child, node.id);
     }
   }
-  const rendering = /::ppu::render_line$/;
+  const rendering = /::ppu::render_(?:line|cached)$/;
   const scheduling = /::advance_video$/;
   if (!profile.nodes.some(node => rendering.test(node.callFrame.functionName))) {
     throw new Error('No compositor boundary: build with --features gba-profile-rendering');

@@ -121,6 +121,11 @@ pub trait Emulator {
             .unwrap_or_else(|| self.state_id())
     }
     fn run(&mut self, ticks: u64) -> RunResult;
+    /// Bracket consecutive run calls within one synchronous frontend callback.
+    /// The caller must not mutate hardware or invoke debugging/state APIs until
+    /// end_run_batch. Guest memory changes still require normal invalidation.
+    fn begin_run_batch(&mut self) {}
+    fn end_run_batch(&mut self) {}
     /// Advance one backend-defined debug step, even while paused.
     fn step(&mut self) -> RunResult;
     fn paused(&self) -> bool;
@@ -128,6 +133,9 @@ pub trait Emulator {
     fn reset(&mut self);
     fn set_button(&mut self, port: usize, button: Button, pressed: bool) -> Result<(), String>;
     fn video_frame(&mut self) -> VideoFrame<'_>;
+    /// Optional presentation optimization: compose one of every `stride`
+    /// emulated frames. Hardware timing must still advance for every frame.
+    fn set_video_frame_stride(&mut self, _stride: u32) {}
     fn drain_audio(&mut self) -> AudioChunk;
     fn save_info(&self) -> Option<SaveInfo> {
         None
@@ -142,6 +150,11 @@ pub trait Emulator {
     fn clear_save(&mut self) {}
     /// Versioning, validation and hardware/ROM identity are backend-owned.
     fn state_id(&self) -> String;
+    /// Current and known compatible persistence identities, newest first.
+    /// Backends still validate the binary state before accepting a restore.
+    fn compatible_state_ids(&self) -> Vec<String> {
+        vec![self.state_id()]
+    }
     fn export_state(&self) -> Vec<u8>;
     fn import_state(&mut self, data: &[u8]) -> Result<(), String>;
     /// Optional, explicitly console-specific debug extension. The normal

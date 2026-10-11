@@ -1,11 +1,12 @@
 //! Frontend policy: wall-clock pacing and speed controls, not console timing.
 use crate::emulator::{Emulator, RunResult, StopReason};
-use crate::pacing::FrameClock;
+use crate::pacing::{FrameClock, SpeedMeter};
 
 pub struct Session {
     pub backend: Box<dyn Emulator>,
     pub speed: u32,
     clock: FrameClock,
+    actual_speed: SpeedMeter,
     step_requested: bool,
 }
 
@@ -15,6 +16,7 @@ impl Session {
             backend,
             speed: 1,
             clock: FrameClock::default(),
+            actual_speed: SpeedMeter::default(),
             step_requested: false,
         }
     }
@@ -45,7 +47,9 @@ impl Session {
             .clock
             .target(timestamp_ms, self.speed, paused, self.backend.clock_hz());
         if paused {
+            self.actual_speed = SpeedMeter::default();
             if std::mem::take(&mut self.step_requested) {
+                self.backend.set_video_frame_stride(1);
                 return self.backend.step();
             }
             return RunResult {
@@ -54,12 +58,27 @@ impl Session {
             };
         }
         self.step_requested = false;
+        // Compose at most one new video frame for a normal 60-Hz callback.
+        // Longer fast-forward callbacks contain more emulated frames; skip
+        // those additional presentations too, without dropping hardware time.
+        let stride = if self.speed == 1 {
+            1
+        } else {
+            self.speed.max(
+                budget
+                    .saturating_mul(60)
+                    .div_ceil(self.backend.clock_hz().max(1))
+                    .clamp(1, 16) as u32,
+            )
+        };
+        self.backend.set_video_frame_stride(stride);
         let started = now();
         let chunk = (self.backend.clock_hz() / 240).max(1);
         let mut total = RunResult {
             ticks: 0,
             reason: StopReason::BudgetExhausted,
         };
+        self.backend.begin_run_batch();
         while total.ticks < budget {
             let result = self.backend.run((budget - total.ticks).min(chunk));
             self.clock.consume(result.ticks);
@@ -76,7 +95,14 @@ impl Session {
                 break;
             }
         }
+        self.backend.end_run_batch();
+        self.actual_speed
+            .record(timestamp_ms, total.ticks, self.backend.clock_hz());
         total
+    }
+
+    pub fn actual_speed(&self) -> Option<f64> {
+        self.actual_speed.ratio
     }
 
     pub fn request_step(&mut self) {
@@ -87,18 +113,23 @@ impl Session {
             1 | 2 | 4 | 8 => speed,
             _ => 1,
         };
+        self.backend.set_video_frame_stride(self.speed);
     }
     pub fn cycle_speed(&mut self) {
         self.set_speed(if self.speed == 8 { 1 } else { self.speed * 2 });
     }
     pub fn reset(&mut self) {
         self.backend.reset();
+        self.backend.set_video_frame_stride(self.speed);
         self.clock = FrameClock::default();
+        self.actual_speed = SpeedMeter::default();
         self.step_requested = false;
     }
     pub fn import_state(&mut self, data: &[u8]) -> Result<(), String> {
         self.backend.import_state(data)?;
+        self.backend.set_video_frame_stride(self.speed);
         self.clock = FrameClock::default();
+        self.actual_speed = SpeedMeter::default();
         self.step_requested = false;
         Ok(())
     }
@@ -108,12 +139,52 @@ impl Session {
 mod tests {
     use super::*;
     use crate::emulator::{AudioChunk, Button, PixelFormat, VideoFrame, VideoGeometry};
+    #[test]
+    fn gba_fast_forward_skips_presentation_and_debug_steps_restore_rendering() {
+        let mut rom = vec![0; 192];
+        rom[..4].copy_from_slice(&0xeafffffeu32.to_le_bytes());
+        let gba = rustboy_gba::GameBoyAdvance::new(rom, None).unwrap();
+        let mut session = Session::new(Box::new(gba));
+        session.set_speed(8);
+        session.tick(0.0);
+        session.tick(16.0);
+        let stats = |session: &Session| {
+            session
+                .backend
+                .debug_extension()
+                .unwrap()
+                .downcast_ref::<rustboy_gba::GameBoyAdvance>()
+                .unwrap()
+                .video_render_statistics()
+        };
+        let (stride, rendered, skipped) = stats(&session);
+        assert_eq!(stride, 8);
+        assert!(rendered > 0 && skipped > rendered);
+        session.tick(48.0);
+        assert_eq!(
+            stats(&session).0,
+            16,
+            "a 30-Hz callback contains twice as many emulated frames"
+        );
+        let saved = session.backend.export_state();
+        session.backend.set_paused(true);
+        session.request_step();
+        session.tick(64.0);
+        assert_eq!(stats(&session).0, 1);
+        session.import_state(&saved).unwrap();
+        assert_eq!(stats(&session).0, 8);
+        session.reset();
+        assert_eq!(stats(&session).0, 8);
+        session.set_speed(1);
+        assert_eq!(stats(&session).0, 1);
+    }
 
     // Test double only: intentionally not Game Boy-shaped and no debug hook.
     struct TestBackend {
         ticks: u64,
         paused: bool,
         pixels: Vec<u8>,
+        batch_active: bool,
     }
     impl Emulator for TestBackend {
         fn system_name(&self) -> &'static str {
@@ -126,12 +197,24 @@ mod tests {
             "test".into()
         }
         fn run(&mut self, budget: u64) -> RunResult {
+            assert!(
+                self.batch_active,
+                "session run calls share an exclusive batch"
+            );
             let ticks = budget.div_ceil(7) * 7;
             self.ticks += ticks;
             RunResult {
                 ticks,
                 reason: StopReason::BudgetExhausted,
             }
+        }
+        fn begin_run_batch(&mut self) {
+            assert!(!self.batch_active);
+            self.batch_active = true;
+        }
+        fn end_run_batch(&mut self) {
+            assert!(self.batch_active);
+            self.batch_active = false;
         }
         fn step(&mut self) -> RunResult {
             self.ticks += 7;
@@ -198,6 +281,7 @@ mod tests {
             ticks: 0,
             paused: false,
             pixels: vec![0; 320 * 200 * 4],
+            batch_active: false,
         }))
     }
 
@@ -254,6 +338,43 @@ mod tests {
         // not the missed work from the preceding hundred callbacks.
         let result = session.tick_bounded(1616.0, 12.0, || 0.0);
         assert!((128..135).contains(&result.ticks));
+    }
+
+    #[test]
+    fn measured_speed_uses_completed_ticks_and_clears_on_pause_and_reset() {
+        let mut session = session();
+        session.set_speed(8);
+        session.tick(0.0);
+        for frame in 1..=32 {
+            let mut time = -4.0;
+            session.tick_bounded(frame as f64 * 16.0, 12.0, || {
+                time += 4.0;
+                time
+            });
+        }
+        assert_eq!(session.actual_speed(), Some(21.0 / 16.0));
+        session.backend.set_paused(true);
+        session.request_step();
+        session.tick(528.0);
+        assert_eq!(
+            session.actual_speed(),
+            None,
+            "debug steps are not running speed"
+        );
+        session.backend.set_paused(false);
+        for frame in 34..=70 {
+            session.tick(frame as f64 * 16.0);
+        }
+        assert!(session.actual_speed().unwrap() > 7.9);
+        let state = session.backend.export_state();
+        session.import_state(&state).unwrap();
+        assert_eq!(session.actual_speed(), None);
+        for frame in 71..=110 {
+            session.tick(frame as f64 * 16.0);
+        }
+        assert!(session.actual_speed().is_some());
+        session.reset();
+        assert_eq!(session.actual_speed(), None);
     }
 
     #[test]
