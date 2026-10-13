@@ -289,15 +289,24 @@ export class CableCoordinator {
   }
 }
 
-function gatherIce(pc, timeout = 15000) {
+export function gatherIce(pc, timeout = 15000) {
   if (pc.iceGatheringState === 'complete') return Promise.resolve();
   return new Promise((resolve, reject) => {
+    let settled = false;
     const finish = error => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer); pc.removeEventListener('icegatheringstatechange', changed);
       error ? reject(error) : resolve();
     };
     const changed = () => { if (pc.iceGatheringState === 'complete') finish(); };
-    const timer = setTimeout(() => finish(new Error('Could not gather connection addresses; check the network or relay settings')), timeout);
+    // An unreachable STUN/TURN server can keep gathering pending even after
+    // host addresses are present. Preserve those candidates in the manual code
+    // rather than declaring the whole connection impossible.
+    const timer = setTimeout(() => {
+      const hasCandidates = /(?:^|\r?\n)a=candidate:/.test(pc.localDescription?.sdp || '');
+      finish(hasCandidates ? undefined : new Error('No WebRTC connection addresses were found. Check whether WebRTC is blocked in browser/privacy settings, or try another network or relay.'));
+    }, timeout);
     pc.addEventListener('icegatheringstatechange', changed);
     changed();
   });

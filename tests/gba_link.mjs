@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { CableCoordinator, LINK_FRAME_CLOCKS, encodePairing, decodePairing, parseIceServers,
-  wasmLinkAdapter, RtcCable, RomTransfer, ROM_CHUNK_BYTES, MAX_ROM_BYTES, validateLinkRom } from '../web/gba-link.mjs';
+  wasmLinkAdapter, RtcCable, RomTransfer, ROM_CHUNK_BYTES, MAX_ROM_BYTES, validateLinkRom, gatherIce } from '../web/gba-link.mjs';
 
 // These transport endpoints deliberately do not implement CPU, SIO timing or
 // graphics; those are tested in Rust. They expose whether network coordination
@@ -180,6 +180,21 @@ class FakePc {
   async setLocalDescription(description) { this.localDescription = description; this.signalingState = description.type === 'offer' ? 'have-local-offer' : 'stable'; }
   async setRemoteDescription(description) { this.remoteDescription = description; this.signalingState = description.type === 'answer' ? 'stable' : 'have-remote-offer'; }
   close() { this.closed = true; }
+}
+{
+  const pending = new EventTarget();
+  pending.iceGatheringState = 'gathering';
+  pending.localDescription = { type: 'offer', sdp: 'v=0\r\na=candidate:1 1 UDP 2122260223 phone.local 49152 typ host\r\n' };
+  await gatherIce(pending, 10);
+  assert.match(decodePairing(encodePairing(pending.localDescription), 'offer').sdp, /phone.local/,
+    'pending STUN discovery preserves collected host candidates in the code');
+  pending.localDescription.sdp = 'v=0\r\n';
+  await assert.rejects(gatherIce(pending, 10), /No WebRTC connection addresses/,
+    'a timeout without any candidates remains an actionable error');
+  const complete = gatherIce(pending, 1000);
+  pending.iceGatheringState = 'complete';
+  pending.dispatchEvent(new Event('icegatheringstatechange'));
+  await complete;
 }
 {
   const first = new RtcCable({ adapter: endpoint(0).adapter, PeerConnection: FakePc });
