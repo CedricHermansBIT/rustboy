@@ -199,6 +199,38 @@ try {
     const diagnostics = await evaluate("[...document.querySelectorAll('iframe')].map(f=>({failed:f.contentWindow.failed,messages:f.contentWindow.messages,pixel:f.contentWindow.pixel?.(),transfers:f.contentWindow.cable?.coordinator?.transfers,state:f.contentWindow.api?.gba_link_status?.(),linkStatus:f.contentWindow.document.querySelector('#gba-link-status')?.textContent,romStatus:f.contentWindow.document.querySelector('#gba-link-rom-status')?.textContent}))");
     throw new Error(`Timed out: ${expression}\n${JSON.stringify(diagnostics)}`);
   };
+  // Independent top-level tabs, rather than only same-page iframes.
+  const tabSessions = [];
+  for (let i=0;i<2;i++) {
+    const {targetId: tabId}=await command('Target.createTarget',{url:'about:blank'});
+    const {sessionId: tabSession}=await command('Target.attachToTarget',{targetId:tabId,flatten:true});
+    tabSessions.push({tabId,tabSession});
+    await command('Runtime.enable',{},tabSession);
+    await command('Page.navigate',{url:`http://127.0.0.1:${server.address().port}/endpoint`},tabSession);
+  }
+  const inTab=async(i,expression)=>{
+    const r=await command('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true},tabSessions[i].tabSession);
+    if(r.exceptionDetails)throw Error(JSON.stringify(r.exceptionDetails));return r.result.value;
+  };
+  for(let i=0;i<2;i++) {
+    const end=Date.now()+30000;
+    while(!await inTab(i,'window.ready===true')) {
+      assert.ok(Date.now()<end,'top-level WASM tab initializes');await new Promise(r=>setTimeout(r,50));
+    }
+  }
+  const tabsOffer=await inTab(0,'cable.createOffer()');
+  const tabsAnswer=await inTab(1,`cable.acceptOffer(${JSON.stringify(tabsOffer)})`);
+  await inTab(0,`cable.acceptAnswer(${JSON.stringify(tabsAnswer)})`);
+  for(let i=0;i<2;i++) {
+    const end=Date.now()+30000;
+    while(!await inTab(i,'cable.connected')) {
+      assert.ok(Date.now()<end,`top-level pairing failed: ${await inTab(i,'JSON.stringify(messages)')}`);
+      await new Promise(r=>setTimeout(r,50));
+    }
+  }
+  for(let i=0;i<2;i++)await inTab(i,'cable.close()');
+  for(const {tabId}of tabSessions)await command('Target.closeTarget',{targetId:tabId});
+  console.log('GBA top-level tabs: actual WebRTC manual offer/answer pairing passed');
   await command('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/` }, sessionId);
   await until("[...document.querySelectorAll('iframe')].length===2&&[...document.querySelectorAll('iframe')].every(f=>f.contentWindow.ready)");
   await evaluate("window.p0=document.querySelector('#p0').contentWindow;window.p1=document.querySelector('#p1').contentWindow;void 0");
@@ -270,9 +302,12 @@ try {
   await evaluate("Promise.all([p0,p1].map(async p=>{p.api=await p.eval('import(\"/out/rustboy.js\")');p.document.querySelector('[data-open-link]').click();p.document.querySelector('#gba-link-relay').value='[]';})).then(()=>undefined)");
   await evaluate("(async()=>{const bytes=await(await fetch('/fixture.gba')).arrayBuffer();const transfer=new p0.DataTransfer();transfer.items.add(new p0.File([bytes],'Original cable.gba'));const input=p0.document.querySelector('#rom-file-input');input.files=transfer.files;input.dispatchEvent(new p0.Event('change',{bubbles:true}));})()");
   await until("p0.eval('romLoaded')");
-  assert.ok(await evaluate("[p0,p1].every(p=>p.document.querySelector('#gba-link-settings').open && p.document.querySelector('#gba-link-create').getClientRects().length && p.document.querySelector('#gba-link-connect').getClientRects().length)"), 'Link opens directly with visible serverless handshake controls');
+  assert.ok(await evaluate("[p0,p1].every(p=>p.document.querySelector('#gba-link-menu').open && p.document.querySelector('#gba-link-create').getClientRects().length && p.document.querySelector('#gba-link-connect').getClientRects().length)"), 'Link opens directly with visible serverless handshake controls');
   await evaluate("p0.document.querySelector('#gba-link-create').click()");
   await until("p0.document.querySelector('#gba-link-local-code').value.startsWith('rustboy-link-v2:')");
+  assert.deepEqual(await evaluate("[p0,p1].map(p=>p.document.querySelector('#emulator-settings').open)"),[false,false],'Link uses its own menu');
+  await evaluate("[p0,p1].forEach(p=>p.document.querySelector('#gba-link-self-test').click())");
+  await until("[p0,p1].every(p=>p.document.querySelector('#gba-link-self-test-result').textContent.startsWith('Native WebRTC self-test passed'))");
   const uiOffer = await evaluate("p0.document.querySelector('#gba-link-local-code').value");
   await evaluate(`p1.document.querySelector('#gba-link-remote-code').value=${JSON.stringify(uiOffer)};p1.document.querySelector('#gba-link-connect').click()`);
   await until("p1.document.querySelector('#gba-link-local-code').value.startsWith('rustboy-link-v2:')");
@@ -284,13 +319,13 @@ try {
   assert.equal(await evaluate("p1.eval('romLoaded')"), false);
   await evaluate("p1.document.querySelector('#gba-link-rom-play').click()");
   await until("p1.eval('romLoaded')");
-  assert.deepEqual(await evaluate("[p0,p1].map(p=>p.document.querySelector('#emulator-settings').open)"), [true, true]);
-  await evaluate("p0.document.querySelector('#gba-link-start').click();p0.document.querySelector('#settings-close').click()");
+  assert.deepEqual(await evaluate("[p0,p1].map(p=>p.document.querySelector('#gba-link-menu').open)"), [true, true]);
+  await evaluate("p0.document.querySelector('#gba-link-start').click();p0.document.querySelector('#gba-link-close').click()");
   const frozen = await evaluate('JSON.parse(p0.api.gba_link_status()).clock');
   await new Promise(resolve => setTimeout(resolve, 150));
   assert.equal(await evaluate('JSON.parse(p0.api.gba_link_status()).clock'), frozen, 'closing Settings early cannot run the first endpoint ahead');
   assert.equal(await evaluate('p0.api.is_paused()'), false, 'hardware barrier is independent of the user pause control');
-  await evaluate("p1.document.querySelector('#gba-link-start').click();p1.document.querySelector('#settings-close').click()");
+  await evaluate("p1.document.querySelector('#gba-link-start').click();p1.document.querySelector('#gba-link-close').click()");
   await until('[p0,p1].every(p=>JSON.parse(p.api.gba_link_status()).mode===2)');
   await evaluate("p0.api.set_controller_button(0,'a',true)");
   await until("[p0,p1].every(p=>{const c=p.document.querySelector('#rustboy-canvas');const pixel=c.getContext('2d').getImageData(0,0,1,1).data;return pixel[0]===0&&pixel[1]===255&&pixel[2]===0;})");
@@ -319,7 +354,7 @@ try {
   });
   await command('Page.navigate', { url: `${origin}/room-ui` }, sessionId);
   await until("typeof document.querySelector('#p0').contentWindow.mem==='function'");
-  await evaluate("(async()=>{window.p0=document.querySelector('#p0').contentWindow;p0.api=await p0.eval('import(\"/out/rustboy.js\")');p0.openSettings();})()");
+  await evaluate("(async()=>{window.p0=document.querySelector('#p0').contentWindow;p0.api=await p0.eval('import(\"/out/rustboy.js\")');p0.openLink();})()");
   await evaluate("(async()=>{const bytes=await(await fetch('/fixture.gba')).arrayBuffer();const transfer=new p0.DataTransfer();transfer.items.add(new p0.File([bytes],'Room cable.gba'));const input=p0.document.querySelector('#rom-file-input');input.files=transfer.files;input.dispatchEvent(new p0.Event('change',{bubbles:true}));})()");
   await until("p0.eval('romLoaded')");
   await evaluate(`p0.document.querySelector('#gba-link-server').value='ws://127.0.0.1:${roomPort}/gba-link/rooms';p0.document.querySelector('#gba-link-room-create').click()`);
@@ -331,7 +366,7 @@ try {
   await until("typeof document.querySelector('#p1').contentWindow.mem==='function'");
   await evaluate("(async()=>{window.p1=document.querySelector('#p1').contentWindow;p1.api=await p1.eval('import(\"/out/rustboy.js\")');})()");
   await until("[p0,p1].every(p=>p.document.querySelector('#gba-link-status').textContent.includes('Device connected'))");
-  assert.equal(await evaluate("p1.document.querySelector('#emulator-settings').open"), true, 'opening the invite automatically opens the link Settings panel');
+  assert.equal(await evaluate("p1.document.querySelector('#gba-link-menu').open"), true, 'opening the invite automatically opens the link Settings panel');
   assert.equal(await evaluate("p1.document.querySelector('#gba-link-server').value"), `ws://127.0.0.1:${roomPort}/gba-link/rooms`, 'guest requires no room-server entry');
   assert.deepEqual(await evaluate("[p0,p1].map(p=>[p.document.querySelector('#gba-link-local-code').value,p.document.querySelector('#gba-link-remote-code').value])"), [['', ''], ['', '']], 'room invitation requires no manual offer/answer codes');
   assert.equal(await evaluate("p1.eval('romLoaded')"), false, 'opening an invite does not silently load a game');
@@ -342,7 +377,7 @@ try {
   await evaluate("p1.document.querySelector('#gba-link-rom-play').click()");
   await until("p1.eval('romLoaded')");
   assert.deepEqual(await evaluate('Array.from(p1.api.export_gba_rom())'), exportedRom, 'Receive and load verifies and loads the exact currently playing ROM');
-  await evaluate("[p0,p1].forEach(p=>{p.document.querySelector('#gba-link-start').click();p.document.querySelector('#settings-close').click();})");
+  await evaluate("[p0,p1].forEach(p=>{p.document.querySelector('#gba-link-start').click();p.document.querySelector('#gba-link-close').click();})");
   await until('[p0,p1].every(p=>JSON.parse(p.api.gba_link_status()).mode===2)');
   await evaluate("p0.api.set_controller_button(0,'a',true)");
   await until("[p0,p1].every(p=>{const c=p.document.querySelector('#rustboy-canvas');const pixel=c.getContext('2d').getImageData(0,0,1,1).data;return pixel[0]===0&&pixel[1]===255&&pixel[2]===0;})");

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { CableCoordinator, LINK_FRAME_CLOCKS, encodePairing, decodePairing, parseIceServers,
-  wasmLinkAdapter, RtcCable, RomTransfer, ROM_CHUNK_BYTES, MAX_ROM_BYTES, validateLinkRom, gatherIce } from '../web/gba-link.mjs';
+  wasmLinkAdapter, RtcCable, RomTransfer, ROM_CHUNK_BYTES, MAX_ROM_BYTES, validateLinkRom, gatherIce, relayFormServers } from '../web/gba-link.mjs';
 
 // These transport endpoints deliberately do not implement CPU, SIO timing or
 // graphics; those are tested in Rust. They expose whether network coordination
@@ -170,16 +170,60 @@ function pair() {
 }
 
 class FakePc {
-  constructor(config) { this.config = config; this.iceGatheringState = 'complete'; this.signalingState = 'stable'; }
+  constructor(config) { this.config = config; this.iceGatheringState = 'complete'; this.signalingState = 'stable'; this.channelLabels = []; this.localOffers = []; }
   createDataChannel(label, options) {
+    this.channelLabels.push(label);
     this.channel = { label, ...options, readyState: 'connecting', close() { this.closed = true; } };
     return this.channel;
   }
   async createOffer() { return { type: 'offer', sdp: 'v=0\r\na=offer\r\n' }; }
   async createAnswer() { return { type: 'answer', sdp: 'v=0\r\na=answer\r\n' }; }
-  async setLocalDescription(description) { this.localDescription = description; this.signalingState = description.type === 'offer' ? 'have-local-offer' : 'stable'; }
+  async setLocalDescription(description) { if (description.type === 'offer') this.localOffers.push({description, channels: this.channelLabels.length}); this.localDescription = description; this.signalingState = description.type === 'offer' ? 'have-local-offer' : 'stable'; }
   async setRemoteDescription(description) { this.remoteDescription = description; this.signalingState = description.type === 'answer' ? 'stable' : 'have-remote-offer'; }
   close() { this.closed = true; }
+}
+async function answerFakeOffer(cable) {
+  await cable.acceptAnswer(encodePairing({type: 'answer', sdp: 'v=0\r\na=answer\r\n', session: cable.pairingId}));
+}
+{
+  class RetiredDiscoveryPc extends FakePc {
+    async setRemoteDescription(description) {
+      await super.setRemoteDescription(description);
+      if (description.type === 'answer' && !this.realAnswer) {
+        this.connectionState = 'failed'; this.iceConnectionState = 'failed';
+        this.iceGatheringState = 'gathering';
+        this.onconnectionstatechange?.();
+        this.iceGatheringState = 'complete';
+      }
+    }
+  }
+  const statuses = [];
+  const cable = new RtcCable({adapter: endpoint(0).adapter, PeerConnection: RetiredDiscoveryPc,
+    onStatus: message => statuses.push(message)});
+  const offer = await cable.createOffer();
+  const pc = cable.pc;
+  assert.equal(decodePairing(offer, 'offer').type, 'offer');
+  assert.ok(pc && !pc.closed, 'retired discovery failure must not cancel offer generation');
+  pc.onconnectionstatechange();
+  await cable.connectionFailed(pc);
+  assert.equal(cable.pc, pc, 'late discovery failure must not cancel an unanswered real offer');
+  assert.equal(cable.lastFailureDetails, '');
+  assert.ok(!statuses.some(message => /WebRTC connection failed/.test(message)));
+  pc.realAnswer = true; pc.connectionState = 'connecting';
+  await answerFakeOffer(cable);
+  assert.equal(cable.pendingAnswerPc, null, 'a real answer enables normal failure handling');
+  pc.connectionState = 'failed'; pc.onconnectionstatechange();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(cable.pc, null, 'real connection failure after the answer still closes');
+}
+{
+  const cable = new RtcCable({adapter: endpoint(0).adapter, PeerConnection: FakePc});
+  await cable.createOffer();
+  const pc = cable.pc;
+  pc.connectionState = 'failed'; pc.onconnectionstatechange();
+  await answerFakeOffer(cable);
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  assert.equal(cable.pc, null, 'failure that persists after answering is caught without another native event');
 }
 {
   const pending = new EventTarget();
@@ -200,8 +244,13 @@ class FakePc {
   const first = new RtcCable({ adapter: endpoint(0).adapter, PeerConnection: FakePc });
   const second = new RtcCable({ adapter: endpoint(1).adapter, PeerConnection: FakePc });
   const offer = await first.createOffer();
+  assert.deepEqual(first.pc.channelLabels, ['rustboy-gba-cable-v1'], 'discovery creates no temporary data channel to tear down');
+  assert.deepEqual(first.pc.localOffers.map(offer => offer.channels), [0, 1], 'address advertising starts before the first data transport exists');
   assert.equal(first.pc.channel.ordered, true, 'cable packets use reliable ordered delivery');
   const answer = await second.acceptOffer(offer);
+  const mismatched = {...decodePairing(answer, 'answer'), session: 'different-pairing-attempt'};
+  await assert.rejects(()=>first.acceptAnswer(encodePairing(mismatched)), /different or older link code/);
+  assert.equal(first.pc.signalingState, 'have-local-offer', 'wrong replies do not replace the pending offer');
   await first.acceptAnswer(answer);
   assert.equal(first.pc.remoteDescription.type, 'answer');
   assert.equal(second.pc.remoteDescription.type, 'offer');
@@ -215,6 +264,7 @@ class FakePc {
   const cable = new RtcCable({ adapter: endpoint(0).adapter, PeerConnection: FakePc,
     disconnectGraceMs: 20, onStatus: message => statuses.push(message) });
   await cable.createOffer();
+  await answerFakeOffer(cable);
   const pc = cable.pc;
   pc.connectionState = 'disconnected'; pc.onconnectionstatechange();
   assert.equal(cable.pc, pc, 'temporary ICE disconnect retains the connection');
@@ -225,15 +275,40 @@ class FakePc {
   pc.localDescription.sdp += 'a=candidate:1 1 UDP 1 phone.local 49152 typ host\r\n';
   pc.remoteDescription = { sdp: 'v=0\r\na=candidate:2 1 UDP 1 203.0.113.1 49152 typ srflx\r\n' };
   pc.onicecandidateerror({ errorCode: 701 });
+  pc.iceConnectionState = 'failed';
+  pc.getStats = async () => new Map([
+    ['pair', {type:'candidate-pair',state:'failed',requestsSent:7,responsesReceived:0}],
+    ['transport', {type:'transport',dtlsState:'new'}],
+    ['unsupported-counters', {type:'candidate-pair',state:'failed'}],
+  ]);
   pc.connectionState = 'failed'; pc.onconnectionstatechange();
+  await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(cable.pc, null);
-  assert.match(statuses.at(-1), /this device: local 1, public 0, relay 0; peer: local 0, public 1, relay 0/);
-  assert.match(statuses.at(-1), /Discovery errors: 701/);
-  assert.doesNotMatch(statuses.at(-1), /phone.local|203\.0\.113/);
+  assert.match(cable.lastFailureDetails, /this device: local 1, public 0, relay 0; peer: local 0, public 1, relay 0/);
+  assert.match(cable.lastFailureDetails, /Discovery errors: 701/);
+  assert.match(cable.lastFailureDetails, /ICE failed/);
+  assert.match(cable.lastFailureDetails, /failed: requests 7, responses 0/);
+  assert.match(cable.lastFailureDetails, /DTLS new/);
+  assert.match(cable.lastFailureDetails, /requests unavailable, responses unavailable/);
+  assert.doesNotMatch(cable.lastFailureDetails, /phone.local|203\.0\.113/);
   await cable.createOffer();
+  await answerFakeOffer(cable);
   cable.pc.connectionState = 'disconnected'; cable.pc.onconnectionstatechange();
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(cable.pc, null, 'persistent disconnect eventually closes');
+}
+
+{
+  const created = [];
+  class FailedDiscoveryPc extends FakePc {
+    constructor(config) { super(config); created.push(this); }
+    async createAnswer() { throw new Error('Discovery answer failed'); }
+  }
+  const cable = new RtcCable({ adapter: endpoint(0).adapter, PeerConnection: FailedDiscoveryPc });
+  await assert.rejects(() => cable.createOffer(), /Discovery answer failed/);
+  assert.equal(cable.pc, null, 'failed discovery does not leave a pending application peer');
+  assert.ok(created.every(pc => pc.closed), 'temporary answer builder and application peer are closed on failure');
+  assert.ok(created.every(pc => !pc.channel), 'discovery failure creates no application or temporary data transport');
 }
 
 console.log('GBA link: pairing, relay validation, mutual clock barriers, capture/commit exchange, readiness, disconnect and malformed-packet protection passed');
@@ -356,3 +431,13 @@ function romBytes(size = ROM_CHUNK_BYTES * 4 + 123) {
 }
 
 console.log('GBA ROM transfer: explicit acceptance/load, binary chunking, progress, SHA-256 integrity, rejection/cancel, size/header/name bounds and backpressure passed');
+
+{
+  assert.deepEqual(relayFormServers('', '', '', '[]'), []);
+  const servers = relayFormServers(' turns:relay.example:443?transport=tcp ', 'guest', 'password');
+  assert.equal(servers.length, 2);
+  assert.deepEqual(servers[1], {urls:['turns:relay.example:443?transport=tcp'],username:'guest',credential:'password'});
+  assert.throws(()=>relayFormServers('', 'guest', 'password'), /server address/);
+  assert.throws(()=>relayFormServers('https:bad', '', ''), /must start/);
+  assert.throws(()=>relayFormServers('turn:relay.example', 'guest', 'password', '[]'), /not both/);
+}

@@ -47,6 +47,27 @@ jobs:
           RUSTBOY_NO_BOOT=1 RUSTBOY_SYNTHETIC_CGB=1 node tests/browser_smoke.mjs
           RUSTBOY_GBA_UPLOAD=1 RUSTBOY_GBA_JIT_VERIFY=1 node tests/browser_smoke.mjs
           node tests/gba_link_browser.mjs
+          node tests/gba_link_firefox.mjs
           RUSTBOY_GBA_SAVE_FAILURES=1 node tests/browser_smoke.mjs
       # Licensed/local ROM and boot-ROM suites are a separate release gate:
       # python3 scripts/check.py --roms --browser
+  windows-firefox-link:
+    runs-on: windows-2025
+    timeout-minutes: 5
+    env:
+      RUSTBOY_FIREFOX: 'C:\Program Files\Mozilla Firefox\firefox.exe'
+      RUSTBOY_LOCAL_ICE: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Firefox direct pairing with address privacy and delayed codes
+        run: node tests/gba_link_firefox.mjs
+      - name: Firefox direct pairing with a longer manual exchange
+        env:
+          RUSTBOY_ANSWER_DELAY_MS: '45000'
+        run: node tests/gba_link_firefox.mjs

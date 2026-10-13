@@ -18,7 +18,8 @@ const integer = (value, max = 0xffffffff) => Number.isSafeInteger(value) && valu
 const maskFor = mode => mode === 0 ? 0xff : mode === 2 ? 0xffff : 0xffffffff;
 
 export function encodePairing(description) {
-  const bytes = new TextEncoder().encode(JSON.stringify({ v: LINK_VERSION, type: description.type, sdp: description.sdp }));
+  const bytes = new TextEncoder().encode(JSON.stringify({ v: LINK_VERSION, type: description.type, sdp: description.sdp,
+    ...(description.session ? { session: description.session } : {}) }));
   if (bytes.length > MAX_PAIRING) throw new Error('Pairing description is too large');
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
@@ -35,7 +36,8 @@ export function decodePairing(code, expectedType) {
     const data = JSON.parse(json);
     if (data.v !== LINK_VERSION || data.type !== expectedType || typeof data.sdp !== 'string'
         || data.sdp.length > MAX_PAIRING || !data.sdp.startsWith('v=0')) throw new Error();
-    return { type: data.type, sdp: data.sdp };
+    if (data.session !== undefined && (typeof data.session !== 'string' || !/^[A-Za-z0-9-]{16,64}$/.test(data.session))) throw new Error();
+    return { type: data.type, sdp: data.sdp, ...(data.session ? { session: data.session } : {}) };
   } catch {
     throw new Error(`Paste a complete RustBoy ${expectedType} code`);
   }
@@ -59,6 +61,17 @@ export function parseIceServers(text = '') {
     return { urls, ...(server.username !== undefined ? { username: server.username } : {}),
       ...(server.credential !== undefined ? { credential: server.credential } : {}) };
   });
+}
+
+export function relayFormServers(url = '', username = '', password = '', custom = '') {
+  if (!url.trim()) {
+    if (username || password) throw new Error('Enter a TURN server address with the relay credentials');
+    return parseIceServers(custom);
+  }
+  if (custom.trim()) throw new Error('Use the TURN fields or the custom server list, not both');
+  if (!/^(turn|turns):/.test(url.trim())) throw new Error('TURN server must start with turn: or turns:');
+  const relay = parseIceServers(JSON.stringify([{ urls: url.trim(), username, credential: password }]));
+  return [...parseIceServers(), ...relay];
 }
 
 // The adapter is deliberately small, so protocol tests can exercise two
@@ -312,6 +325,63 @@ export function gatherIce(pc, timeout = 15000) {
   });
 }
 
+async function preparePeerDiscovery(pc, PeerConnection) {
+  // Firefox advertises its mDNS names only after an answer starts ICE checks.
+  // During manual pairing, that answer may arrive after the guest's lookup
+  // expires. Complete an empty offer/answer first: this enables address
+  // advertising without creating or retiring any data/ICE transport. A
+  // rejected data section can leave native teardown queued and destroy the
+  // real transport created immediately afterward (Firefox/Windows).
+  // The real channel is created only after this empty negotiation.
+  let answerBuilder;
+  try {
+    await pc.setLocalDescription(await pc.createOffer());
+    answerBuilder = new PeerConnection({ iceServers: [] });
+    await answerBuilder.setRemoteDescription(pc.localDescription);
+    await pc.setRemoteDescription(await answerBuilder.createAnswer());
+  } finally {
+    answerBuilder?.close();
+  }
+}
+
+// Diagnostic only: temporary native WebRTC peers exchange an echo, without the
+// application's transport/pairing code, emulator state or another device.
+export async function testBrowserWebRtc({ PeerConnection = globalThis.RTCPeerConnection, timeout = 20000 } = {}) {
+  if (!PeerConnection) throw new Error('WebRTC is unavailable in this browser');
+  const first = new PeerConnection({ iceServers: [] });
+  let second, timer, outgoing;
+  try {
+    second = new PeerConnection({ iceServers: [] });
+    await preparePeerDiscovery(first, PeerConnection);
+    const result = new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`Native WebRTC self-test timed out (ICE ${first.iceConnectionState || 'unknown'}/${second.iceConnectionState || 'unknown'}).`)), timeout);
+      outgoing = first.createDataChannel('rustboy-connection-test', { ordered: true });
+      outgoing.onopen = () => outgoing.send('rustboy-test');
+      outgoing.onmessage = event => {
+        if (event.data === 'rustboy-test-reply') resolve('Native WebRTC self-test passed. This browser can connect to itself; another device or manual code exchange is not tested.');
+      };
+      outgoing.onerror = () => reject(new Error('Native WebRTC self-test data channel failed'));
+      second.ondatachannel = event => {
+        event.channel.onmessage = message => {
+          if (message.data === 'rustboy-test') event.channel.send('rustboy-test-reply');
+        };
+      };
+      const negotiate = async () => {
+        await first.setLocalDescription(await first.createOffer());
+        await gatherIce(first, Math.min(timeout, 5000));
+        await second.setRemoteDescription(first.localDescription);
+        await second.setLocalDescription(await second.createAnswer());
+        await gatherIce(second, Math.min(timeout, 5000));
+        await first.setRemoteDescription(second.localDescription);
+      };
+      negotiate().catch(reject);
+    });
+    return await result;
+  } finally {
+    clearTimeout(timer); outgoing?.close(); first.close(); second?.close();
+  }
+}
+
 export const MAX_ROM_BYTES = 32 * 1024 * 1024;
 export const ROM_CHUNK_BYTES = 16384;
 export function validateLinkRom(bytes, name) {
@@ -495,7 +565,10 @@ export class RtcCable {
     if (!this.PeerConnection) throw new Error('This browser does not support WebRTC data channels');
     const pc = new this.PeerConnection({ iceServers: this.iceServers });
     this.pc = pc; this.player = player;
+    this.discoveryPc = null; this.pendingAnswerPc = null;
+    this.pairingId = null;
     this.discoveryErrors = [];
+    this.lastFailureDetails = '';
     pc.onicecandidateerror = event => {
       if (this.pc === pc && this.discoveryErrors.length < 8 && Number.isInteger(event.errorCode)) {
         this.discoveryErrors.push(event.errorCode);
@@ -504,8 +577,11 @@ export class RtcCable {
     this.connected = false; this.localReady = false; this.peerReady = false; this.epoch = 0;
     pc.onconnectionstatechange = () => {
       if (this.pc !== pc) return;
+      // No remote transport exists during initialization or while the offer
+      // awaits its reply. Failure handling starts after the real answer.
+      if (this.discoveryPc === pc || this.pendingAnswerPc === pc) return;
       if (pc.connectionState === 'failed') {
-        this.close(`WebRTC connection failed. ${this.connectionDetails(pc)} Check browser WebRTC policy or Wi-Fi client isolation; a TURN relay may be needed.`, true);
+        this.connectionFailed(pc);
       } else if (pc.connectionState === 'disconnected') {
         // ICE disconnected is recoverable; closing here prevents recovery.
         if (!this.disconnectTimer) {
@@ -528,6 +604,28 @@ export class RtcCable {
       if (this.pc === pc && !this.connected) this.close('Pairing timed out. Check both codes, or configure a TURN relay.', true);
     }, 90000);
     return pc;
+  }
+  async connectionFailed(pc) {
+    if (this.discoveryPc === pc || this.pendingAnswerPc === pc) return;
+    const details = this.connectionDetails(pc);
+    let stats = '';
+    try {
+      if (pc.getStats) {
+        const report = await Promise.race([pc.getStats(), new Promise(resolve => setTimeout(() => resolve(null), 1000))]);
+        if (report) {
+          const pairs = [], transports = [];
+          report.forEach(item => {
+            const count = value => Number.isFinite(value) ? value : 'unavailable';
+            if (item.type === 'candidate-pair') pairs.push(`${item.state}: requests ${count(item.requestsSent)}, responses ${count(item.responsesReceived)}`);
+            if (item.type === 'transport') transports.push(`DTLS ${item.dtlsState || 'unknown'}`);
+          });
+          stats = `\nCandidate checks: ${pairs.slice(0, 12).join('; ') || 'none'}. ${transports.join('; ')}`;
+        }
+      }
+    } catch { /* Basic state/candidate diagnostics remain available. */ }
+    if (this.pc !== pc || pc.connectionState !== 'failed') return;
+    this.lastFailureDetails = `ICE ${pc.iceConnectionState || 'unknown'}; gathering ${pc.iceGatheringState || 'unknown'}.\n${details}${stats}`;
+    this.close('WebRTC connection failed. See Connection details below.', true);
   }
   connectionDetails(pc = this.pc) {
     const counts = description => {
@@ -687,35 +785,59 @@ export class RtcCable {
   }
   async createOffer() {
     const pc = this.setup(0);
+    this.pairingId = globalThis.crypto.randomUUID();
     this.onStatus('Creating player 1 offer…');
+    this.discoveryPc = pc; this.pendingAnswerPc = pc;
+    try { await preparePeerDiscovery(pc, this.PeerConnection); }
+    catch (error) {
+      if (this.pc !== pc) throw new Error('Pairing was cancelled');
+      this.close(); throw error;
+    }
+    finally { if (this.discoveryPc === pc) this.discoveryPc = null; }
+    if (this.pc !== pc) throw new Error('Pairing was cancelled');
     this.channel(pc.createDataChannel('rustboy-gba-cable-v1', { ordered: true }), pc);
     await pc.setLocalDescription(await pc.createOffer());
     await gatherIce(pc);
     if (this.pc !== pc) throw new Error('Pairing was cancelled');
     this.onStatus('Send the offer code to player 2, then paste their answer');
-    return encodePairing(pc.localDescription.toJSON?.() || pc.localDescription);
+    return encodePairing({ ...(pc.localDescription.toJSON?.() || pc.localDescription), session: this.pairingId });
   }
   async acceptOffer(code) {
     const description = decodePairing(code, 'offer');
     const pc = this.setup(1);
+    this.pairingId = description.session || null;
     this.onStatus('Creating player 2 answer…');
     await pc.setRemoteDescription(description);
     await pc.setLocalDescription(await pc.createAnswer());
     await gatherIce(pc);
     if (this.pc !== pc) throw new Error('Pairing was cancelled');
     this.onStatus('Send the answer code to player 1 to connect devices');
-    return encodePairing(pc.localDescription.toJSON?.() || pc.localDescription);
+    return encodePairing({ ...(pc.localDescription.toJSON?.() || pc.localDescription), session: this.pairingId });
   }
   async acceptAnswer(code) {
     const description = decodePairing(code, 'answer');
     if (!this.pc || this.player !== 0 || this.pc.signalingState !== 'have-local-offer') {
       throw new Error('Create a player 1 offer before applying an answer');
     }
-    await this.pc.setRemoteDescription(description);
+    if (this.pairingId && description.session !== this.pairingId) {
+      throw new Error('This reply belongs to a different or older link code. Send your current code again and connect its new reply. Both pages must use the updated build.');
+    }
+    const pc = this.pc;
+    await pc.setRemoteDescription(description);
+    if (this.pc !== pc) throw new Error('Pairing was cancelled');
+    this.pendingAnswerPc = null;
+    // Check a retained failed state after the answer, even if the browser
+    // does not emit another connectionstatechange event.
+    clearTimeout(this.initialFailureTimer);
+    this.initialFailureTimer = setTimeout(() => {
+      if (this.pc === pc && pc.connectionState === 'failed') this.connectionFailed(pc);
+    }, 1000);
     this.onStatus('Connecting devices…');
   }
   close(reason = 'Link disconnected', pause = false) {
     clearInterval(this.timer); clearTimeout(this.connectionTimeout);
+    clearTimeout(this.initialFailureTimer);
+    this.discoveryPc = null; this.pendingAnswerPc = null;
     clearTimeout(this.disconnectTimer); this.disconnectTimer = null;
     this.timer = null;
     const pc = this.pc; const channel = this.dataChannel;
@@ -740,7 +862,14 @@ export function installGbaLinkPanel(wasm, root = document, { loadRom = async byt
   const fileInput = root.querySelector('#gba-link-rom-file');
   const romStatus = root.querySelector('#gba-link-rom-status');
   let cable = null; let room = null; let autoLoad = false;
-  const report = message => { status.textContent = message; };
+  const report = message => {
+    status.textContent = message;
+    const details = root.querySelector('#gba-link-diagnostics');
+    if (details) {
+      details.textContent = cable?.lastFailureDetails || cable?.connectionDetails() || 'No connection attempt yet';
+      if (cable?.lastFailureDetails) details.closest('details').open = true;
+    }
+  };
   const updateRom = transfer => {
     root.querySelector('#gba-link-rom-play').disabled = !(transfer?.direction === 'receive' && transfer.phase === 'offered');
     root.querySelector('#gba-link-rom-current').disabled = !!transfer;
@@ -761,7 +890,9 @@ export function installGbaLinkPanel(wasm, root = document, { loadRom = async byt
   const create = () => {
     room?.close(); room = null; cable?.close();
     const adapter = wasmLinkAdapter(wasm);
-    return new RtcCable({ adapter, onStatus: report, onRom: updateRom, loadRom, iceServers: parseIceServers(relay.value) });
+    const iceServers = relayFormServers(root.querySelector('#gba-link-relay-url')?.value,
+      root.querySelector('#gba-link-relay-user')?.value, root.querySelector('#gba-link-relay-password')?.value, relay.value);
+    return new RtcCable({ adapter, onStatus: report, onRom: updateRom, loadRom, iceServers });
   };
   const run = action => async () => {
     const buttons = panel.querySelectorAll('button[data-link-pair]');
@@ -770,6 +901,15 @@ export function installGbaLinkPanel(wasm, root = document, { loadRom = async byt
     catch (error) { report(error.message || String(error)); }
     finally { for (const button of buttons) button.disabled = false; }
   };
+  const selfTest = root.querySelector('#gba-link-self-test');
+  selfTest?.addEventListener('click', async () => {
+    selfTest.disabled = true;
+    const result = root.querySelector('#gba-link-self-test-result');
+    result.textContent = 'Testing native WebRTC in this browser…';
+    try { result.textContent = await testBrowserWebRtc(); }
+    catch (error) { result.textContent = error.message || String(error); }
+    finally { selfTest.disabled = false; }
+  });
   const joinRoom = name => {
     cable = create();
     const server = roomServerUrl(root.querySelector('#gba-link-server').value);
@@ -849,8 +989,7 @@ export function installGbaLinkPanel(wasm, root = document, { loadRom = async byt
   const invitation = /^#gba-link=([A-Za-z0-9_-]{12})$/.exec(page.hash);
   if (invitation) {
     root.querySelector('#gba-link-server').value = page.searchParams.get('link-server') || '';
-    panel.open = true;
-    root.querySelector('[data-open-settings]')?.click();
+    root.querySelector('[data-open-link]')?.click();
     run(async () => joinRoom(invitation[1]))();
   }
   return { disconnect: reason => { room?.close(); room = null; cable?.close(reason); cable = null; }, stopLink: reason => cable?.stopLink(reason), get cable() { return cable; } };

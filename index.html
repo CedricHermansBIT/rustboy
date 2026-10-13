@@ -178,6 +178,9 @@
       .settings-row select { width: 55%; }
       .settings-panel input[type="checkbox"] { accent-color: #9be89b; width: 16px; height: 16px; }
       .settings-panel .hint { color: #869586; font-size: .74rem; line-height: 1.55; margin: 8px 0; overflow-wrap: anywhere; }
+      #gba-link-settings input:not([type="checkbox"]) { width: 100%; box-sizing: border-box; margin: 6px 0 10px; padding: 8px; color: #d6e4d6; background: #111811; border: 1px solid #455045; border-radius: 5px; }
+      #gba-link-settings .link-step { margin: 14px 0; padding-bottom: 10px; border-bottom: 1px solid #2d382d; }
+      #gba-link-settings .link-step h3 { font-size: .85rem; color: #b8d2b8; }
       #gba-link-settings textarea { width: 100%; box-sizing: border-box; min-height: 76px; padding: 8px; margin: 6px 0 10px; color: #d6e4d6; background: #111811; border: 1px solid #455045; border-radius: 5px; font: .72rem monospace; resize: vertical; }
       #gba-link-settings label { display: block; margin-top: 8px; font-size: .8rem; color: #b8d2b8; }
       .settings-panel .button-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
@@ -939,16 +942,49 @@
           <p class="hint">Firmware stays in this browser and is never distributed by RustBoy.</p>
         </details>
       </details>
-      <details class="settings-section" id="gba-link-settings">
-        <summary>GBA link · two devices</summary>
-        <p class="hint">Connect directly with a friend using link codes. This works on GitHub Pages and does not need a room server.</p>
+      <details class="settings-section">
+        <summary>Developer tools</summary>
+        <p class="hint">Debugging stays off unless enabled. The backtick key toggles these tools; F5 remains browser refresh.</p>
+        <div class="settings-row key-row" data-action="debug_tools"><span class="desc">Toggle shortcut</span><kbd></kbd></div>
+        <button class="ui-button" id="debug-tools-toggle" type="button" aria-pressed="false">Show debug tools</button>
+      </details>
+    </dialog>
+
+    <dialog id="gba-link-menu" class="settings-panel" aria-labelledby="gba-link-title">
+      <header><h2 id="gba-link-title">GBA multiplayer link</h2><button class="ui-button" id="gba-link-close" type="button">Done</button></header>
+      <div id="gba-link-settings">
+        <div class="link-step"><h3>1. Connect your devices</h3>
+        <p class="hint">Create a code, send it to your friend, then connect their reply. Your friend pastes your code and chooses Connect code.</p>
         <div class="button-row"><button class="ui-button" id="gba-link-create" data-link-pair type="button">Create link</button><button class="ui-button" id="gba-link-connect" data-link-pair type="button">Connect code</button><button class="ui-button" id="gba-link-disconnect" type="button">Disconnect</button></div>
         <label for="gba-link-remote-code">Code from your friend</label>
         <textarea id="gba-link-remote-code" spellcheck="false" autocomplete="off" placeholder="Paste their offer or answer, then choose Connect code"></textarea>
         <label for="gba-link-local-code">Your code to send</label>
         <textarea id="gba-link-local-code" readonly spellcheck="false" aria-label="Your pairing code"></textarea>
         <button class="ui-button" id="gba-link-copy" type="button">Copy your code</button>
-        <p class="hint">One player creates a link and sends the code. Their friend connects that code and sends the answer back. The first player connects the answer.</p>
+        <p id="gba-link-status" class="hint" role="status" aria-live="polite">Link disconnected</p>
+        </div>
+        <div class="link-step"><h3>2. Choose the games</h3>
+        <p class="hint">Load compatible games on both devices, or send the game you are playing.</p>
+        <div class="button-row"><button class="ui-button" id="gba-link-rom-current" type="button">Send current game</button><button class="ui-button" id="gba-link-rom-play" type="button" disabled>Receive and load game</button></div>
+        </div>
+        <div class="link-step"><h3>3. Play together</h3>
+        <div class="button-row"><button class="ui-button" id="gba-link-start" type="button">Start cable (restart games)</button><button class="ui-button" id="gba-link-download" type="button">Join Single Pak (no cartridge)</button></div>
+        <p class="hint">Start on both devices, close Settings and choose multiplayer in the game. For Single Pak, the guest chooses Join Single Pak instead. Controls have about 100 ms of delay.</p>
+        <p class="hint">Starting restarts the games and shares temporary session state, including save data. Each device keeps its own saves.</p>
+        </div>
+        <details><summary>Connection details</summary><button class="ui-button" id="gba-link-self-test" type="button">Test WebRTC in this browser</button><p id="gba-link-self-test-result" class="hint" role="status"></p><pre id="gba-link-diagnostics" style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:.72rem">No connection attempt yet</pre></details>
+        <details><summary>Advanced options</summary>
+        <details><summary>Network relay settings</summary>
+          <p class="hint">A public Google STUN server discovers connection addresses. Some mobile or restrictive networks need your own TURN relay. Relay settings stay in this page and are not saved.</p>
+          <label for="gba-link-relay-url">TURN server</label>
+          <input id="gba-link-relay-url" placeholder="turns:relay.example:443?transport=tcp" autocomplete="off" />
+          <label for="gba-link-relay-user">Username</label><input id="gba-link-relay-user" autocomplete="off" />
+          <label for="gba-link-relay-password">Password</label><input id="gba-link-relay-password" type="password" autocomplete="off" />
+          <details><summary>Custom server list (JSON)</summary>
+          <label for="gba-link-relay">STUN/TURN configuration</label>
+          <textarea id="gba-link-relay" spellcheck="false" autocomplete="off" placeholder='[{"urls":"turn:your-relay:3478","username":"user","credential":"password"}]'></textarea>
+          </details>
+        </details>
         <details><summary>Invite rooms (optional)</summary>
           <p class="hint">Room invites connect automatically when a signaling server is available. Static GitHub Pages hosting alone cannot provide one.</p>
           <div class="button-row"><button class="ui-button" id="gba-link-room-create" data-link-pair type="button">Create room</button><button class="ui-button" id="gba-link-room-copy" type="button">Copy invite link</button></div>
@@ -956,30 +992,14 @@
           <label for="gba-link-server">Room server (optional, for static hosting)</label>
           <input id="gba-link-server" type="url" placeholder="wss://your-server/gba-link/rooms" style="width:100%;box-sizing:border-box" />
         </details>
-        <p id="gba-link-status" class="hint" role="status" aria-live="polite">Link disconnected</p>
-        <div class="button-row"><button class="ui-button" id="gba-link-rom-current" type="button">Send current game</button><button class="ui-button" id="gba-link-rom-play" type="button" disabled>Receive and load game</button></div>
         <details><summary>File transfer options</summary>
         <div class="button-row"><button class="ui-button" id="gba-link-rom-send" type="button">Send GBA file (loads here)</button><button class="ui-button" id="gba-link-rom-receive" type="button" disabled>Receive ROM</button><button class="ui-button" id="gba-link-rom-reject" type="button" disabled>Reject offer</button></div>
         <input id="gba-link-rom-file" type="file" accept=".gba" hidden />
         <p id="gba-link-rom-status" class="hint" role="status" aria-live="polite">No ROM transfer active</p>
         <div class="button-row"><button class="ui-button" id="gba-link-rom-load" type="button" disabled>Load received ROM</button><button class="ui-button" id="gba-link-rom-cancel" type="button" disabled>Cancel transfer</button></div>
         </details>
-        <p class="hint">ROM transfer is optional if both players already have compatible games. Files are sent directly to the other device, checked for integrity, and loaded only when accepted. Saves remain separate on each device.</p>
-        <p class="hint">Starting exchanges temporary session state, including cartridge saves, with your peer. Each device keeps its own saves.</p>
-        <div class="button-row"><button class="ui-button" id="gba-link-start" type="button">Start cable (restart games)</button><button class="ui-button" id="gba-link-download" type="button">Join Single Pak (no cartridge)</button></div>
-        <p class="hint">After loading, choose Start cable on both devices, close Settings, then select the game's cable multiplayer mode. Linked play runs both GBAs locally and exchanges delayed inputs once per frame. Controls have about 100 ms of network delay; requested speed is limited to 1×. Ordinary ROM changes, reset and state restores disconnect devices. Four-player and wireless adapters are not supported. Single Pak download play is experimental.</p>
-        <details><summary>Network relay settings</summary>
-          <p class="hint">A public Google STUN server discovers connection addresses. Some mobile or restrictive networks need your own TURN relay. Relay settings stay in this page and are not saved.</p>
-          <label for="gba-link-relay">Optional STUN/TURN configuration (JSON array)</label>
-          <textarea id="gba-link-relay" spellcheck="false" autocomplete="off" placeholder='[{"urls":"turn:your-relay:3478","username":"user","credential":"password"}]'></textarea>
         </details>
-      </details>
-      <details class="settings-section">
-        <summary>Developer tools</summary>
-        <p class="hint">Debugging stays off unless enabled. The backtick key toggles these tools; F5 remains browser refresh.</p>
-        <div class="settings-row key-row" data-action="debug_tools"><span class="desc">Toggle shortcut</span><kbd></kbd></div>
-        <button class="ui-button" id="debug-tools-toggle" type="button" aria-pressed="false">Show debug tools</button>
-      </details>
+      </div>
     </dialog>
 
     <div id="save-manager" class="hidden" role="dialog" aria-modal="true" aria-labelledby="save-manager-title">
@@ -1830,19 +1850,31 @@
       let pickerOpen = true, selectedIdx = 0, Module = null;
 
       const settingsDialog = document.querySelector('#emulator-settings');
-      let settingsWasPaused = false;
+      const linkDialog = document.querySelector('#gba-link-menu');
+      let settingsWasPaused = false, linkWasPaused = false;
       function openSettings() {
-        if (settingsDialog.open) return;
+        if (settingsDialog.open || linkDialog.open) return;
         settingsWasPaused = !!Module?._is_paused?.();
         Module?._set_paused?.(true);
         settingsDialog.showModal();
       }
       document.querySelectorAll('[data-open-settings]').forEach(button => button.addEventListener('click', openSettings));
-      document.querySelectorAll('[data-open-link]').forEach(button => button.addEventListener('click', () => {
-        openSettings();
-        const link = document.querySelector('#gba-link-settings');
-        link.open = true; link.scrollIntoView({ block: 'nearest' });
-      }));
+      function openLink() {
+        if (linkDialog.open || settingsDialog.open) return;
+        linkWasPaused = !!Module?._is_paused?.();
+        Module?._set_paused?.(true);
+        linkDialog.showModal();
+      }
+      document.querySelectorAll('[data-open-link]').forEach(button => button.addEventListener('click', openLink));
+      document.querySelector('#gba-link-close').addEventListener('click', () => linkDialog.close());
+      linkDialog.addEventListener('close', () => {
+        if (romLoaded && !linkWasPaused && !settingsDialog.open) Module?._set_paused?.(false);
+        updatePauseButton();
+      });
+      linkDialog.addEventListener('click', event => {
+        const rect = linkDialog.getBoundingClientRect();
+        if (event.target === linkDialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) linkDialog.close();
+      });
       document.querySelector('#settings-close').addEventListener('click', () => settingsDialog.close());
       settingsDialog.addEventListener('close', () => {
         cancelRebind();
@@ -2167,7 +2199,7 @@
           currentRomInfo = { name, folder: 'uploads', tab: 'uploads', uploaded: true };
           romLoaded = true;
           await finishRomLoad({ resumeAutosave: !options.preserveLink });
-          if (options.preserveLink && settingsDialog.open) Module._set_paused(true);
+          if (options.preserveLink && (settingsDialog.open || linkDialog.open)) Module._set_paused(true);
           resumeAudioContext();
           updateSpeedBadge();
         } catch (error) {
@@ -2637,7 +2669,7 @@
 
       window.addEventListener('keydown', (e) => {
         if (e.code === 'F5' || (e.ctrlKey || e.metaKey) && e.code === 'KeyR') return;
-        if (settingsDialog.open && !rebindAction) return;
+        if ((settingsDialog.open || linkDialog.open) && !rebindAction) return;
         if (e.repeat && !['up','down','left','right','btn_a','btn_b'].includes(codeToAction[e.code])) return;
         // Rebind mode: capture next key
         if (rebindAction) {
@@ -2685,7 +2717,7 @@
 
       window.addEventListener('keyup', (e) => {
         if (e.code === 'F5') return;
-        if (settingsDialog.open) return;
+        if (settingsDialog.open || linkDialog.open) return;
         if (rebindAction) { e.preventDefault(); return; }
         const action = codeToAction[e.code];
         if (!action) return;
@@ -2732,7 +2764,7 @@
             currentRomInfo = null; romLoaded = true;
             closePicker(); initAudio(); resumeAudioContext();
             await finishRomLoad({ resumeAutosave: false });
-            if (settingsDialog.open) Rustboy.set_paused(true);
+            if (settingsDialog.open || linkDialog.open) Rustboy.set_paused(true);
             updateSpeedBadge();
           },
         });
@@ -2749,12 +2781,12 @@
           _set_vram_view: Rustboy.set_vram_view,
           _set_sgb_sound_firmware: Rustboy.set_sgb_sound_firmware && (data => {
             const restarted = Rustboy.set_sgb_sound_firmware(data);
-            if (restarted) { clearControllerInputs(); applySgbUserPalette(); if (settingsDialog.open) Rustboy.set_paused(true); }
+            if (restarted) { clearControllerInputs(); applySgbUserPalette(); if (settingsDialog.open || linkDialog.open) Rustboy.set_paused(true); }
             return restarted;
           }),
           _clear_sgb_sound_firmware: Rustboy.clear_sgb_sound_firmware && (() => {
             Rustboy.clear_sgb_sound_firmware(); clearControllerInputs(); applySgbUserPalette();
-            if (settingsDialog.open) Rustboy.set_paused(true);
+            if (settingsDialog.open || linkDialog.open) Rustboy.set_paused(true);
           }),
           _validate_upload_size: validateUploadSize,
           _load_rom_data: (data, name = '', { preserveLink = false } = {}) => {

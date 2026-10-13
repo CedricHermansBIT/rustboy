@@ -28,7 +28,7 @@ test cartridge is lightweight; running two commercial games increases local work
 5. Load compatible games on both pages, or choose **Send current game** on
    player 1 and **Receive and load game** on player 2. The received cartridge
    loads after size/header and SHA-256 checks.
-6. Both choose **Start cable (restart games)**, close Settings and select the
+6. Both choose **Start cable (restart games)**, close the Link menu and select the
    game's multiplayer mode. Starting preserves each device's own battery save
    and exchanges temporary session state, including RAM, RTC and save data.
    Resume either page if it was paused before opening Settings.
@@ -39,7 +39,7 @@ Some networks require the TURN relay configuration described below.
 ## Optional invite rooms
 
 Expand **Invite rooms (optional)** to create a room and copy an invite link.
-Opening that link automatically exchanges the handshake and opens link Settings.
+Opening that link automatically exchanges the handshake and opens the Link menu.
 This requires a reachable room server; GitHub Pages alone cannot run one.
 The invite carries the frontend URL and configured room-server address. A room
 admits two devices; a full, disconnected or expired room needs a new invite.
@@ -54,7 +54,7 @@ emulated serial cable.
 
 For Single Pak, pair the devices, keep the host cartridge loaded on player 1,
 and let player 2 choose **Join Single Pak (no cartridge)** instead of receiving a
-ROM. Player 1 chooses **Start cable (restart games)**. Close Settings and choose
+ROM. Player 1 chooses **Start cable (restart games)**. Close the Link menu and choose
 the host game's Single Pak mode. The invited page runs an original replacement
 BIOS download client, not a Nintendo BIOS image or the host cartridge.
 
@@ -112,14 +112,23 @@ and session snapshots are not uploaded to that service by this frontend.
 
 The default Google STUN server discovers connection addresses. Some cellular or
 restrictive networks require a TURN relay. Enter its configuration under
-**Network relay settings** on the devices that need it:
+**Advanced options → Network relay settings** on the devices that need it:
 
 ```json
 [{"urls":"turn:your-relay:3478","username":"user","credential":"password"}]
 ```
 
+The TURN server, username and password can be entered directly; the custom JSON
+server list remains available for multiple servers. Use one form or the other.
 Relay configuration stays in the current page. Pairing failures are visible;
-transport failure during play detaches the cable and pauses emulation. Verified
+transport failure during play detaches the cable and pauses emulation. Temporary
+WebRTC disconnections have a 15-second recovery window. **Connection details**
+opens on a failed connection. **Test WebRTC in this browser** runs two temporary
+native WebRTC peers and verifies an echo, independently of RustBoy pairing and
+emulation. A pass checks this browser’s local WebRTC path only. Details show
+address counts, ICE state, candidate check
+request/response counts and DTLS state, without exposing addresses or credentials.
+Unsupported statistics are marked unavailable, rather than reported as zero. Verified
 ROM sharing requires HTTPS or localhost because browser
 [Web Crypto](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/subtle)
 requires a secure context.
@@ -185,6 +194,8 @@ node tests/gba_link.mjs
 node tests/gba_link_rooms.mjs
 node tests/gba_link_local.mjs
 node tests/gba_link_browser.mjs
+# Optional: real Firefox, using its built-in WebDriver BiDi
+RUSTBOY_FIREFOX=/path/to/firefox node tests/gba_link_firefox.mjs
 ```
 
 The browser check requires a built `out/` bundle and Chromium (`RUSTBOY_BROWSER`
@@ -192,7 +203,8 @@ can select its executable). It pairs real WebRTC endpoints before either has a
 cartridge, verifies accepted ROM transfer, then runs two independent browser WASM
 instances. An original guest checks both multiplayer words and the serial IRQ
 before rendering green. The checks also cover the speed cap and disconnection
-after state restoration. A continuous guest additionally exercises Halt, IRQs,
+after state restoration. Two separate top-level tabs also exercise the direct
+WebRTC manual-code path, without a local transport bypass. A continuous guest additionally exercises Halt, IRQs,
 DMA and save writes under 80 ms simulated one-way delay, requiring over 50 fps
 on both endpoints and thousands of local serial transfers with only frame input
 packets crossing the network. These are local-browser regressions, not a physical
@@ -230,3 +242,58 @@ checks both players on the starting grid with different selected characters.
 A separate manual continuation also verified independent steering during a
 25-second Multi Pak race; it is not included in the cold-start image gate.
 Generated logs, screenshots and reports remain under ignored `target/`.
+
+## Manual-code discovery timing
+
+A controlled Firefox reproduction previously passed with an immediate answer,
+failed when the reply was held for 15 seconds with mDNS enabled, and passed with
+the same delay when host-address obfuscation was disabled. The guest failed
+before the host received its reply. This established a negotiation timing issue;
+it did not establish that the browser configuration had changed.
+
+The offerer now initializes address advertising before publishing its code. It
+completes an empty negotiation with no media sections or data channels, closes
+the answer builder, then creates the first cable channel and offer on that same
+peer connection. Firefox consequently advertises the real offer's mDNS names
+during code exchange. The empty negotiation creates no ICE or data transport
+and exchanges no ROM, save or session data. The real
+players still connect through WebRTC; there is no local-tab transport bypass,
+relay deployment or browser privacy-setting change.
+
+The previous rejected-data-section approach created a transport and queued its
+removal before immediately creating the real transport. Firefox defers ICE
+stream destruction on the socket thread, making overlapping teardown a risk.
+The empty negotiation avoids that teardown entirely. This is a source-based
+explanation of the Windows failure, not a reproduced Windows test.
+
+Failure events are ignored during initialization and while the real offer
+awaits its reply. They must not close
+the real pairing attempt before its addresses have been gathered. Applying the
+real answer restores normal failure handling, and a delayed check catches a
+failure that persists without another state-change event. Cancellation and the
+pairing timeout still close the connection.
+
+The Firefox regression uses a fresh temporary profile with mDNS explicitly
+enabled, holds the reply for 15 seconds by default, requires the guest to remain
+alive, verifies the actual direct selected candidate pair, and sends/checks an
+original binary ROM fixture. It also verifies that discovery creates zero media
+sections and zero channels before the first actual data transport. It pairs
+before the self-test to avoid warming
+browser discovery first, and runs in CI. A 45-second delay has also passed with
+mDNS enabled, both with the default STUN configuration and with host addresses
+only. The self-test now uses the same corrected discovery initialization, while
+remaining independent of the transport wrapper and emulator.
+
+A separate Windows Firefox CI job runs both 15-second and 45-second exchanges
+using host addresses only. This requires neither a WASM build nor ROM assets.
+The Windows job has been added but has not run locally; the successful runs
+reported above used Linux Firefox.
+
+```bash
+RUSTBOY_ANSWER_DELAY_MS=45000 \
+  RUSTBOY_FIREFOX=/path/to/firefox node tests/gba_link_firefox.mjs
+```
+
+`RUSTBOY_DISABLE_MDNS=1` is available for a control run; it affects only the
+runner's temporary profile. Windows/Zen still needs device validation of this
+fix, and separate NAT/firewall failures can still require a relay.
