@@ -24,13 +24,25 @@ impl Bus {
         let mut clocks = std::mem::take(&mut self.execution.pending);
         self.execution.credited += clocks;
         while clocks > 0 {
-            let advance = clocks.min(self.timer_deadline()).min(self.apu.deadline());
+            let advance = clocks
+                .min(self.timer_deadline())
+                .min(self.apu.deadline())
+                .min(self.serial.deadline());
             let overflow = self.advance_timers(advance);
             if overflow[0] != 0 || overflow[1] != 0 {
                 self.clock_direct_sound(overflow);
             }
             self.clock_audio(advance);
-            self.backup.clock_eeprom(advance);
+            self.backup.clock(advance);
+            if self.serial.deadline() != u64::MAX {
+                if self.serial.advance(advance) {
+                    self.request_irq(0x80);
+                }
+                self.serial.store_registers(&mut self.io);
+            }
+            if self.rtc.advance(advance) {
+                self.request_irq(0x2000);
+            }
             clocks -= advance;
         }
     }
@@ -42,6 +54,7 @@ impl GameBoyAdvance {
             && !self.bus.memory_locked
             && !self.bus.stopped
             && !self.bus.halted
+            && !self.bus.serial.waiting()
             && self.wait_mask.is_none()
             && (self.bus.dma_active | self.bus.dma_ready) == 0
             // A pending IRQ cannot dispatch while CPSR.I masks it. Run the
@@ -76,6 +89,7 @@ impl GameBoyAdvance {
             .min(video)
             .min(self.bus.timer_deadline())
             .min(self.bus.apu.deadline())
+            .min(self.bus.serial.deadline())
             .max(1);
         self.bus.execution.barrier = false;
         let mut elapsed = 0;

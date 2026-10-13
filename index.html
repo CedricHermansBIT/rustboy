@@ -178,6 +178,8 @@
       .settings-row select { width: 55%; }
       .settings-panel input[type="checkbox"] { accent-color: #9be89b; width: 16px; height: 16px; }
       .settings-panel .hint { color: #869586; font-size: .74rem; line-height: 1.55; margin: 8px 0; overflow-wrap: anywhere; }
+      #gba-link-settings textarea { width: 100%; box-sizing: border-box; min-height: 76px; padding: 8px; margin: 6px 0 10px; color: #d6e4d6; background: #111811; border: 1px solid #455045; border-radius: 5px; font: .72rem monospace; resize: vertical; }
+      #gba-link-settings label { display: block; margin-top: 8px; font-size: .8rem; color: #b8d2b8; }
       .settings-panel .button-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
       #sgb-audio-settings { margin-top: 16px; padding-top: 15px; border-top: 1px solid #2d382d; }
       #sgb-audio-settings summary { font-size: .82rem; color: #b8c7b8; cursor: pointer; }
@@ -571,7 +573,7 @@
       #quick-toolbar {
         position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
         display: flex; flex-wrap: wrap; justify-content: center; max-width: calc(100vw - 24px);
-        gap: 5px; z-index: 45; opacity: .35; transition: opacity .18s;
+        gap: 5px; z-index: 45; opacity: .8; transition: opacity .18s;
       }
       #quick-toolbar:hover, #quick-toolbar:focus-within { opacity: 1; }
       #quick-toolbar button {
@@ -855,6 +857,7 @@
       <button id="quick-mute" title="Mute audio">🔊</button>
       <button id="quick-fullscreen" title="Fullscreen">⛶</button>
       <button id="quick-saves" title="Save states and save data">Saves</button>
+      <button type="button" data-open-link aria-haspopup="dialog">Link</button>
       <button type="button" data-open-settings aria-haspopup="dialog">Settings</button>
     </div>
     <div id="toast-stack" aria-live="polite"></div>
@@ -892,6 +895,7 @@
       <ul id="rom-list"></ul>
       <div id="upload-area">
         <button id="upload-btn">📂 Upload ROM (.gb/.gbc/.gba)</button>
+        <button class="ui-button" type="button" data-open-link aria-haspopup="dialog">Link</button>
         <button class="ui-button" type="button" data-open-settings aria-haspopup="dialog">Settings</button>
         <input type="file" id="rom-file-input" accept=".gb,.gbc,.gba,.bin" style="display:none" />
       </div>
@@ -923,6 +927,9 @@
           <label class="settings-row" for="hardware-model"><span>Next game's hardware</span><select id="hardware-model"><option value="auto">Automatic (GB/GBC/SGB)</option><option value="dmg">Game Boy</option><option value="cgb">Game Boy Color</option><option value="sgb">Super Game Boy</option></select></label>
           <p id="sgb-warning" class="hint">Automatic uses cartridge enhancements. Select Game Boy Color for native CGB colors. Changes apply to the next game you load.</p>
         </div>
+        <label class="settings-row" for="gba-save-type"><span>GBA save hardware</span><select id="gba-save-type"><option value="auto">Automatic</option><option value="none">No cartridge save</option><option value="sram">SRAM / FRAM</option><option value="flash64">Flash · 64 KiB</option><option value="flash128">Flash · 128 KiB</option><option value="eeprom">EEPROM</option></select></label>
+        <p class="hint">Use an override if a game cannot save or its save file will not load. The choice is remembered for that cartridge.</p>
+        <p id="gba-save-type-status" class="hint" role="status"></p>
         <details id="sgb-audio-settings">
           <summary>Optional SGB sound firmware</summary>
           <p class="hint">Enhanced audio works with RustBoy's built-in instruments. Supply your own SGB1/SGB2 .sfc or program.rom for the original sound driver. This is not a Game Boy boot ROM; changing it restarts an active SGB game.</p>
@@ -930,6 +937,41 @@
           <input id="sgb-firmware-input" type="file" accept=".sfc,.smc,.rom,.bin" hidden />
           <p id="sgb-firmware-status" role="status" class="hint">Using RustBoy's built-in SGB audio replacement</p>
           <p class="hint">Firmware stays in this browser and is never distributed by RustBoy.</p>
+        </details>
+      </details>
+      <details class="settings-section" id="gba-link-settings">
+        <summary>GBA link · two devices</summary>
+        <p class="hint">Connect directly with a friend using link codes. This works on GitHub Pages and does not need a room server.</p>
+        <div class="button-row"><button class="ui-button" id="gba-link-create" data-link-pair type="button">Create link</button><button class="ui-button" id="gba-link-connect" data-link-pair type="button">Connect code</button><button class="ui-button" id="gba-link-disconnect" type="button">Disconnect</button></div>
+        <label for="gba-link-remote-code">Code from your friend</label>
+        <textarea id="gba-link-remote-code" spellcheck="false" autocomplete="off" placeholder="Paste their offer or answer, then choose Connect code"></textarea>
+        <label for="gba-link-local-code">Your code to send</label>
+        <textarea id="gba-link-local-code" readonly spellcheck="false" aria-label="Your pairing code"></textarea>
+        <button class="ui-button" id="gba-link-copy" type="button">Copy your code</button>
+        <p class="hint">One player creates a link and sends the code. Their friend connects that code and sends the answer back. The first player connects the answer.</p>
+        <details><summary>Invite rooms (optional)</summary>
+          <p class="hint">Room invites connect automatically when a signaling server is available. Static GitHub Pages hosting alone cannot provide one.</p>
+          <div class="button-row"><button class="ui-button" id="gba-link-room-create" data-link-pair type="button">Create room</button><button class="ui-button" id="gba-link-room-copy" type="button">Copy invite link</button></div>
+          <input id="gba-link-invite" readonly aria-label="Room invite link" placeholder="Your invite link appears here" style="width:100%;box-sizing:border-box" />
+          <label for="gba-link-server">Room server (optional, for static hosting)</label>
+          <input id="gba-link-server" type="url" placeholder="wss://your-server/gba-link/rooms" style="width:100%;box-sizing:border-box" />
+        </details>
+        <p id="gba-link-status" class="hint" role="status" aria-live="polite">Link disconnected</p>
+        <div class="button-row"><button class="ui-button" id="gba-link-rom-current" type="button">Send current game</button><button class="ui-button" id="gba-link-rom-play" type="button" disabled>Receive and load game</button></div>
+        <details><summary>File transfer options</summary>
+        <div class="button-row"><button class="ui-button" id="gba-link-rom-send" type="button">Send GBA file (loads here)</button><button class="ui-button" id="gba-link-rom-receive" type="button" disabled>Receive ROM</button><button class="ui-button" id="gba-link-rom-reject" type="button" disabled>Reject offer</button></div>
+        <input id="gba-link-rom-file" type="file" accept=".gba" hidden />
+        <p id="gba-link-rom-status" class="hint" role="status" aria-live="polite">No ROM transfer active</p>
+        <div class="button-row"><button class="ui-button" id="gba-link-rom-load" type="button" disabled>Load received ROM</button><button class="ui-button" id="gba-link-rom-cancel" type="button" disabled>Cancel transfer</button></div>
+        </details>
+        <p class="hint">ROM transfer is optional if both players already have compatible games. Files are sent directly to the other device, checked for integrity, and loaded only when accepted. Saves remain separate on each device.</p>
+        <p class="hint">Starting exchanges temporary session state, including cartridge saves, with your peer. Each device keeps its own saves.</p>
+        <div class="button-row"><button class="ui-button" id="gba-link-start" type="button">Start cable (restart games)</button><button class="ui-button" id="gba-link-download" type="button">Join Single Pak (no cartridge)</button></div>
+        <p class="hint">After loading, choose Start cable on both devices, close Settings, then select the game's cable multiplayer mode. Linked play runs both GBAs locally and exchanges delayed inputs once per frame. Controls have about 100 ms of network delay; requested speed is limited to 1×. Ordinary ROM changes, reset and state restores disconnect devices. Four-player and wireless adapters are not supported. Single Pak download play is experimental.</p>
+        <details><summary>Network relay settings</summary>
+          <p class="hint">A public Google STUN server discovers connection addresses. Some mobile or restrictive networks need your own TURN relay. Relay settings stay in this page and are not saved.</p>
+          <label for="gba-link-relay">Optional STUN/TURN configuration (JSON array)</label>
+          <textarea id="gba-link-relay" spellcheck="false" autocomplete="off" placeholder='[{"urls":"turn:your-relay:3478","username":"user","credential":"password"}]'></textarea>
         </details>
       </details>
       <details class="settings-section">
@@ -1470,26 +1512,25 @@
         renderTouchControls();
       }
 
+      let batterySaveStore = null;
+      function cartridgeSaveStore() {
+        // Resolve storage inside the operation: privacy settings can throw even
+        // when accessing window.localStorage rather than just getItem/setItem.
+        return batterySaveStore ||= new window.BatterySaveStore({
+          getItem: key => window.localStorage.getItem(key),
+          setItem: (key, value) => window.localStorage.setItem(key, value),
+        }, (message, error) => toast(message, error));
+      }
       function storeSaveData(key, data) {
-        let stored = false;
-        try {
-          let b = ''; for (let i = 0; i < data.length; i++) b += String.fromCharCode(data[i]);
-          localStorage.setItem(key, btoa(b));
-          stored = true;
-        } catch(e) {}
+        const stored = cartridgeSaveStore().store(key, data);
         // Record save association for recent games
-        if (currentRomInfo) {
+        if (stored && currentRomInfo && !key.startsWith('rustboy_rtc_gba_')) {
           addToRecent({ ...currentRomInfo, saveKey: key });
         }
         return stored;
       }
       function loadSaveData(key) {
-        try {
-          const b64 = localStorage.getItem(key); if (!b64) return undefined;
-          const b = atob(b64), d = new Uint8Array(b.length);
-          for (let i = 0; i < b.length; i++) d[i] = b.charCodeAt(i);
-          return d;
-        } catch(e) { return undefined; }
+        return cartridgeSaveStore().load(key);
       }
       let saveInterval = null;
 
@@ -1579,11 +1620,11 @@
         } catch (_) {}
       }
       function autoResumeEnabled() { try { return localStorage.getItem(AUTO_RESUME_KEY) !== '0'; } catch (_) { return true; } }
-      async function finishRomLoad() {
+      async function finishRomLoad({ resumeAutosave = true } = {}) {
         clearAudioQueue();
         releaseAllTouchActions();
         blockedAutosaveId = '';
-        if (autoResumeEnabled()) await loadState('auto', true).then(restored => { if (restored) toast('Resumed autosave'); });
+        if (resumeAutosave && autoResumeEnabled()) await loadState('auto', true).then(restored => { if (restored) toast('Resumed autosave'); });
         clearInterval(stateAutosaveInterval);
         stateAutosaveInterval = setInterval(() => saveState('auto', true), 30000);
         updatePauseButton();
@@ -1797,6 +1838,11 @@
         settingsDialog.showModal();
       }
       document.querySelectorAll('[data-open-settings]').forEach(button => button.addEventListener('click', openSettings));
+      document.querySelectorAll('[data-open-link]').forEach(button => button.addEventListener('click', () => {
+        openSettings();
+        const link = document.querySelector('#gba-link-settings');
+        link.open = true; link.scrollIntoView({ block: 'nearest' });
+      }));
       document.querySelector('#settings-close').addEventListener('click', () => settingsDialog.close());
       settingsDialog.addEventListener('close', () => {
         cancelRebind();
@@ -2098,7 +2144,14 @@
           updateSpeedBadge(); // show GBC/speed indicator immediately on load
         } catch(e) { console.error('ROM load failed:', e); toast(`Could not load ROM: ${e.message || e}`, true); openPicker(); }
       }
-      async function loadRomFromBuffer(buf, name = 'Uploaded ROM') {
+      let pendingRomLoad = null;
+      async function loadRomFromBuffer(buf, name = 'Uploaded ROM', options = {}) {
+        const operation = performRomLoadFromBuffer(buf, name, options);
+        pendingRomLoad = operation;
+        try { return await operation; }
+        finally { if (pendingRomLoad === operation) pendingRomLoad = null; }
+      }
+      async function performRomLoadFromBuffer(buf, name = 'Uploaded ROM', options = {}) {
         if (!Module) {
           console.error('ROM load failed: emulator is still initializing');
           openPicker();
@@ -2110,15 +2163,17 @@
         // not inherit the previously selected ROM's recent/save association.
         try {
           await saveState('auto', true);
-          await Module._load_rom_data(new Uint8Array(buf), name);
+          await Module._load_rom_data(new Uint8Array(buf), name, options);
           currentRomInfo = { name, folder: 'uploads', tab: 'uploads', uploaded: true };
           romLoaded = true;
-          await finishRomLoad();
+          await finishRomLoad({ resumeAutosave: !options.preserveLink });
+          if (options.preserveLink && settingsDialog.open) Module._set_paused(true);
           resumeAudioContext();
           updateSpeedBadge();
         } catch (error) {
           console.error('ROM load failed:', error);
           toast(`Could not load ROM: ${error.message || error}`, true);
+          if (options.preserveLink) throw error;
           openPicker();
         }
       }
@@ -2375,13 +2430,13 @@
         if (!confirm('Delete the battery save and all save states for this game?')) return;
         const identities = compatibleStateIds();
         try {
+          Module?._clear_save_data?.();
           localStorage.removeItem(Module._get_save_key());
           localStorage.removeItem(`rustboy_save_${Module._get_rom_title()}`);
-          Module?._clear_save_data?.();
           for (const slot of ['auto','1','2','3']) await (await stateStore()).deleteSlot(slot, identities);
           blockedAutosaveId = '';
           await refreshStateIndex(); await refreshSaveManager(); toast('Game saves deleted');
-        } catch (e) { toast('Could not delete saves', true); }
+        } catch (e) { toast(`Could not delete saves: ${e.message || e}`, true); }
       });
 
       /* Measured speed is independent of the requested fast-forward setting. */
@@ -2644,8 +2699,12 @@
       // emulator from starting when a browser has an older generated bundle cached.
       import init, * as Rustboy from './out/rustboy.js';
       import { loadCartridge, validateUploadSize } from './web/rom-loader.mjs';
+      import { BatterySaveStore } from './web/battery-saves.mjs';
+      import { installGbaSaveSettings } from './web/gba-save-settings.mjs';
+      window.BatterySaveStore = BatterySaveStore;
       import { fetchLibraryRom } from './web/library-rom.mjs';
       import { ControllerInputs } from './web/controller-input.mjs';
+      import { installGbaLinkPanel } from './web/gba-link.mjs';
       init().then(wasm => {
         Rustboy.configure_gba_jit?.({env: {
           memory: wasm.memory, fetch: wasm.gba_jit_fetch, finish: wasm.gba_jit_finish,
@@ -2656,6 +2715,7 @@
           internal: wasm.gba_jit_internal, branch: wasm.gba_jit_branch, fetch_run: wasm.gba_jit_fetch_run,
         }});
         const hardware = document.querySelector('#hardware-model');
+        const gbaSaves = installGbaSaveSettings(Rustboy, document, toast);
         const backendStatus=document.querySelector('#backend-status');
         const updateBackendStatus=()=>{
           updateConsoleControls();
@@ -2663,6 +2723,19 @@
           if (backendStatus.textContent!==status) backendStatus.textContent=status;
           backendStatus.hidden=!status;
         };
+        const gbaLink = installGbaLinkPanel(Rustboy, document, {
+          loadRom: (bytes, name) => loadRomFromBuffer(bytes, name, { preserveLink: true }),
+          waitForRom: () => pendingRomLoad || Promise.resolve(),
+          loadDownload: async () => {
+            await saveState('auto', true);
+            Rustboy.load_gba_download_client();
+            currentRomInfo = null; romLoaded = true;
+            closePicker(); initAudio(); resumeAudioContext();
+            await finishRomLoad({ resumeAutosave: false });
+            if (settingsDialog.open) Rustboy.set_paused(true);
+            updateSpeedBadge();
+          },
+        });
         Module = {
           _fetch_library_rom: fetchLibraryRom,
           _set_key_state: Rustboy.set_key_state,
@@ -2684,14 +2757,16 @@
             if (settingsDialog.open) Rustboy.set_paused(true);
           }),
           _validate_upload_size: validateUploadSize,
-          _load_rom_data: (data, name = '') => {
+          _load_rom_data: (data, name = '', { preserveLink = false } = {}) => {
+            if (preserveLink) gbaLink?.stopLink('ROM loaded; choose Start cable again');
+            else gbaLink?.disconnect('ROM changed; reconnect both players');
             const model = hardware.value;
             if (!Rustboy.load_rom_data_with_model && model !== 'auto') {
               throw new Error('Hardware selection needs the updated WASM bundle; refresh the page');
             }
             return loadCartridge((rom, boot) => Rustboy.load_rom_data_with_model
-              ? Rustboy.load_rom_data_with_model(rom, boot, model) : Rustboy.load_rom_data(rom, boot), Rustboy.load_gba_data, data, name, fetch, model)
-              .then(result => { clearControllerInputs(); applySgbUserPalette(); updateBackendStatus(); return result; });
+              ? Rustboy.load_rom_data_with_model(rom, boot, model) : Rustboy.load_rom_data(rom, boot), gbaSaves.load, data, name, fetch, model)
+              .then(result => { clearControllerInputs(); applySgbUserPalette(); updateBackendStatus(); gbaSaves.refresh(); return result; });
           },
           _get_debug_state: Rustboy.get_debug_state,
           _save_game: Rustboy.save_game,
@@ -2700,7 +2775,7 @@
           _get_is_cgb: Rustboy.get_is_cgb,
           _get_sgb_status: Rustboy.get_sgb_status,
           _export_state: Rustboy.export_state,
-          _import_state: data => { const result = Rustboy.import_state(data); clearControllerInputs(); return result; },
+          _import_state: data => { const result = Rustboy.import_state(data); gbaLink?.disconnect('State restored; reconnect both players'); clearControllerInputs(); return result; },
           _get_state_id: Rustboy.get_state_id,
           _get_compatible_state_ids: Rustboy.get_compatible_state_ids,
           _get_rom_title: Rustboy.get_rom_title,
@@ -2710,7 +2785,7 @@
           _clear_save_data: Rustboy.clear_save_data,
           _set_paused: paused => { Rustboy.set_paused(paused); pollControllers(); if (paused) clearControllerInputs(); },
           _is_paused: Rustboy.is_paused,
-          _reset_emulator: () => { clearControllerInputs(); Rustboy.reset_emulator(); applySgbUserPalette(); },
+          _reset_emulator: () => { gbaLink?.disconnect('Emulator reset; reconnect both players'); clearControllerInputs(); Rustboy.reset_emulator(); applySgbUserPalette(); },
           _set_speed: Rustboy.set_speed,
           _toggle_trace: Rustboy.toggle_trace,
           _is_tracing: Rustboy.is_tracing,

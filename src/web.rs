@@ -265,6 +265,35 @@ pub fn load_rom_data(rom: &[u8], boot_rom: &[u8]) -> Result<(), JsValue> {
 
 #[wasm_bindgen]
 pub fn load_gba_data(rom: &[u8], bios: &[u8]) -> Result<(), JsValue> {
+    load_gba_data_with_save_type(rom, bios, "auto")
+}
+#[wasm_bindgen]
+pub fn load_gba_download_client() -> Result<(), JsValue> {
+    let backend = rustboy_gba::GameBoyAdvance::new_multiboot_client()
+        .map_err(|error| JsValue::from_str(&error))?;
+    save_game();
+    toggleVramCanvas(false);
+    install_backend(Box::new(backend));
+    Ok(())
+}
+#[wasm_bindgen]
+pub fn get_gba_rom_save_key(rom: &[u8]) -> Result<String, JsValue> {
+    rustboy_gba::cartridge_save_key(rom).map_err(|e| JsValue::from_str(&e))
+}
+#[wasm_bindgen]
+pub fn export_gba_rom() -> Vec<u8> {
+    with_session(|session| {
+        session
+            .backend
+            .debug_extension()
+            .and_then(|debug| debug.downcast_ref::<rustboy_gba::GameBoyAdvance>())
+            .map(|gba| gba.cartridge_data().to_vec())
+    })
+    .flatten()
+    .unwrap_or_default()
+}
+#[wasm_bindgen]
+pub fn load_gba_data_with_save_type(rom: &[u8], bios: &[u8], kind: &str) -> Result<(), JsValue> {
     crate::gba::validate_cartridge(rom).map_err(|e| JsValue::from_str(&e))?;
     let bios = if bios.is_empty() {
         None
@@ -273,15 +302,34 @@ pub fn load_gba_data(rom: &[u8], bios: &[u8]) -> Result<(), JsValue> {
     };
     let mut backend =
         crate::gba::GameBoyAdvance::new(rom.to_vec(), bios).map_err(|e| JsValue::from_str(&e))?;
-    if let Some(info) = backend.save_info() {
-        let saved = loadSaveData(&info.key);
+    if kind != "auto" {
+        backend
+            .set_save_type(parse_gba_save_type(kind)?)
+            .map_err(|e| JsValue::from_str(&e))?;
+    }
+    // Flush the validated previous machine before reading this cartridge's
+    // battery data, including reloading the same ROM with newer dirty progress.
+    save_game();
+    let key = backend.cartridge_save_key();
+    if kind != "none" {
+        let saved = loadSaveData(&key);
         if let Ok(array) = saved.dyn_into::<js_sys::Uint8Array>() {
             backend
                 .import_save(&array.to_vec())
                 .map_err(|e| JsValue::from_str(&e))?;
         }
     }
-    save_game();
+    if backend.rtc_enabled() {
+        let now = (js_sys::Date::now() / 1000.0) as u64;
+        backend
+            .set_rtc_time(now)
+            .map_err(|e| JsValue::from_str(&e))?;
+        if let Ok(saved) = loadSaveData(&backend.rtc_save_key()).dyn_into::<js_sys::Uint8Array>() {
+            backend
+                .import_rtc(&saved.to_vec(), now)
+                .map_err(|e| JsValue::from_str(&e))?;
+        }
+    }
     toggleVramCanvas(false);
     install_backend(Box::new(backend));
     Ok(())
@@ -385,6 +433,18 @@ pub fn save_game() {
                 session.backend.mark_save_clean();
             }
         }
+        if let Some(gba) = session
+            .backend
+            .debug_extension()
+            .and_then(|debug| debug.downcast_ref::<rustboy_gba::GameBoyAdvance>())
+        {
+            if gba.rtc_enabled() {
+                storeSaveData(
+                    &gba.rtc_save_key(),
+                    &gba.export_rtc((js_sys::Date::now() / 1000.0) as u64),
+                );
+            }
+        }
     });
 }
 #[wasm_bindgen]
@@ -426,8 +486,22 @@ pub fn import_save_data(data: &[u8]) -> Result<(), JsValue> {
         .map_err(|error| JsValue::from_str(&error))
 }
 #[wasm_bindgen]
-pub fn clear_save_data() {
-    with_session_mut(|s| s.backend.clear_save());
+pub fn clear_save_data() -> Result<(), JsValue> {
+    with_session_mut(|session| {
+        if session
+            .backend
+            .debug_extension()
+            .and_then(|debug| debug.downcast_ref::<rustboy_gba::GameBoyAdvance>())
+            .is_some_and(|gba| gba.local_link_status().is_some())
+        {
+            return Err(JsValue::from_str(
+                "Disconnect multiplayer before deleting cartridge saves",
+            ));
+        }
+        session.backend.clear_save();
+        Ok(())
+    })
+    .unwrap_or(Ok(()))
 }
 #[wasm_bindgen]
 pub fn set_paused(paused: bool) {
@@ -950,6 +1024,168 @@ pub fn set_gba_fast_render_enabled(enabled: bool) {
 #[wasm_bindgen]
 pub fn set_gba_video_stride(stride: u32) {
     with_session_mut(|session| session.backend.set_video_frame_stride(stride));
+}
+
+fn with_gba_mut<R>(
+    f: impl FnOnce(&mut rustboy_gba::GameBoyAdvance) -> Result<R, String>,
+) -> Result<R, JsValue> {
+    with_session_mut(|session| {
+        session
+            .backend
+            .debug_extension_mut()
+            .and_then(|debug| debug.downcast_mut::<rustboy_gba::GameBoyAdvance>())
+            .ok_or_else(|| "Load a GBA cartridge first".to_owned())
+            .and_then(f)
+    })
+    .unwrap_or_else(|| Err("Load a GBA cartridge first".to_owned()))
+    .map_err(|e| JsValue::from_str(&e))
+}
+#[wasm_bindgen]
+pub fn set_gba_save_type(kind: &str) -> Result<(), JsValue> {
+    if kind == "auto" {
+        return with_gba_mut(|gba| gba.set_auto_save_type());
+    }
+    let kind = parse_gba_save_type(kind)?;
+    with_gba_mut(|gba| gba.set_save_type(kind))
+}
+fn parse_gba_save_type(kind: &str) -> Result<rustboy_gba::SaveType, JsValue> {
+    match kind {
+        "none" => Ok(rustboy_gba::SaveType::None),
+        "sram" => Ok(rustboy_gba::SaveType::Sram),
+        "flash64" => Ok(rustboy_gba::SaveType::Flash64),
+        "flash128" => Ok(rustboy_gba::SaveType::Flash128),
+        "eeprom" => Ok(rustboy_gba::SaveType::Eeprom),
+        _ => Err(JsValue::from_str("Unknown GBA save type")),
+    }
+}
+#[wasm_bindgen]
+pub fn get_gba_save_type() -> String {
+    with_session(|session| {
+        session
+            .backend
+            .debug_extension()
+            .and_then(|debug| debug.downcast_ref::<rustboy_gba::GameBoyAdvance>())
+            .map(|gba| {
+                match gba.save_type() {
+                    rustboy_gba::SaveType::None => "none",
+                    rustboy_gba::SaveType::Sram => "sram",
+                    rustboy_gba::SaveType::Flash64 => "flash64",
+                    rustboy_gba::SaveType::Flash128 => "flash128",
+                    rustboy_gba::SaveType::Eeprom => "eeprom",
+                }
+                .to_owned()
+            })
+    })
+    .flatten()
+    .unwrap_or_default()
+}
+#[wasm_bindgen]
+pub fn gba_link_attach(player: u32) -> Result<(), JsValue> {
+    if player > 1 {
+        return Err(JsValue::from_str("Cable supports two players"));
+    }
+    with_gba_mut(|gba| gba.link_attach(player as u8).map_err(str::to_owned))?;
+    with_session_mut(|session| session.set_speed(1));
+    Ok(())
+}
+#[wasm_bindgen]
+pub fn gba_link_detach() {
+    let _ = with_gba_mut(|gba| {
+        gba.link_detach();
+        Ok(())
+    });
+}
+#[wasm_bindgen]
+pub fn gba_local_link_start(
+    peer_rom: &[u8],
+    peer_state: &[u8],
+    peer_download: bool,
+    player: u32,
+) -> Result<(), JsValue> {
+    if player > 1 {
+        return Err(JsValue::from_str("Cable supports two players"));
+    }
+    with_gba_mut(|gba| {
+        gba.start_local_link(peer_rom.to_vec(), peer_state, peer_download, player as u8)
+    })?;
+    with_session_mut(|session| session.set_speed(1));
+    Ok(())
+}
+#[wasm_bindgen]
+pub fn gba_local_link_input(frame: u32, parent: u32, child: u32) -> Result<(), JsValue> {
+    if parent > 0x3ff || child > 0x3ff {
+        return Err(JsValue::from_str("Invalid cable controller mask"));
+    }
+    with_gba_mut(|gba| gba.queue_local_link_frame(frame, parent as u16, child as u16))
+}
+#[wasm_bindgen]
+pub fn gba_local_link_identity() -> String {
+    with_session(|session| {
+        session
+            .backend
+            .debug_extension()
+            .and_then(|debug| debug.downcast_ref::<rustboy_gba::GameBoyAdvance>())
+            .map(|gba| {
+                format!(
+                    "{{\"romKey\":\"{}\",\"stateId\":\"{}\",\"download\":{}}}",
+                    gba.cartridge_save_key(),
+                    gba.state_id(),
+                    gba.is_multiboot_client()
+                )
+            })
+    })
+    .flatten()
+    .unwrap_or_else(|| "null".into())
+}
+#[wasm_bindgen]
+pub fn gba_local_link_status() -> String {
+    with_session(|session| session.backend.debug_extension().and_then(|debug| debug.downcast_ref::<rustboy_gba::GameBoyAdvance>()).map(|gba| {
+        let state = gba.local_link_status();
+        format!("{{\"connected\":{},\"frame\":{},\"queued\":{},\"keys\":{},\"transfers\":{},\"paused\":{}}}", state.is_some(), state.map_or(0, |s|s.frame), state.map_or(0, |s|s.queued), state.map_or(0, |s|s.keys), state.map_or(0, |s|s.transfers), session.backend.paused())
+    })).flatten().unwrap_or_else(|| "{\"connected\":false,\"frame\":0,\"queued\":0,\"keys\":0,\"transfers\":0,\"paused\":true}".into())
+}
+#[wasm_bindgen]
+pub fn gba_link_status() -> String {
+    with_session(|session| session.backend.debug_extension().and_then(|debug| debug.downcast_ref::<rustboy_gba::GameBoyAdvance>()).map(|gba| {
+        let serial = &gba.bus.serial;
+        let request = serial.request().map_or_else(|| "null".into(), |r| format!("{{\"id\":{},\"mode\":{},\"baud\":{},\"value\":{}}}",r.id,r.mode,r.baud,r.value));
+        format!("{{\"connected\":{},\"player\":{},\"clock\":{},\"mode\":{},\"ready\":{},\"so\":{},\"paused\":{},\"request\":{}}}",serial.connected(),serial.player(),gba.clocks,serial.mode(),serial.ready(),serial.so(),session.backend.paused(),request)
+    })).flatten().unwrap_or_else(|| "{\"connected\":false,\"clock\":0,\"paused\":true,\"mode\":3,\"ready\":false,\"so\":true,\"request\":null}".into())
+}
+#[wasm_bindgen]
+pub fn gba_link_set_peer(mode: u32, ready: bool, so: bool) -> Result<(), JsValue> {
+    if mode > 3 {
+        return Err(JsValue::from_str("Invalid cable mode"));
+    }
+    with_gba_mut(|gba| {
+        gba.link_set_peer(mode as u8, ready, so);
+        Ok(())
+    })
+}
+#[wasm_bindgen]
+pub fn gba_link_receive(id: u32, mode: u32, baud: u32) -> Result<u32, JsValue> {
+    if mode > 2 || baud > 3 {
+        return Err(JsValue::from_str("Invalid cable transfer"));
+    }
+    with_gba_mut(|gba| {
+        gba.link_receive(id, mode as u8, baud as u8)
+            .map_err(str::to_owned)
+    })
+}
+#[wasm_bindgen]
+pub fn gba_link_supply(id: u32, parent: u32, child: u32) -> Result<(), JsValue> {
+    with_gba_mut(|gba| gba.link_supply(id, [parent, child]).map_err(str::to_owned))
+}
+#[wasm_bindgen]
+pub fn gba_link_absent(id: u32) -> Result<(), JsValue> {
+    with_gba_mut(|gba| gba.link_absent(id).map_err(str::to_owned))
+}
+#[wasm_bindgen]
+pub fn gba_link_set_limit(clock: f64) -> Result<(), JsValue> {
+    if !clock.is_finite() || clock < 0. || clock.fract() != 0. || clock > 9_007_199_254_740_991. {
+        return Err(JsValue::from_str("Invalid cable clock"));
+    }
+    with_gba_mut(|gba| gba.link_set_limit(clock as u64).map_err(str::to_owned))
 }
 
 #[wasm_bindgen]

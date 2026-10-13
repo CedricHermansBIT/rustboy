@@ -109,6 +109,12 @@ impl Session {
         self.step_requested = true;
     }
     pub fn set_speed(&mut self, speed: u32) {
+        let linked = self
+            .backend
+            .debug_extension()
+            .and_then(|debug| debug.downcast_ref::<rustboy_gba::GameBoyAdvance>())
+            .is_some_and(|gba| gba.bus.serial.connected());
+        let speed = if linked { 1 } else { speed };
         self.speed = match speed {
             1 | 2 | 4 | 8 => speed,
             _ => 1,

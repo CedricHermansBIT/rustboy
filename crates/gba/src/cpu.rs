@@ -30,9 +30,26 @@ pub trait Memory {
     fn read8(&mut self, address: u32) -> u8;
     fn read16(&mut self, address: u32, sequential: bool) -> u16;
     fn read32(&mut self, address: u32, sequential: bool) -> u32;
+    /// The peripheral bus sees the logical address before RAM alignment. On the
+    /// 8-bit save bus it selects which byte is repeated across the data lanes.
+    fn read16_unaligned(&mut self, address: u32, sequential: bool) -> u16 {
+        self.read16(address & !1, sequential)
+    }
+    fn read32_unaligned(&mut self, address: u32, sequential: bool) -> u32 {
+        self.read32(address & !3, sequential)
+    }
     fn write8(&mut self, address: u32, value: u8);
     fn write16(&mut self, address: u32, value: u16, sequential: bool);
     fn write32(&mut self, address: u32, value: u32, sequential: bool);
+    /// Preserve the CPU's address lanes until the bus knows the physical width.
+    /// Normal RAM aligns stores; an 8-bit Game Pak save bus selects the addressed
+    /// byte of the source register instead. Simple test memories keep RAM behavior.
+    fn write16_unaligned(&mut self, address: u32, value: u16, sequential: bool) {
+        self.write16(address & !1, value, sequential);
+    }
+    fn write32_unaligned(&mut self, address: u32, value: u32, sequential: bool) {
+        self.write32(address & !3, value, sequential);
+    }
     fn internal(&mut self, clocks: u32);
 }
 
@@ -410,9 +427,9 @@ impl Cpu {
                 old
             } else {
                 let old = bus
-                    .read32(address & !3, false)
+                    .read32_unaligned(address, false)
                     .rotate_right((address & 3) * 8);
-                bus.write32(address & !3, value, false);
+                bus.write32_unaligned(address, value, false);
                 old
             };
             self.r[rd] = old;
@@ -435,7 +452,8 @@ impl Cpu {
             let load = op & 0x00100000 != 0;
             if load {
                 let value = match op >> 5 & 3 {
-                    1 => u32::from(bus.read16(address & !1, false)).rotate_right((address & 1) * 8),
+                    1 => u32::from(bus.read16_unaligned(address, false))
+                        .rotate_right((address & 1) * 8),
                     2 => bus.read8(address) as i8 as i32 as u32,
                     _ => {
                         if address & 1 != 0 {
@@ -448,7 +466,7 @@ impl Cpu {
                 bus.internal(1);
                 self.write_result(bus, rd, value, false);
             } else if op >> 5 & 3 == 1 {
-                bus.write16(address & !1, self.operand(rd, 4) as u16, false);
+                bus.write16_unaligned(address, self.operand(rd, 4) as u16, false);
             } else {
                 self.undefined(bus);
                 return;
@@ -531,7 +549,7 @@ impl Cpu {
                     let value = if op & 0x00400000 != 0 {
                         u32::from(bus.read8(address))
                     } else {
-                        bus.read32(address & !3, false)
+                        bus.read32_unaligned(address, false)
                             .rotate_right((address & 3) * 8)
                     };
                     bus.internal(1);
@@ -541,7 +559,7 @@ impl Cpu {
                     if op & 0x00400000 != 0 {
                         bus.write8(address, value as u8);
                     } else {
-                        bus.write32(address & !3, value, false);
+                        bus.write32_unaligned(address, value, false);
                     }
                 }
                 if (op & 0x01000000 == 0 || op & 0x00200000 != 0) && !(load && rn == rd) {
@@ -576,7 +594,7 @@ impl Cpu {
                         continue;
                     }
                     if load {
-                        let value = bus.read32(address & !3, !first);
+                        let value = bus.read32_unaligned(address, !first);
                         if reg == 15 {
                             pc = Some(value);
                         } else if user && !restore {
@@ -592,7 +610,7 @@ impl Cpu {
                         } else {
                             self.operand(reg, 4)
                         };
-                        bus.write32(address & !3, value, !first);
+                        bus.write32_unaligned(address, value, !first);
                     }
                     first = false;
                     address = address.wrapping_add(4);

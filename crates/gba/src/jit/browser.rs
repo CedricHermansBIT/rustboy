@@ -479,10 +479,10 @@ pub unsafe fn read(bus: u32, address: u32, kind: u32) -> u32 {
     let bus = &mut *(bus as *mut Bus);
     let value = match kind {
         0 => bus
-            .read32(address & !3, false)
+            .read32_unaligned(address, false)
             .rotate_right((address & 3) * 8),
         1 => u32::from(bus.read8(address)),
-        _ => u32::from(bus.read16(address & !1, false)).rotate_right((address & 1) * 8),
+        _ => u32::from(bus.read16_unaligned(address, false)).rotate_right((address & 1) * 8),
     };
     bus.internal(1);
     value
@@ -492,9 +492,9 @@ pub unsafe fn read(bus: u32, address: u32, kind: u32) -> u32 {
 pub unsafe fn write(bus: u32, address: u32, value: u32, kind: u32) {
     let bus = &mut *(bus as *mut Bus);
     match kind {
-        0 => bus.write32(address & !3, value, false),
+        0 => bus.write32_unaligned(address, value, false),
         1 => bus.write8(address, value as u8),
-        _ => bus.write16(address & !1, value as u16, false),
+        _ => bus.write16_unaligned(address, value as u16, false),
     }
 }
 /// # Safety
@@ -556,10 +556,11 @@ pub unsafe fn read_full(bus: u32, address: u32, kind: u32, sequential: u32) -> u
     let bus = &mut *(bus as *mut Bus);
     match kind {
         0 => bus
-            .read32(address & !3, sequential != 0)
+            .read32_unaligned(address, sequential != 0)
             .rotate_right((address & 3) * 8),
         1 => u32::from(bus.read8(address)),
-        2 => u32::from(bus.read16(address & !1, sequential != 0)).rotate_right((address & 1) * 8),
+        2 => u32::from(bus.read16_unaligned(address, sequential != 0))
+            .rotate_right((address & 1) * 8),
         3 => bus.read8(address) as i8 as i32 as u32,
         4 => {
             if address & 1 != 0 {
@@ -568,7 +569,7 @@ pub unsafe fn read_full(bus: u32, address: u32, kind: u32, sequential: u32) -> u
                 bus.read16(address, false) as i16 as i32 as u32
             }
         }
-        _ => bus.read32(address & !3, sequential != 0),
+        _ => bus.read32_unaligned(address, sequential != 0),
     }
 }
 /// # Safety
@@ -577,8 +578,8 @@ pub unsafe fn write_full(bus: u32, address: u32, value: u32, kind: u32, sequenti
     let bus = &mut *(bus as *mut Bus);
     match kind {
         1 => bus.write8(address, value as u8),
-        2 => bus.write16(address & !1, value as u16, sequential != 0),
-        _ => bus.write32(address & !3, value, sequential != 0),
+        2 => bus.write16_unaligned(address, value as u16, sequential != 0),
+        _ => bus.write32_unaligned(address, value, sequential != 0),
     }
 }
 /// # Safety

@@ -1,15 +1,65 @@
 //! Independently authored integer math for replacement BIOS services.
-//! Angle services compute mathematical angles, not firmware polynomial rounding.
+//! Angle services use independently documented fixed-point polynomial behavior.
+//! A separate mathematical oracle is compiled only for tests.
+
+/// Q14 Horner polynomial and register leftovers independently documented and
+/// hardware checked in retrointernals/gba-bios-reference (SWI 09h). Coefficients
+/// describe the numerical algorithm; no firmware bytes or lookup table are used.
+pub(super) fn bios_arctan(tangent: i32) -> (i32, i32, i32) {
+    let square = (tangent.wrapping_mul(tangent) >> 14).wrapping_neg();
+    let coefficients = [912i32, 2332, 4022, 5802, 8321, 13905, 41721];
+    let polynomial = coefficients.into_iter().fold(169i32, |value, coefficient| {
+        (value.wrapping_mul(square) >> 14).wrapping_add(coefficient)
+    });
+    (polynomial.wrapping_mul(tangent) >> 16, square, polynomial)
+}
+
+/// Documented octant dispatch, including the BIOS's 32-bit intermediate
+/// wraparound and truncating signed division. The axis paths preserve input r1.
+pub(super) fn bios_arctan2(x: i32, y: i32) -> (u16, i32) {
+    if y == 0 {
+        return (if x < 0 { 0x8000 } else { 0 }, y);
+    }
+    if x == 0 {
+        return (if y < 0 { 0xc000 } else { 0x4000 }, y);
+    }
+    let horizontal = match (x < 0, y < 0) {
+        (false, false) => x >= y,
+        (true, false) => x.wrapping_neg() >= y,
+        (true, true) => x.wrapping_neg() > y.wrapping_neg(),
+        (false, true) => x > y.wrapping_neg(),
+    };
+    let ratio = if horizontal {
+        y.wrapping_shl(14).wrapping_div(x)
+    } else {
+        x.wrapping_shl(14).wrapping_div(y)
+    };
+    let (angle, scratch, _) = bios_arctan(ratio);
+    let result = if horizontal {
+        angle.wrapping_add(if x < 0 {
+            0x8000
+        } else if y < 0 {
+            0x10000
+        } else {
+            0
+        })
+    } else {
+        (if y < 0 { 0xc000i32 } else { 0x4000i32 }).wrapping_sub(angle)
+    };
+    (result as u16, scratch)
+}
 
 // round(atan(2^-n) * 2^32 / TAU), generated from the mathematical definition.
 // These are not firmware tables. Full-turn Q32 keeps rounding below the final
 // 16-bit angular unit; runtime uses only integer shifts/additions.
+#[cfg(test)]
 const ROTATIONS: [i64; 31] = [
     536870912, 316933406, 167458907, 85004756, 42667331, 21354465, 10679838, 5340245, 2670163,
     1335087, 667544, 333772, 166886, 83443, 41722, 20861, 10430, 5215, 2608, 1304, 652, 326, 163,
     81, 41, 20, 10, 5, 3, 1, 1,
 ];
 
+#[cfg(test)]
 fn first_quadrant(x: u32, y: u32) -> u16 {
     // Headroom is enough even for both unsigned magnitudes of i32::MIN. The
     // fractional bits retain small coordinates through vectoring iterations.
@@ -34,7 +84,8 @@ fn first_quadrant(x: u32, y: u32) -> u16 {
 }
 
 /// Signed tangent in Q14; signed angle where one turn is 65536 units.
-pub(super) fn arctan(tangent: i32) -> i32 {
+#[cfg(test)]
+fn ideal_arctan(tangent: i32) -> i32 {
     let angle = i32::from(first_quadrant(1 << 14, tangent.unsigned_abs()));
     if tangent < 0 {
         -angle
@@ -44,7 +95,8 @@ pub(super) fn arctan(tangent: i32) -> i32 {
 }
 
 /// Counterclockwise angle from +X, wrapped to a 16-bit turn. Zero vector is 0.
-pub(super) fn arctan2(x: i32, y: i32) -> u16 {
+#[cfg(test)]
+fn ideal_arctan2(x: i32, y: i32) -> u16 {
     if y == 0 {
         return if x < 0 { 0x8000 } else { 0 };
     }
@@ -87,6 +139,57 @@ pub(super) fn midi_frequency(base: u32, key: u32, fine: u32) -> u32 {
 mod tests {
     use super::*;
     #[test]
+    fn polynomial_matches_independent_hardware_boundary_and_overflow_vectors() {
+        // Hardware-measured facts from the behavioral reference and independent
+        // mGBA fixture; exercise asymmetric rounding and overflow beyond its fit.
+        for (input, result, square, polynomial) in [
+            (0i32, 0, 0, 0xa2f9),
+            (1, 0, 0, 0xa2f9),
+            (0x1000, 0x9fb, -0x400, 0x9fb3),
+            (-0x1000, -0x9fc, -0x400, 0x9fb3),
+            (0x3fff, 0x1fff, -0x3ffe, 0x8001),
+            (0x4000, 0x2000, -0x4000, 0x8000),
+            (0x4001, 0x1fff, -0x4002, 0x7ffe),
+            (0x8000, 0x16a2, -0x10000, 0x22d45),
+            (0xc000, -0x3ca0, 0x1c000, 0x10480),
+            (0xffff, -0x5d02, 8, 0xa2ff),
+        ] {
+            assert_eq!(bios_arctan(input), (result, square, polynomial));
+        }
+        for input in -0x4000..=0x4000 {
+            let ideal = ((f64::from(input) / 16384.).atan() * 65536. / std::f64::consts::TAU)
+                .round() as i32;
+            assert!((bios_arctan(input).0 - ideal).abs() <= 2);
+        }
+    }
+    #[test]
+    fn documented_octant_boundaries_axes_and_ratio_quantization() {
+        for magnitude in [1, 2, 0x1000, 0x3fff, 0x4000, 0x7fff] {
+            for (x, y, angle) in [
+                (magnitude, 0, 0),
+                (0, magnitude, 0x4000),
+                (-magnitude, 0, 0x8000),
+                (0, -magnitude, 0xc000),
+                (magnitude, magnitude, 0x2000),
+                (-magnitude, magnitude, 0x6000),
+                (-magnitude, -magnitude, 0xa000),
+                (magnitude, -magnitude, 0xe000),
+            ] {
+                assert_eq!(bios_arctan2(x, y).0, angle);
+                if x == 0 || y == 0 {
+                    assert_eq!(bios_arctan2(x, y).1, y);
+                }
+            }
+        }
+        assert_eq!(bios_arctan2(0, 0), (0, 0));
+        assert_eq!(bios_arctan2(100, 50), (0x12e4, -0x1000));
+        assert_eq!(bios_arctan2(50, 100), (0x2d1c, -0x1000));
+        for magnitude in 0x4000..=0x7fff {
+            assert_eq!(bios_arctan2(magnitude, magnitude + 1).0, 0x2001);
+            assert_eq!(bios_arctan2(magnitude, magnitude - 1).0, 0x1fff);
+        }
+    }
+    #[test]
     fn midi_octaves_clamping_and_full_width_interpolation() {
         for base in [0, 1, 0x00400000, 0x12345678, u32::MAX] {
             for key in (0..=168).step_by(12) {
@@ -115,7 +218,7 @@ mod tests {
         }
     }
     #[test]
-    fn axes_diagonals_zero_and_signed_extremes() {
+    fn mathematical_oracle_axes_diagonals_zero_and_signed_extremes() {
         for (x, y, angle) in [
             (0, 0, 0),
             (1, 0, 0),
@@ -131,31 +234,31 @@ mod tests {
             (0, i32::MIN, 0xc000),
             (i32::MAX, i32::MAX, 0x2000),
         ] {
-            assert_eq!(arctan2(x, y), angle);
+            assert_eq!(ideal_arctan2(x, y), angle);
         }
-        assert_eq!(arctan(0), 0);
-        assert_eq!(arctan(0x4000), 0x2000);
-        assert_eq!(arctan(-0x4000), -0x2000);
+        assert_eq!(ideal_arctan(0), 0);
+        assert_eq!(ideal_arctan(0x4000), 0x2000);
+        assert_eq!(ideal_arctan(-0x4000), -0x2000);
     }
     #[test]
-    fn every_documented_tangent_is_monotonic_odd_and_matches_math() {
+    fn mathematical_oracle_tangents_are_monotonic_odd_and_match_math() {
         let mut previous = i32::MIN;
         for tangent in i16::MIN..=i16::MAX {
             let tangent = i32::from(tangent);
-            let actual = arctan(tangent);
+            let actual = ideal_arctan(tangent);
             let expected = ((f64::from(tangent) / 16384.).atan() * 65536. / std::f64::consts::TAU)
                 .round() as i32;
             assert!((actual - expected).abs() <= 1, "tangent {tangent}");
             assert!(actual >= previous);
-            assert_eq!(actual, -arctan(-tangent));
+            assert_eq!(actual, -ideal_arctan(-tangent));
             previous = actual;
         }
     }
     #[test]
-    fn vectoring_quadrants_scale_invariance_and_full_width_math_oracle() {
+    fn mathematical_oracle_quadrants_scale_invariance_and_full_width() {
         for x in -64..=64i32 {
             for y in -64..=64i32 {
-                let actual = arctan2(x, y);
+                let actual = ideal_arctan2(x, y);
                 let expected = (f64::from(y).atan2(f64::from(x)) * 65536. / std::f64::consts::TAU)
                     .round() as i32 as u16;
                 assert!(
@@ -164,7 +267,7 @@ mod tests {
                         .min(expected.wrapping_sub(actual))
                         <= 1
                 );
-                assert_eq!(arctan2(x * 32768, y * 32768), actual);
+                assert_eq!(ideal_arctan2(x * 32768, y * 32768), actual);
             }
         }
         let mut bits = 0x12345678u32;
@@ -175,7 +278,7 @@ mod tests {
             let y = bits as i32;
             let expected = (f64::from(y).atan2(f64::from(x)) * 65536. / std::f64::consts::TAU)
                 .round() as i32 as u16;
-            let actual = arctan2(x, y);
+            let actual = ideal_arctan2(x, y);
             assert!(
                 actual
                     .wrapping_sub(expected)

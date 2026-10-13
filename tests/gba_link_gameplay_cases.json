@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "reference_kind": "Reviewed local native emulator race scenes, not independent hardware captures",
+  "cases": [
+    {
+      "id": "mario-kart-single-pak-race",
+      "rom": "Mario Kart Super Circuit (U) [!].gba",
+      "sha256": "aadc8b9f3c947ff6f610b6c8d7fddaaa9bea98b4bd43576df84f26c457ae1f90",
+      "frames": 5000,
+      "player1": "300:8,303:0,400:80,403:0,480:8,483:0,600:80,603:0,750:1,780:0,1400:1,1430:0,3500:1,3530:0,4000:1,4300:11,4330:1",
+      "player2": "download",
+      "frame_hashes": {
+        "player1": "a50d8e2f9cd62c52",
+        "player2": "4bd2feef3abc4370"
+      },
+      "coverage": "Full startup, emulated serial Single Pak RAM upload and both endpoints displaying an active Mario Kart race; no WebRTC latency in this native harness"
+    },
+    {
+      "id": "mario-kart-multi-pak-race",
+      "rom": "Mario Kart Super Circuit (U) [!].gba",
+      "sha256": "aadc8b9f3c947ff6f610b6c8d7fddaaa9bea98b4bd43576df84f26c457ae1f90",
+      "frames": 4600,
+      "player1": "300:8,303:0,400:80,403:0,480:8,483:0,650:1,653:0,1000:1,1060:0,1300:1,1360:0,1600:8,1660:0,1900:1,1960:0,2200:1,2260:0,2450:10,2470:0,2600:1,2660:0,3100:1,3160:0,3600:1,3660:0,4000:1",
+      "player2": "300:8,303:0,400:80,403:0,480:8,483:0,650:1,653:0,1000:1,1060:0,1300:1,1360:0,1600:8,1660:0,1900:1,1960:0,2200:1,2260:0,2500:20,2520:0,2800:1,2860:0,3300:1,3360:0,3800:1,3860:0,4100:11,4220:0,4260:1",
+      "frame_hashes": {
+        "player1": "78bd8c31b98db2d0",
+        "player2": "cc42341c1e8150c7"
+      },
+      "coverage": "Full startup through distinct Bowser/Toad selection and both endpoints displaying the Mario Kart Multi Pak race grid; no WebRTC latency in this native harness"
+    }
+  ]
+}

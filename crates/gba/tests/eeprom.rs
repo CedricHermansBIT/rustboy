@@ -117,7 +117,11 @@ fn partial_command_busy_program_and_output_replay_in_snapshots() {
     finish(&mut m);
     assert_eq!(m.bus.peek32(0x02010000 + 128), expected);
     // EEPROM precedes PSG, BIOS, prefetch, data-bus, memory-control and wait-resume state.
-    let position = output.len() - 38 - 115 - 5 - 6 - 5 - 5 - 4 - 13 - 4;
+    assert_eq!(
+        output[4], 15,
+        "Update EEPROM snapshot layout for new versions"
+    );
+    let position = output.len() - 38 - 115 - 5 - 6 - 5 - 5 - 4 - 13 - 4 - 1085;
     let mut invalid = output.clone();
     invalid[position] = 7;
     let length = invalid.len();

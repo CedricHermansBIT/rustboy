@@ -22,12 +22,15 @@ pub struct GameBoyAdvance {
     pub cpu: Cpu,
     pub bus: Bus,
     pub clocks: u64,
+    /// Transport pacing is host state and deliberately excluded from snapshots.
+    pub(crate) link_clock_limit: Option<u64>,
+    pub(crate) local_link: Option<crate::local_link::LocalLink>,
     pub frames: u64,
     /// Stop rather than executing zero-filled exception vectors as fake firmware.
     pub fault: Option<MissingBiosException>,
     pub(crate) pixels: Vec<u8>,
     video_stride: u32,
-    render_this_frame: bool,
+    pub(crate) render_this_frame: bool,
     rendered_frames: u64,
     skipped_frames: u64,
     pub(crate) line: u16,
@@ -46,6 +49,19 @@ pub struct GameBoyAdvance {
     pub(crate) decoded: Box<crate::decoded::Cache>,
 }
 impl GameBoyAdvance {
+    pub fn new_multiboot_client() -> Result<Self, String> {
+        Self::new(Self::multiboot_cartridge(), None)
+    }
+    fn multiboot_cartridge() -> Vec<u8> {
+        let mut rom = vec![0; 256];
+        rom[..4].copy_from_slice(&0xeafffffeu32.to_le_bytes());
+        rom[0xa0..0xac].copy_from_slice(b"DOWNLOADPLAY");
+        rom[0xb2] = 0x96;
+        rom
+    }
+    pub fn is_multiboot_client(&self) -> bool {
+        self.bus.rom == Self::multiboot_cartridge()
+    }
     pub fn new(rom: Vec<u8>, bios: Option<Vec<u8>>) -> Result<Self, String> {
         let boot = bios.is_some();
         let mut bus = Bus::new(rom, bios)?;
@@ -64,7 +80,11 @@ impl GameBoyAdvance {
             cpu.r[13] = 0x03007fe0;
             cpu.set_cpsr(0x1f).unwrap();
             cpu.r[13] = 0x03007f00;
-            cpu.r[15] = 0x08000000;
+            cpu.r[15] = if bus.rom == Self::multiboot_cartridge() {
+                0x2000
+            } else {
+                0x08000000
+            };
         }
         Ok(Self {
             #[cfg(all(feature = "jit", target_arch = "wasm32"))]
@@ -74,6 +94,8 @@ impl GameBoyAdvance {
             cpu,
             bus,
             clocks: 0,
+            link_clock_limit: None,
+            local_link: None,
             frames: 0,
             fault: None,
             pixels: vec![255; 240 * 160 * 4],
@@ -100,6 +122,118 @@ impl GameBoyAdvance {
             .trim_end_matches('\0')
             .to_owned()
     }
+    pub fn save_type(&self) -> crate::SaveType {
+        self.bus.backup.kind
+    }
+    pub fn cartridge_save_key(&self) -> String {
+        format!("rustboy_save_gba_{:016x}", self.bus.backup.rom_hash)
+    }
+    pub fn cartridge_data(&self) -> &[u8] {
+        if self.is_multiboot_client() {
+            &[]
+        } else {
+            &self.bus.rom
+        }
+    }
+    pub fn rtc_save_key(&self) -> String {
+        format!("rustboy_rtc_gba_{:016x}", self.bus.backup.rom_hash)
+    }
+    pub fn export_rtc(&self, host_unix: u64) -> Vec<u8> {
+        if !self.rtc_enabled() {
+            return Vec::new();
+        }
+        let mut bytes = self.bus.rtc.encode().to_vec();
+        bytes.extend_from_slice(&host_unix.to_le_bytes());
+        let hash = crate::backend::hash(&bytes);
+        bytes.extend_from_slice(&hash.to_le_bytes());
+        bytes
+    }
+    pub fn import_rtc(&mut self, bytes: &[u8], host_unix: u64) -> Result<(), String> {
+        if bytes.len() != crate::rtc::STATE_BYTES + 16 {
+            return Err("Invalid RTC save size".into());
+        }
+        let at = bytes.len() - 8;
+        if crate::backend::hash(&bytes[..at]) != u64::from_le_bytes(bytes[at..].try_into().unwrap())
+        {
+            return Err("Corrupted RTC save".into());
+        }
+        let mut rtc = crate::rtc::Rtc::decode(&bytes[..crate::rtc::STATE_BYTES])?;
+        if !self.rtc_enabled() || !rtc.enabled {
+            return Err("RTC save belongs to a cartridge without RTC".into());
+        }
+        let saved_host = u64::from_le_bytes(bytes[crate::rtc::STATE_BYTES..at].try_into().unwrap());
+        rtc.unix_seconds = rtc
+            .unix_seconds
+            .saturating_add(host_unix.saturating_sub(saved_host))
+            .min(4102444799);
+        self.bus.rtc = rtc;
+        Ok(())
+    }
+    pub fn set_save_type(&mut self, kind: crate::SaveType) -> Result<(), String> {
+        if self.local_link.is_some() {
+            return Err("Disconnect multiplayer before changing cartridge hardware".into());
+        }
+        self.bus.backup.set_type(kind)
+    }
+    pub fn set_auto_save_type(&mut self) -> Result<(), String> {
+        if self.local_link.is_some() {
+            return Err("Disconnect multiplayer before changing cartridge hardware".into());
+        }
+        self.bus
+            .backup
+            .set_type(crate::backup::Backup::detect(&self.bus.rom).kind)
+    }
+    pub fn rtc_enabled(&self) -> bool {
+        self.bus.rtc.enabled
+    }
+    pub fn set_rtc_time(&mut self, unix_seconds: u64) -> Result<(), String> {
+        if self.local_link.is_some() {
+            return Err("Disconnect multiplayer before changing cartridge hardware".into());
+        }
+        if !(946684800..=4102444799).contains(&unix_seconds) {
+            return Err("RTC date must be between 2000 and 2099".into());
+        }
+        self.bus.rtc.unix_seconds = unix_seconds;
+        Ok(())
+    }
+    pub fn link_attach(&mut self, player: u8) -> Result<(), &'static str> {
+        self.bus.serial.attach(player)?;
+        self.bus.serial.store_registers(&mut self.bus.io);
+        self.link_clock_limit = Some(self.clocks.saturating_add(FRAME_CYCLES));
+        self.set_video_frame_stride(1);
+        Ok(())
+    }
+    pub fn link_detach(&mut self) {
+        self.local_link = None;
+        self.bus.serial.disconnect();
+        self.bus.serial.store_registers(&mut self.bus.io);
+        self.link_clock_limit = None;
+    }
+    pub fn link_request(&self) -> Option<crate::serial::LinkRequest> {
+        self.bus.serial.request()
+    }
+    pub fn link_set_peer(&mut self, mode: u8, ready: bool, so: bool) {
+        self.bus.serial.set_peer(mode, ready, so);
+        self.bus.serial.store_registers(&mut self.bus.io);
+    }
+    pub fn link_receive(&mut self, id: u32, mode: u8, baud: u8) -> Result<u32, &'static str> {
+        let value = self.bus.serial.begin_remote(id, mode, baud)?;
+        self.bus.serial.store_registers(&mut self.bus.io);
+        Ok(value)
+    }
+    pub fn link_supply(&mut self, id: u32, words: [u32; 2]) -> Result<(), &'static str> {
+        self.bus.serial.supply(id, words)
+    }
+    pub fn link_absent(&mut self, id: u32) -> Result<(), &'static str> {
+        self.bus.serial.supply_absent(id)
+    }
+    pub fn link_set_limit(&mut self, clock: u64) -> Result<(), &'static str> {
+        if !self.bus.serial.connected() {
+            return Err("No cable is attached");
+        }
+        self.link_clock_limit = Some(clock);
+        Ok(())
+    }
     /// Reused/composed scanlines. Counters are not hardware state.
     pub fn rendering_counts(&self) -> (u64, u64) {
         #[cfg(feature = "render-cache")]
@@ -115,6 +249,9 @@ impl GameBoyAdvance {
         self.accelerated_instructions
     }
     pub fn step(&mut self) -> u64 {
+        if self.local_link.is_some() {
+            self.link_detach();
+        }
         let rendering = self.render_this_frame;
         self.render_this_frame = true;
         #[cfg(feature = "render-cache")]
@@ -135,7 +272,13 @@ impl GameBoyAdvance {
         {
             self.idle = crate::idle::Detector::default();
         }
-        if self.fault.is_some() || self.bus.memory_locked {
+        if self.fault.is_some()
+            || self.bus.memory_locked
+            || self.bus.serial.waiting()
+            || self
+                .link_clock_limit
+                .is_some_and(|limit| self.clocks >= limit)
+        {
             return 0;
         }
         // STOP gates the system clock: even an already active DMA must wait.
@@ -176,7 +319,8 @@ impl GameBoyAdvance {
             } else {
                 1232 - self.line_clocks
             })
-            .min(self.bus.timer_deadline());
+            .min(self.bus.timer_deadline())
+            .min(self.bus.serial.deadline());
             self.advance_video(clocks);
             return clocks;
         }
@@ -210,10 +354,50 @@ impl GameBoyAdvance {
                         });
                 match result {
                     Ok(effect) => {
-                        if !matches!(effect, crate::bios::Effect::Reset) {
+                        if !matches!(
+                            effect,
+                            crate::bios::Effect::Reset | crate::bios::Effect::HardReset
+                        ) {
                             self.cpu.return_swi(&mut self.bus);
                         }
                         match effect {
+                            crate::bios::Effect::FirmwareCall(entry) => {
+                                let return_pc = self.cpu.r[15] | u32::from(self.cpu.thumb());
+                                let saved_lr = self.cpu.r[14];
+                                let stack = self.cpu.r[13].wrapping_sub(16);
+                                if !matches!(stack >> 24, 2 | 3) || stack & 3 != 0 {
+                                    self.fault = Some(MissingBiosException {
+                                        instruction_address: address,
+                                        vector,
+                                        reason: "BIOS multiboot caller stack is invalid",
+                                    });
+                                } else {
+                                    self.bus.write32(stack, saved_lr, false);
+                                    self.bus.write32(stack + 4, return_pc, false);
+                                    self.bus.write32(stack + 8, self.cpu.cpsr(), false);
+                                    self.bus.write32(stack + 12, 0, false);
+                                    self.cpu.r[13] = stack;
+                                    self.cpu.r[14] = 0x1700;
+                                    self.cpu.set_cpsr(self.cpu.cpsr() & !0x20).unwrap();
+                                    self.cpu.write_result(&mut self.bus, 15, entry, false);
+                                }
+                            }
+                            crate::bios::Effect::HardReset => {
+                                use rustboy_emulator_api::Emulator;
+                                let counters = (
+                                    self.clocks,
+                                    self.frames,
+                                    self.cpu.instructions,
+                                    self.cpu.exceptions,
+                                );
+                                let cycles = self.bus.take_cycles();
+                                self.reset();
+                                self.bus.clocks = cycles;
+                                self.clocks = counters.0;
+                                self.frames = counters.1;
+                                self.cpu.instructions = counters.2;
+                                self.cpu.exceptions = counters.3;
+                            }
                             crate::bios::Effect::Halt => self.bus.enter_low_power(0),
                             crate::bios::Effect::Stop => self.bus.enter_low_power(0x80),
                             crate::bios::Effect::Wait { mask, discard } => {
@@ -311,6 +495,30 @@ impl GameBoyAdvance {
     /// CPU clock budget, including whole-instruction overshoot. No host sleep,
     /// rendering callback. Derived scanline dependencies are retained for reuse.
     pub fn run(&mut self, budget: u64) -> u64 {
+        if budget == 0 {
+            return 0;
+        }
+        if let Some(mut link) = self.local_link.take() {
+            let result = self.run_local_frame(&mut link);
+            match result {
+                Ok(clocks) => {
+                    self.local_link = Some(link);
+                    return clocks;
+                }
+                Err(reason) => {
+                    self.link_detach();
+                    self.fault = Some(MissingBiosException {
+                        instruction_address: self.cpu.r[15],
+                        vector: 0x18,
+                        reason,
+                    });
+                    return 0;
+                }
+            }
+        }
+        self.run_core(budget)
+    }
+    pub(crate) fn run_core(&mut self, budget: u64) -> u64 {
         #[cfg(all(feature = "jit", target_arch = "wasm32"))]
         if !self.jit.batch_active {
             self.jit.new_epoch();
@@ -323,8 +531,31 @@ impl GameBoyAdvance {
         }
         let start = self.clocks;
         while self.clocks.wrapping_sub(start) < budget && self.fault.is_none() {
-            let clocks = if self.can_run_cpu_slice() {
-                self.run_cpu_slice(budget - self.clocks.wrapping_sub(start))
+            if self.bus.serial.waiting()
+                || self
+                    .link_clock_limit
+                    .is_some_and(|limit| self.clocks >= limit)
+            {
+                break;
+            }
+            let remaining = (budget - self.clocks.wrapping_sub(start)).min(
+                self.link_clock_limit
+                    .map_or(u64::MAX, |limit| limit.saturating_sub(self.clocks)),
+            );
+            let clocks = if self.bus.halted
+                && !self.bus.pending_irq()
+                && !self.bus.stopped
+                && self.wait_mask.is_none()
+            {
+                let boundary = if self.line_clocks < 1006 { 1006 } else { 1232 };
+                let clocks = remaining
+                    .min(u64::from(boundary - self.line_clocks))
+                    .min(self.bus.timer_deadline())
+                    .min(self.bus.serial.deadline());
+                self.advance_video(clocks);
+                clocks
+            } else if self.can_run_cpu_slice() {
+                self.run_cpu_slice(remaining)
             } else {
                 self.step_inner()
             };
@@ -355,6 +586,8 @@ impl GameBoyAdvance {
         }
     }
     pub(crate) fn advance_video(&mut self, mut clocks: u64) {
+        self.bus.raster.enabled = self.render_this_frame && self.line < 160;
+        self.bus.raster.clock = self.line_clocks;
         self.clocks = self.clocks.wrapping_add(clocks);
         while clocks > 0 {
             let boundary = if self.line_clocks < 1006 { 1006 } else { 1232 };
@@ -362,13 +595,24 @@ impl GameBoyAdvance {
                 .min(u64::from(boundary - self.line_clocks))
                 .min(self.bus.timer_deadline())
                 .min(self.bus.apu.deadline());
+            let advance = advance.min(self.bus.serial.deadline());
             let overflow = self.bus.advance_timers(advance);
             if overflow[0] != 0 || overflow[1] != 0 {
                 self.bus.clock_direct_sound(overflow);
             }
             self.bus.clock_audio(advance);
-            self.bus.backup.clock_eeprom(advance);
+            self.bus.backup.clock(advance);
+            if self.bus.serial.deadline() != u64::MAX {
+                if self.bus.serial.advance(advance) {
+                    self.bus.request_irq(0x80);
+                }
+                self.bus.serial.store_registers(&mut self.bus.io);
+            }
+            if self.bus.rtc.advance(advance) {
+                self.bus.request_irq(0x2000);
+            }
             self.line_clocks += advance as u16;
+            self.bus.raster.clock = self.line_clocks;
             clocks -= advance;
             if self.line_clocks == 1006 {
                 if self.line < 160 {
@@ -394,6 +638,8 @@ impl GameBoyAdvance {
                 self.bus.trigger_capture_dma(self.line);
             } else if self.line_clocks == 1232 {
                 self.line_clocks = 0;
+                self.bus.raster.clock = 0;
+                self.bus.raster.drawn = 0;
                 self.line = (self.line + 1) % 228;
                 if self.line == 0 || self.line == 160 {
                     if self.line == 0 {
@@ -404,6 +650,7 @@ impl GameBoyAdvance {
                 } else if self.line < 160 {
                     self.bus.advance_affine(self.line);
                 }
+                self.bus.raster.enabled = self.render_this_frame && self.line < 160;
                 self.bus.set_io(6, self.line);
                 if self.line == 162 {
                     self.bus.finish_capture_dma();
@@ -444,6 +691,9 @@ impl GameBoyAdvance {
         crate::ppu::render_cached(&self.bus, self.line, &mut self.pixels, &mut self.rendering);
         #[cfg(not(feature = "render-cache"))]
         crate::ppu::render_line(&self.bus, self.line, &mut self.pixels);
+        let start = usize::from(self.line) * 960;
+        let end = usize::from(self.bus.raster.drawn) * 4;
+        self.pixels[start..start + end].copy_from_slice(&self.bus.raster.pixels[..end]);
     }
 }
 
@@ -526,11 +776,18 @@ mod tests {
         m.advance_video(1);
         assert!(m.bus.dma[3].active);
         let saved = m.export_state();
+        assert_eq!(m.step(), 2);
+        assert_eq!(
+            m.bus.peek16(0x06000000),
+            0,
+            "capture startup has no data yet"
+        );
         m.step();
         assert_eq!(m.cpu.instructions, 0);
         assert_eq!(m.bus.peek16(0x06000000), 0x1234);
         let after = m.export_state();
         m.import_state(&saved).unwrap();
+        assert_eq!(m.step(), 2);
         m.step();
         assert_eq!(m.export_state(), after);
         m.advance_video(u64::from(1232 - m.line_clocks));
@@ -538,12 +795,14 @@ mod tests {
         assert!(!m.bus.dma[3].active);
         m.advance_video(1006);
         assert!(m.bus.dma[3].active);
+        assert_eq!(m.step(), 2);
         m.step();
         assert_eq!(m.bus.peek16(0x06000002), 0x5678);
         m.advance_video(159 * 1232 - u64::from(m.line_clocks));
         assert_eq!(m.line, 162);
         assert_eq!(m.bus.io16(0xde) & 0x8000, 0);
         assert!(m.bus.dma[3].active);
+        assert_eq!(m.step(), 2);
         m.step();
         assert!(!m.bus.dma[3].active);
     }
@@ -566,9 +825,15 @@ mod tests {
         m.bus.write16(0x04000132, 0x4001, false);
         m.bus.set_keys(1);
         m.bus.take_cycles();
-        assert!(m.step() > 0);
+        assert_eq!(m.step(), 2);
         assert!(!m.bus.stopped);
         assert_eq!(m.cpu.instructions, 0); // The queued DMA wins after wake.
+        assert_eq!(
+            m.bus.peek32(0x02000000),
+            0,
+            "wake starts DMA before its first data access"
+        );
+        assert!(m.step() > 0);
         assert_eq!(m.bus.peek32(0x02000000), 0xdeadbeef);
         assert!(m.bus.peek16(0x04000100) > 0xff00);
     }
@@ -759,7 +1024,11 @@ mod tests {
         m.bus.write32(0x040000d8, 0x02000000, false);
         m.bus.write32(0x040000dc, 0x84000001, false);
         m.bus.take_cycles();
-        let clocks = m.step();
+        let startup = m.step();
+        assert_eq!(startup, 2);
+        assert_eq!(m.bus.peek32(0x02000000), 0);
+        assert_eq!(m.bus.peek16(0x04000100), 2);
+        let clocks = startup + m.step();
         assert_eq!(clocks, 9);
         assert_eq!(m.cpu.instructions, 0);
         assert_eq!(m.bus.peek32(0x02000000), 0xdeadbeef);

@@ -6,6 +6,11 @@ pub const MAX_ROM_BYTES: usize = 32 * 1024 * 1024;
 // Version 1: fixed CPU/scheduler/peripheral prefix, RAM, RGBA frame, checksum.
 const SNAPSHOT_BYTES: usize =
     491 + 0x40000 + 0x8000 + 0x400 + 0x18000 + 0x400 + 0x400 + 240 * 160 * 4 + 8;
+const V15_SUFFIX_BYTES: usize = crate::backup::FLASH_STATE_BYTES
+    + crate::rtc::STATE_BYTES
+    + crate::serial::STATE_BYTES
+    + crate::raster::STATE_BYTES
+    + 1;
 pub fn validate_cartridge(data: &[u8]) -> Result<(), String> {
     if data.len() < 192 || data.len() > MAX_ROM_BYTES {
         return Err("GBA ROM must contain 192 bytes to 32 MiB".into());
@@ -14,6 +19,10 @@ pub fn validate_cartridge(data: &[u8]) -> Result<(), String> {
         return Err("Invalid GBA cartridge header marker".into());
     }
     Ok(())
+}
+pub fn cartridge_save_key(data: &[u8]) -> Result<String, String> {
+    validate_cartridge(data)?;
+    Ok(format!("rustboy_save_gba_{:016x}", hash(data)))
 }
 pub(crate) fn hash(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf29ce484222325, |h, b| {
@@ -74,6 +83,8 @@ impl Emulator for GameBoyAdvance {
         self.paused = value;
     }
     fn reset(&mut self) {
+        let kind = self.bus.backup.kind;
+        let rtc = self.bus.rtc.clone();
         let backup_data = std::mem::take(&mut self.bus.backup.data);
         let dirty = self.bus.backup.dirty;
         let address_bits = self.bus.backup.eeprom.address_bits;
@@ -84,6 +95,8 @@ impl Emulator for GameBoyAdvance {
             Some(std::mem::take(&mut self.bus.bios))
         };
         *self = Self::new(rom, bios).expect("Previously validated cartridge and BIOS");
+        self.bus.backup.kind = kind;
+        self.bus.rtc = rtc;
         self.bus.backup.data = backup_data;
         self.bus.backup.dirty = dirty;
         self.bus.backup.eeprom.address_bits = address_bits;
@@ -105,13 +118,20 @@ impl Emulator for GameBoyAdvance {
             Button::L => 9,
             _ => return Err("Unsupported GBA button".into()),
         };
-        let mut keys = !self.bus.io16(0x130) & 0x3ff;
+        let mut keys = self
+            .local_link
+            .as_ref()
+            .map_or(!self.bus.io16(0x130) & 0x3ff, |link| link.keys);
         if pressed {
             keys |= 1 << bit;
         } else {
             keys &= !(1 << bit);
         }
-        self.bus.set_keys(keys);
+        if let Some(link) = self.local_link.as_mut() {
+            link.keys = keys;
+        } else {
+            self.bus.set_keys(keys);
+        }
         Ok(())
     }
     fn video_frame(&mut self) -> VideoFrame<'_> {
@@ -156,6 +176,16 @@ impl Emulator for GameBoyAdvance {
             if id != ids[0] {
                 ids.push(id);
             }
+            let mut previous = self.bus.bios.clone();
+            previous[0x1700..].fill(0);
+            let id = format!(
+                "gba-{:016x}-{:016x}",
+                self.bus.backup.rom_hash,
+                hash(&previous)
+            );
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
         }
         ids
     }
@@ -163,12 +193,18 @@ impl Emulator for GameBoyAdvance {
         self.bus.backup.data.clone()
     }
     fn import_save(&mut self, data: &[u8]) -> Result<(), String> {
+        if self.local_link.is_some() {
+            return Err("Disconnect multiplayer before replacing cartridge saves".into());
+        }
         self.bus.backup.import(data)
     }
     fn mark_save_clean(&mut self) {
         self.bus.backup.dirty = false;
     }
     fn clear_save(&mut self) {
+        if self.local_link.is_some() {
+            return;
+        }
         self.bus.backup.dirty |= self.bus.backup.data.iter().any(|v| *v != 255);
         self.bus.backup.data.fill(255);
         self.bus.backup.reset_commands();
@@ -223,7 +259,7 @@ impl GameBoyAdvance {
     fn snapshot(&self) -> Vec<u8> {
         debug_assert_eq!(self.bus.execution.pending, 0);
         debug_assert_eq!(self.bus.execution.credited, 0);
-        let mut data = b"RBGA\x0e\0\0\0".to_vec();
+        let mut data = b"RBGA\x0f\0\0\0".to_vec();
         put(&mut data, hash(&self.bus.rom), 8);
         put(&mut data, hash(&self.bus.bios), 8);
         for register in self
@@ -359,6 +395,16 @@ impl GameBoyAdvance {
         }
         put(&mut data, u64::from(self.bus.video_pipeline_thumb), 1);
         put(&mut data, u64::from(self.bus.dma_latch), 4);
+        data.extend_from_slice(&self.bus.backup.flash.encode());
+        data.extend_from_slice(&self.bus.rtc.encode());
+        data.extend_from_slice(&self.bus.serial.encode());
+        put(&mut data, 0, 1); // Reserved; presentation policy is host-owned.
+        put(&mut data, u64::from(self.line_clocks), 2);
+        put(&mut data, u64::from(self.bus.raster.drawn), 2);
+        let committed = usize::from(self.bus.raster.drawn) * 4;
+        data.extend_from_slice(&self.bus.raster.pixels[..committed]);
+        data.resize(data.len() + 960 - committed, 0);
+        put(&mut data, u64::from(self.bus.dma_startup_mask), 1);
         let checksum = hash(&data);
         put(&mut data, checksum, 8);
         data
@@ -375,6 +421,7 @@ impl GameBoyAdvance {
                     + 4
                     + crate::bus::VIDEO_PIPELINE_STATE_BYTES
                     + crate::bus::DMA_LATCH_STATE_BYTES
+                    + V15_SUFFIX_BYTES
                     + crate::apu::MAX_SAMPLES * 8
                     + 0x20000
         {
@@ -403,16 +450,19 @@ impl GameBoyAdvance {
             b"RBGA\x0c\0\0\0" => 12,
             b"RBGA\x0d\0\0\0" => 13,
             b"RBGA\x0e\0\0\0" => 14,
+            b"RBGA\x0f\0\0\0" => 15,
             _ => return Err("Unsupported GBA state version".into()),
         };
         let rom_hash = reader.int(8)?;
         let bios_hash = reader.int(8)?;
         // Old HLE snapshots used the same IRQ firmware without sound thunks.
         // Their CPU/RAM layout is unchanged; supplied firmware remains exact.
-        let legacy_hle = self.bus.replacement_bios && version <= 14 && {
+        let legacy_hle = self.bus.replacement_bios && version <= 15 && {
             let mut legacy = self.bus.bios.clone();
             legacy[crate::bios::sound::MAIN as usize..].fill(0);
-            bios_hash == hash(&legacy)
+            let mut previous = self.bus.bios.clone();
+            previous[0x1700..].fill(0);
+            bios_hash == hash(&legacy) || bios_hash == hash(&previous)
         };
         if rom_hash != hash(&self.bus.rom) || (bios_hash != hash(&self.bus.bios) && !legacy_hle) {
             return Err("GBA state belongs to another ROM/firmware".into());
@@ -547,6 +597,17 @@ impl GameBoyAdvance {
         }
         if version >= 3 {
             let encoded_kind = reader.int(1)? as u8;
+            if version >= 15 {
+                let kind = match encoded_kind {
+                    0 => crate::SaveType::None,
+                    1 => crate::SaveType::Sram,
+                    2 => crate::SaveType::Flash64,
+                    3 => crate::SaveType::Flash128,
+                    4 => crate::SaveType::Eeprom,
+                    _ => return Err("Invalid GBA save hardware".into()),
+                };
+                next.bus.backup.set_type(kind)?;
+            }
             let legacy_eeprom = version < 5
                 && encoded_kind == 0
                 && next.bus.backup.kind == crate::backup::Kind::Eeprom;
@@ -708,6 +769,43 @@ impl GameBoyAdvance {
         if version >= 14 {
             next.bus.dma_latch = reader.int(4)? as u32;
         }
+        if version >= 15 {
+            next.bus.backup.flash = crate::backup::FlashOperation::decode(
+                reader.bytes(crate::backup::FLASH_STATE_BYTES)?,
+            )?;
+            if !next.bus.backup.valid_flash() {
+                return Err("Invalid GBA Flash operation".into());
+            }
+            next.bus.rtc = crate::rtc::Rtc::decode(reader.bytes(crate::rtc::STATE_BYTES)?)?;
+            next.bus.serial =
+                crate::serial::Serial::decode(reader.bytes(crate::serial::STATE_BYTES)?)
+                    .map_err(str::to_owned)?;
+            if reader.bool()? {
+                return Err("Invalid GBA raster reserved flags".into());
+            }
+            next.bus.raster.enabled = next.render_this_frame && next.line < 160;
+            next.bus.raster.clock = reader.int(2)? as u16;
+            next.bus.raster.drawn = reader.int(2)? as u16;
+            next.bus.raster.pixels.copy_from_slice(reader.bytes(960)?);
+            next.bus.dma_startup_mask = reader.int(1)? as u8;
+            let valid_startup = next.bus.dma.iter().enumerate().fold(0u8, |bits, (n, d)| {
+                bits | if d.active && d.first && d.remaining != 0 {
+                    1 << n
+                } else {
+                    0
+                }
+            });
+            if next.bus.raster.clock != next.line_clocks
+                || next.bus.raster.drawn > 240
+                || next.bus.dma_startup_mask & !valid_startup != 0
+            {
+                return Err("Invalid GBA raster/DMA phase".into());
+            }
+        } else {
+            next.bus.raster.clock = next.line_clocks;
+            next.bus.raster.enabled = next.line < 160;
+            next.bus.serial = crate::serial::Serial::from_registers(&next.bus.io);
+        }
         if next.line >= 228
             || next.line_clocks >= 1232
             || next.bus.clocks > 1_000_000_000
@@ -729,8 +827,9 @@ impl GameBoyAdvance {
 }
 #[cfg(test)]
 mod tests {
-    const LATEST_SUFFIX_BYTES: usize =
-        crate::bus::VIDEO_PIPELINE_STATE_BYTES + crate::bus::DMA_LATCH_STATE_BYTES;
+    const LATEST_SUFFIX_BYTES: usize = crate::bus::VIDEO_PIPELINE_STATE_BYTES
+        + crate::bus::DMA_LATCH_STATE_BYTES
+        + V15_SUFFIX_BYTES;
     #[test]
     fn dma_latch_replays_between_channels_and_migrates_version_thirteen() {
         use crate::cpu::Memory;
@@ -747,16 +846,22 @@ mod tests {
         }
         m.bus.take_cycles();
         m.bus.trigger_dma(2);
+        assert_eq!(m.step(), 2);
+        assert_eq!(m.bus.dma_latch, 0, "startup has not driven the bus");
         m.step();
         assert_eq!(m.bus.dma_latch, 31 * 0x10001);
         let saved = m.export_state();
+        assert_eq!(m.step(), 2);
         m.step();
         assert_eq!(m.bus.io16(0x12), 31);
         let completed = m.export_state();
         m.import_state(&saved).unwrap();
+        assert_eq!(m.step(), 2);
         m.step();
         assert_eq!(m.export_state(), completed);
-        let mut legacy = saved[..saved.len() - 8 - crate::bus::DMA_LATCH_STATE_BYTES].to_vec();
+        let mut legacy = saved
+            [..saved.len() - 8 - crate::bus::DMA_LATCH_STATE_BYTES - V15_SUFFIX_BYTES]
+            .to_vec();
         legacy[4] = 13;
         let checksum = hash(&legacy);
         put(&mut legacy, checksum, 8);
@@ -784,7 +889,7 @@ mod tests {
                 hash(&firmware)
             )
         );
-        assert_eq!(ids.len(), 2);
+        assert_eq!(ids.len(), 3);
         legacy[16..24].copy_from_slice(&hash(&firmware).to_le_bytes());
         let end = legacy.len() - 8;
         let sum = hash(&legacy[..end]);
@@ -922,7 +1027,7 @@ mod tests {
             m.bus.write32(0x040000b4, 0x03000100, false);
             m.bus.write32(0x040000b8, 0x84000001, false);
             m.bus.take_cycles();
-            assert!(m.bus.dma_unit());
+            assert!(m.bus.dma_transfer_unit());
             assert_eq!(m.bus.take_cycles(), clocks);
             assert_eq!(m.bus.peek32(0x03000100), 0x12345678);
         }
@@ -932,6 +1037,8 @@ mod tests {
         m.bus.write32(0x040000b8, 0xc4000001, false);
         m.bus.write32(0x04000800, 0x0f000020, false);
         m.bus.take_cycles();
+        assert_eq!(m.step(), 2);
+        assert!(!m.bus.memory_locked, "startup does not access EWRAM");
         assert!(m.step() > 0);
         assert!(m.bus.memory_locked);
         assert_eq!(m.bus.dma[0].remaining, 1);
@@ -1082,6 +1189,8 @@ mod tests {
         m.bus.write32(0x040000b4, 0x02000000, false);
         m.bus.write32(0x040000b8, 0x84000002, false);
         m.bus.take_cycles();
+        assert_eq!(m.step(), 2);
+        assert_eq!(m.bus.dma[0].source, 0x07fffffc);
         m.step();
         assert_eq!(m.bus.dma[0].source, 0);
         assert_eq!(m.cpu.instructions, 0);
@@ -1146,7 +1255,7 @@ mod tests {
         let mut m = machine();
         m.bus.enter_low_power(0x80);
         let saved = m.export_state();
-        assert_eq!(saved[4], 14);
+        assert_eq!(saved[4], 15);
         m.bus.stopped = false;
         m.import_state(&saved).unwrap();
         assert!(m.bus.stopped);
@@ -1359,9 +1468,11 @@ mod tests {
         // Snapshot in the middle of a command, then restore to finish it.
         let pending = m.export_state();
         m.bus.write8(0x0e001234, 0x5a);
+        m.bus.backup.clock(crate::backup::PROGRAM_CLOCKS);
         assert!(m.save_info().unwrap().dirty);
         m.import_state(&pending).unwrap();
         m.bus.write8(0x0e001234, 0xa5);
+        m.bus.backup.clock(crate::backup::PROGRAM_CLOCKS);
         let data = m.export_save();
         assert_eq!(data[0x11234], 0xa5);
         assert_eq!(data[0x1234], 255);

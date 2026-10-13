@@ -67,10 +67,15 @@ pub struct Bus {
     pub(crate) dma: [Dma; 4],
     // Derived channel/request masks, rebuilt from the serialized DMA state.
     pub(crate) dma_active: u8,
+    /// Channels whose startup phase completed but first data unit has not.
+    pub(crate) dma_startup_mask: u8,
     pub(crate) dma_fifo: [u8; 2],
     pub(crate) dma_ready: u8,
     pub(crate) apu: crate::apu::Apu,
     pub(crate) backup: crate::backup::Backup,
+    pub(crate) rtc: crate::rtc::Rtc,
+    pub serial: crate::serial::Serial,
+    pub(crate) raster: crate::raster::Raster,
     pub(crate) affine: crate::ppu::Affine,
 }
 impl Bus {
@@ -114,6 +119,7 @@ impl Bus {
         }
         let replacement_bios = bios.is_none();
         let backup = crate::backup::Backup::detect(&rom);
+        let rtc = crate::rtc::Rtc::detect(&rom);
         // GBATEK identifies this board family by game-code prefix F. This
         // selects cartridge wiring, without altering instructions or input.
         // A partial, non-power-of-two dump cannot establish a chip capacity.
@@ -168,10 +174,14 @@ impl Bus {
             timer_next: u64::MAX,
             dma: [Dma::default(); 4],
             dma_active: 0,
+            dma_startup_mask: 0,
             dma_fifo: [0; 2],
             dma_ready: 0,
             apu: crate::apu::Apu::default(),
             backup,
+            rtc,
+            serial: crate::serial::Serial::default(),
+            raster: crate::raster::Raster::default(),
             affine: crate::ppu::Affine::default(),
         };
         bus.set_io(0x130, 0x3ff);
@@ -387,12 +397,24 @@ impl Bus {
                 let offset = index & 0x3ff;
                 if !Self::readable_io(offset & !1) || offset == 0x301 {
                     0
+                } else if let Some(value) = self.serial.read8(offset) {
+                    value
                 } else if (0x60..0xa0).contains(&offset) {
                     self.sound_read(offset)
                 } else if (0x100..0x110).contains(&offset) && offset & 3 < 2 {
                     (self.timers[(offset - 0x100) / 4].counter >> ((offset & 1) * 8)) as u8
+                } else if offset == 0x140 {
+                    self.io[offset] & 0x40
+                } else if offset == 0x141 || (0x150..=0x157).contains(&offset) {
+                    0 // JoyBus data is unavailable outside its unimplemented transport.
                 } else if offset == 0x205 {
                     self.io[offset] & 0x5f
+                } else if matches!(offset, 9 | 11) {
+                    self.io[offset] & 0xdf
+                } else if matches!(offset, 0x48..=0x4b | 0x51) {
+                    self.io[offset] & 0x3f
+                } else if matches!(offset, 0x52 | 0x53) {
+                    self.io[offset] & 0x1f
                 } else {
                     self.io[offset]
                 }
@@ -400,12 +422,13 @@ impl Bus {
             5 => self.palette[index & 0x3ff],
             6 => self.vram[Self::vram_index(address)],
             7 => self.oam[index & 0x3ff],
-            8..=13 => self
-                .rom
-                .get(index & self.rom_address_mask)
-                .copied()
-                .unwrap_or(((address >> 1) >> ((address & 1) * 8)) as u8),
-            14..=15 => self.backup.read(address),
+            8..=13 => self.rtc.read(address).unwrap_or_else(|| {
+                self.rom
+                    .get(index & self.rom_address_mask)
+                    .copied()
+                    .unwrap_or(((address >> 1) >> ((address & 1) * 8)) as u8)
+            }),
+            14..=15 => self.backup.peek(address),
             _ => 0,
         }
     }
@@ -427,6 +450,13 @@ impl Bus {
     /// for I/O, serial devices, absent ROM and mirror/region boundary crossings.
     #[inline]
     fn linear_bytes<const N: usize>(&self, address: u32) -> Option<[u8; N]> {
+        if self.rtc.enabled
+            && address <= 0x080000c9
+            && address.saturating_add(N as u32) > 0x080000c4
+            && self.rtc.read(0x080000c4).is_some()
+        {
+            return None;
+        }
         if self.ram_disabled(address) {
             return None;
         }
@@ -458,6 +488,14 @@ impl Bus {
         if self.memory_locked {
             return;
         }
+        if (14..=15).contains(&(address >> 24)) {
+            self.execution.barrier = true;
+            self.synchronize_deferred();
+        }
+        if self.rtc.enabled && (0x080000c4..=0x080000c9).contains(&address) {
+            self.execution.barrier = true;
+            self.synchronize_deferred();
+        }
         let clocks = match address >> 24 {
             4 => {
                 self.execution.barrier = true;
@@ -476,6 +514,10 @@ impl Bus {
                 }
             }
             5..=6 => {
+                if self.raster.enabled && self.raster.clock < 1006 {
+                    self.execution.barrier = true;
+                    self.synchronize_deferred();
+                }
                 if width == 4 {
                     2
                 } else {
@@ -498,6 +540,11 @@ impl Bus {
                 (if sequential { second } else { first }) + if width == 4 { second } else { 0 }
             }
             14 | 15 => u64::from(self.gamepak_timing.backup),
+            7 if self.raster.enabled && self.raster.clock < 1006 => {
+                self.execution.barrier = true;
+                self.synchronize_deferred();
+                1
+            }
             _ => 1,
         };
         self.clocks += clocks;
@@ -603,12 +650,17 @@ impl Bus {
             return;
         }
         let index = address as usize;
+        self.raster_before_write(address, value);
         match address >> 24 {
             2 if self.memory_control & 0x20 == 0 => self.put_iwram(index, value),
             2 => self.ewram[index & 0x3ffff] = value,
             3 => self.put_iwram(index, value),
             4 if index & 0xffffff < 0x400 => {
                 let offset = index & 0x3ff;
+                if self.serial.write8(offset, value) {
+                    self.serial.store_registers(&mut self.io);
+                    return;
+                }
                 let old = self.io[offset];
                 if (0x60..0xa0).contains(&offset) {
                     self.apu.psg.flush(&mut self.io);
@@ -842,9 +894,19 @@ impl Memory for Bus {
             return value;
         }
         self.flush_sound_read(address);
-        let value = self.peek8(address);
+        let value = if (14..=15).contains(&(address >> 24)) {
+            self.backup.read(address)
+        } else {
+            self.peek8(address)
+        };
         self.record_narrow(address, u16::from(value));
         value
+    }
+    fn read16_unaligned(&mut self, address: u32, sequential: bool) -> u16 {
+        self.read16(address, sequential)
+    }
+    fn read32_unaligned(&mut self, address: u32, sequential: bool) -> u32 {
+        self.read32(address, sequential)
     }
     fn read16(&mut self, address: u32, sequential: bool) -> u16 {
         #[cfg(feature = "idle-loops")]
@@ -954,6 +1016,12 @@ impl Memory for Bus {
             self.check_key_irq();
         }
     }
+    fn write16_unaligned(&mut self, address: u32, value: u16, sequential: bool) {
+        self.write16(address, value, sequential);
+    }
+    fn write32_unaligned(&mut self, address: u32, value: u32, sequential: bool) {
+        self.write32(address, value, sequential);
+    }
     fn write16(&mut self, address: u32, value: u16, sequential: bool) {
         #[cfg(feature = "idle-loops")]
         {
@@ -984,6 +1052,13 @@ impl Memory for Bus {
             return;
         }
         let address = address & !1;
+        if address >> 24 == 4 && self.serial.write16((address & 0x3ff) as usize, value) {
+            self.serial.store_registers(&mut self.io);
+            return;
+        }
+        if self.rtc.write16(address, value) {
+            return;
+        }
         if self.put_ram(address, value.to_le_bytes()) {
             return;
         }
@@ -1020,6 +1095,16 @@ impl Memory for Bus {
             return;
         }
         let address = address & !3;
+        if self.rtc.write16(address, value as u16) {
+            self.rtc.write16(address + 2, (value >> 16) as u16);
+            return;
+        }
+        if address == 0x04000128 {
+            self.serial.write16(0x12a, (value >> 16) as u16);
+            self.serial.write16(0x128, value as u16);
+            self.serial.store_registers(&mut self.io);
+            return;
+        }
         if self.put_ram(address, value.to_le_bytes()) {
             return;
         }
@@ -1080,7 +1165,7 @@ mod memory_control_tests {
         b.write32(0x040000d4, 0x08300200, false);
         b.write32(0x040000d8, 0x02000000, false);
         b.write32(0x040000dc, 0x84000001, false);
-        assert!(b.dma_unit());
+        assert!(b.dma_transfer_unit());
         assert_eq!(b.peek32(0x02000000), 0xefbeadde);
         rom[0xac] = b'A';
         let normal = Bus::new(rom.clone(), None).unwrap();
@@ -1604,7 +1689,7 @@ mod tests {
         b.write32(0x040000d4, 0, false);
         b.write32(0x040000d8, 0x02000000, false);
         b.write32(0x040000dc, 0x84000001, false);
-        assert!(b.dma_unit());
+        assert!(b.dma_transfer_unit());
         assert_eq!(b.peek32(0x02000000), 0); // Fresh DMA latch, independent of the protected BIOS latch.
         assert!(b.bios_access);
         assert_eq!(b.bios_latch, 0x12345678);

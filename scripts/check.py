@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--roms", action="store_true", help="also check local ROM fixtures, graphics and boot diagnostics")
     parser.add_argument("--browser", action="store_true", help="run real headless Chromium against out/")
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--gba-jit", action="store_true", help="execute generated GBA WASM against the reference CPU")
     parser.add_argument("--target-dir", default=os.environ.get("CARGO_TARGET_DIR", "target"))
     args = parser.parse_args()
     node = shutil.which("node")
@@ -33,13 +34,24 @@ def main():
         cargo.append("--offline")
     subprocess.run(cargo + ["--workspace", "--lib", "--test", "ppu_strict"], cwd=ROOT, check=True)
     subprocess.run(cargo + ["-p", "rustboy-gba", "--test", "program"], cwd=ROOT, check=True)
-    subprocess.run(cargo + ["-p", "rustboy-gba", "--test", "eeprom"], cwd=ROOT, check=True)
+    subprocess.run(cargo + ["-p", "rustboy-gba", "--test", "eeprom", "--test", "local_link", "--test", "multiboot"], cwd=ROOT, check=True)
     subprocess.run(cargo + ["-p", "rustboy-gba", "--examples"], cwd=ROOT, check=True)
-    for test in ["tests/save_states.mjs", "tests/audio_queue.cjs", "tests/audio_worklet.cjs", "tests/rom_loader.mjs", "tests/library_rom.mjs", "tests/cartridge_inventory.mjs", "tests/controller_input.mjs", "tests/gba_render_profile_test.mjs"]:
+    for test in ["tests/battery_saves.mjs", "tests/gba_save_settings.mjs", "tests/gba_link.mjs", "tests/gba_link_rooms.mjs", "tests/gba_link_local.mjs", "tests/save_states.mjs", "tests/audio_queue.cjs", "tests/audio_worklet.cjs", "tests/rom_loader.mjs", "tests/library_rom.mjs", "tests/cartridge_inventory.mjs", "tests/controller_input.mjs", "tests/gba_render_profile_test.mjs"]:
         subprocess.run([node, test], cwd=ROOT, check=True)
     subprocess.run(["python3", "tests/build_web_test.py"], cwd=ROOT, check=True)
     subprocess.run(["python3", "tests/prepare_pages_test.py"], cwd=ROOT, check=True)
     subprocess.run(["python3", "tests/generate_romlist_test.py"], cwd=ROOT, check=True)
+    subprocess.run(["python3", "tests/gba_compatibility_test.py"], cwd=ROOT, check=True)
+    if args.gba_jit:
+        fixtures = ROOT / args.target_dir / "gba-jit-fixtures"
+        fixtures.mkdir(parents=True, exist_ok=True)
+        run = ["cargo", "run", "--locked", "--release", "--target-dir", args.target_dir, "-p", "rustboy-gba", "--features", "jit"]
+        if args.offline:
+            run.append("--offline")
+        for example in ["jit_verify", "jit_full_verify", "jit_regions_verify", "jit_ram_verify"]:
+            fixture = fixtures / f"{example}.jsonl"
+            subprocess.run(run + ["--example", example, "--", str(fixture)], cwd=ROOT, check=True)
+            subprocess.run([node, f"tests/{example}.mjs", str(fixture)], cwd=ROOT, check=True)
     if args.roms:
         cases = json.loads((ROOT / "tests/rom_cases.json").read_text())
         for case in cases:
@@ -63,6 +75,7 @@ def main():
         print("Known original fixture failures excluded from release gate:", ", ".join(case["name"] for case in exceptions), flush=True)
         subprocess.run(cargo + ["--test", "headless", "--test", "graphics", "--test", "boot_diagnostics", "--"] + filters, cwd=ROOT, check=True)
     if args.browser:
+        subprocess.run([node, "tests/gba_link_browser.mjs"], cwd=ROOT, check=True)
         subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT, check=True)
         subprocess.run([node, "tests/browser_smoke.mjs"], cwd=ROOT,
                        env={**os.environ, "RUSTBOY_PUBLIC_LIBRARY": "1", "RUSTBOY_NO_BOOT": "1"}, check=True)

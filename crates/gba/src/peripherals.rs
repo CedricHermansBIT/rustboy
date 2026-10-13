@@ -1,5 +1,5 @@
-//! Independently authored timer and DMA hardware. Scheduler dispatches complete
-//! transfer units; exact DMA startup/bus arbitration phase remains future work.
+//! Independently authored timer and DMA hardware. Startup and data units are
+//! separate scheduler events; bus arbitration within a data unit is approximate.
 use crate::{bus::Bus, cpu::Memory};
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -59,6 +59,7 @@ impl Bus {
             if control & 0x8000 == 0 {
                 self.dma[n].active = false;
                 self.dma[n].control = control;
+                self.dma_startup_mask &= !(1 << n);
             } else if !enabled_before {
                 let read_reg =
                     |index| u32::from_le_bytes(self.io[index..index + 4].try_into().unwrap());
@@ -91,6 +92,7 @@ impl Bus {
                     active: control >> 12 & 3 == 0,
                     first: true,
                 };
+                self.dma_startup_mask &= !(1 << n);
             } else {
                 self.dma[n].control = control;
             }
@@ -198,6 +200,7 @@ impl Bus {
                 channel.active = true;
                 channel.first = true;
                 self.dma_active |= 1 << n;
+                self.dma_startup_mask &= !(1 << n);
             }
         }
     }
@@ -214,6 +217,7 @@ impl Bus {
             d.active = true;
             d.first = true;
             self.dma_active |= 8;
+            self.dma_startup_mask &= !8;
         }
     }
     pub(crate) fn finish_capture_dma(&mut self) {
@@ -251,15 +255,20 @@ impl Bus {
         } else {
             2
         };
-        if d.first {
-            if n == 3 && width == 2 && self.eeprom_address(d.destination) {
-                self.backup.begin_eeprom(d.remaining);
-            }
+        if d.first && self.dma_startup_mask & (1 << n) == 0 {
+            // Let the machine advance timers, video/audio and serial before the
+            // first read/write. A higher-priority request arising during startup
+            // may therefore preempt this channel before it changes memory.
+            self.dma_startup_mask |= 1 << n;
             self.internal(if d.source >> 24 >= 8 && d.destination >> 24 >= 8 {
                 4
             } else {
                 2
             });
+            return true;
+        }
+        if d.first && n == 3 && width == 2 && self.eeprom_address(d.destination) {
+            self.backup.begin_eeprom(d.remaining);
         }
         // DMA cannot grant BIOS read access merely because the interrupted CPU
         // happens to be executing firmware.
@@ -282,7 +291,16 @@ impl Bus {
             1 => a.wrapping_sub(width),
             _ => a,
         };
-        d.source = move_address(d.source, d.control >> 7 & 3) & source_mask;
+        // The Game Pak ROM address generator increments despite fixed/decrement
+        // source-control bits. Preserve those readable bits in CNT_H. Independently
+        // measured mGBA DMA fixtures exercise this for DMA1/2/3, halfwords/words,
+        // immediate/HBlank triggers and a following undriven read of the DMA latch.
+        let source_mode = if (8..=13).contains(&(d.source >> 24)) {
+            0
+        } else {
+            d.control >> 7 & 3
+        };
+        d.source = move_address(d.source, source_mode) & source_mask;
         if !sound {
             d.destination = move_address(d.destination, d.control >> 5 & 3) & destination_mask;
         }
@@ -306,6 +324,9 @@ impl Bus {
     }
     fn refresh_dma_channel(&mut self, n: usize) {
         let bit = 1 << n;
+        if !self.dma[n].active || !self.dma[n].first {
+            self.dma_startup_mask &= !bit;
+        }
         self.dma_active = (self.dma_active & !bit) | if self.dma[n].active { bit } else { 0 };
         for mask in &mut self.dma_fifo {
             *mask &= !bit;
@@ -347,13 +368,171 @@ impl Bus {
             d.active = true;
             d.first = true;
             self.dma_active |= 1 << n;
+            self.dma_startup_mask &= !(1 << n);
         }
+    }
+    /// Tests about transfer semantics may drain the separate startup event without
+    /// needing a machine scheduler. Event-ordering tests call dma_unit directly.
+    #[cfg(test)]
+    pub(crate) fn dma_transfer_unit(&mut self) -> bool {
+        if !self.dma_unit() {
+            return false;
+        }
+        if self.dma_active != 0 {
+            let n = self.dma_active.trailing_zeros() as usize;
+            if self.dma[n].first && self.dma_startup_mask & (1 << n) != 0 {
+                return self.dma_unit();
+            }
+        }
+        true
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dma_startup_is_a_separate_event_without_memory_latch_irq_or_eeprom_effects() {
+        let mut b = bus();
+        b.write16(0x03000000, 0x1234, false);
+        b.write16(0x02000000, 0x5678, false);
+        b.dma_latch = 0xabcdef01;
+        configure(&mut b, 0, 0x03000000, 0x02000000, 1, 0xc000);
+        assert!(b.dma_unit());
+        assert_eq!(b.take_cycles(), 2);
+        assert_eq!(b.dma[0].remaining, 1);
+        assert!(b.dma[0].first);
+        assert!(b.dma[0].active);
+        assert_eq!(b.dma_startup_mask, 1);
+        assert_eq!(b.dma_latch, 0xabcdef01);
+        assert_eq!(b.peek16(0x02000000), 0x5678);
+        assert_eq!(b.io16(0x202) & 0x100, 0);
+        assert!(b.dma_unit());
+        assert_eq!(b.take_cycles(), 4);
+        assert_eq!(b.peek16(0x02000000), 0x1234);
+        assert_eq!(b.dma_startup_mask, 0);
+        assert_eq!(b.io16(0x202) & 0x100, 0x100);
+
+        b.backup = crate::backup::Backup::detect(b"EEPROM_V");
+        configure(&mut b, 3, 0x08000000, 0x0d000000, 9, 0x8000);
+        let initial = b.backup.eeprom.clone();
+        assert!(b.dma_unit());
+        assert_eq!(
+            b.take_cycles(),
+            4,
+            "both ends of Game Pak bus use four startup clocks"
+        );
+        assert_eq!(
+            b.backup.eeprom, initial,
+            "startup must not begin the EEPROM command"
+        );
+        assert!(b.dma_unit());
+        assert_eq!(b.backup.eeprom.expected, 9);
+        assert_eq!(b.backup.eeprom.input_len, 1);
+        assert_eq!(b.dma[3].remaining, 8);
+    }
+    #[test]
+    fn machine_dma_read_observes_timer_irq_which_arrives_during_startup() {
+        let mut m = crate::GameBoyAdvance::new(vec![0; 192], None).unwrap();
+        m.bus.write16(0x04000100, 0xfffe, false);
+        m.bus.write16(0x04000102, 0xc0, false);
+        configure(&mut m.bus, 0, 0x04000202, 0x02000000, 1, 0xc000);
+        let instructions = m.cpu.instructions;
+        assert_eq!(m.step(), 2);
+        assert_eq!(m.bus.io16(0x202), 8);
+        assert_eq!(m.bus.peek16(0x02000000), 0);
+        assert_eq!(m.step(), 4);
+        assert_eq!(m.bus.peek16(0x02000000), 8);
+        assert_eq!(m.bus.io16(0x202), 0x108);
+        assert_eq!(
+            m.cpu.instructions, instructions,
+            "CPU waits throughout DMA startup and transfer"
+        );
+    }
+    #[test]
+    fn hblank_priority_can_preempt_a_lower_channel_between_startup_and_first_word() {
+        let mut m = crate::GameBoyAdvance::new(vec![0; 192], None).unwrap();
+        m.bus.write16(0x03000000, 0x3333, false);
+        m.bus.write16(0x03000002, 0x1111, false);
+        m.bus.write16(0x02000000, 0x5555, false);
+        configure(&mut m.bus, 0, 0x03000002, 0x02000000, 1, 0xa000);
+        configure(&mut m.bus, 3, 0x03000000, 0x02000000, 1, 0x8000);
+        m.line_clocks = 1005;
+        m.clocks = 1005;
+        assert_eq!(m.step(), 2); // DMA3 startup crosses HBlank request.
+        assert_eq!(m.bus.peek16(0x02000000), 0x5555);
+        assert_eq!(m.bus.dma_active, 9);
+        assert_eq!(m.bus.dma_startup_mask, 8);
+        assert_eq!(m.step(), 2); // Higher-priority DMA0 startup.
+        assert_eq!(m.bus.dma_startup_mask, 9);
+        assert_eq!(m.step(), 4); // DMA0 data comes first.
+        assert_eq!(m.bus.peek16(0x02000000), 0x1111);
+        assert_eq!(m.bus.dma_startup_mask, 8);
+        assert_eq!(m.step(), 4); // DMA3 resumes without charging startup twice.
+        assert_eq!(m.bus.peek16(0x02000000), 0x3333);
+        assert_eq!(m.bus.dma_startup_mask, 0);
+        assert_eq!(m.clocks, 1017);
+    }
+    #[test]
+    fn snapshot_between_dma_startup_and_data_replays_without_charging_twice() {
+        use rustboy_emulator_api::Emulator;
+        let mut m = crate::GameBoyAdvance::new(vec![0; 192], None).unwrap();
+        m.bus.write16(0x04000100, 0xfffe, false);
+        m.bus.write16(0x04000102, 0xc0, false);
+        configure(&mut m.bus, 0, 0x04000202, 0x02000000, 1, 0xc000);
+        assert_eq!(m.step(), 2);
+        let saved = m.export_state();
+        assert_eq!(m.step(), 4);
+        let completed = m.export_state();
+        let mut restored = crate::GameBoyAdvance::new(vec![0; 192], None).unwrap();
+        restored.import_state(&saved).unwrap();
+        assert_eq!(restored.bus.dma_startup_mask, 1);
+        assert_eq!(restored.step(), 4);
+        assert_eq!(restored.export_state(), completed);
+        assert_eq!(restored.bus.peek16(0x02000000), 8);
+    }
+    #[test]
+    fn restarting_or_disabling_dma_does_not_reuse_an_old_startup_phase() {
+        let mut b = bus();
+        configure(&mut b, 0, 0x03000000, 0x02000000, 1, 0x8000);
+        assert!(b.dma_unit());
+        assert_eq!(b.dma_startup_mask, 1);
+        b.write16(0x040000ba, 0, false);
+        assert_eq!(b.dma_startup_mask, 0);
+        configure(&mut b, 0, 0x03000000, 0x02000000, 1, 0x8000);
+        assert!(b.dma_unit());
+        assert_eq!(b.take_cycles(), 2);
+        assert!(b.dma[0].first);
+    }
+    #[test]
+    fn cartridge_source_always_increments_without_changing_control_bits_or_retained_data() {
+        let words = [0x11111234u32, 0x22225678, 0x33339abc, 0x4444def0];
+        for n in 1..4 {
+            for source_control in [0x80u16, 0x100] {
+                for word in [false, true] {
+                    let mut b = bus();
+                    for (i, value) in words.into_iter().enumerate() {
+                        b.rom[i * 4..i * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                    }
+                    let control = 0x8040 | source_control | if word { 0x400 } else { 0 };
+                    configure(&mut b, n, 0x08000000, 0x03000000, 4, control);
+                    while b.dma_unit() {}
+                    assert_eq!(b.dma[n].source, 0x08000000 + if word { 16 } else { 8 });
+                    assert_eq!(b.io16(0xba + n * 12) & 0x180, source_control);
+                    let retained = if word { 0x4444def0 } else { 0x22222222 };
+                    assert_eq!(b.dma_latch, retained);
+                    if word {
+                        assert_eq!(b.peek32(0x03000000), retained);
+                    } else {
+                        assert_eq!(b.peek16(0x03000000), 0x2222);
+                    }
+                    configure(&mut b, n, 0x10, 0x03000004, 1, 0x8400);
+                    while b.dma_unit() {}
+                    assert_eq!(b.peek32(0x03000004), retained);
+                }
+            }
+        }
+    }
     #[test]
     fn fifo_request_cache_tracks_sound_reset_master_and_bios_dma_reset() {
         let mut b = bus();
@@ -374,7 +553,7 @@ mod tests {
         cpu.r[0] = 0x40;
         crate::bios::service(1, &mut cpu, &mut b).unwrap();
         assert_eq!(b.dma_ready, 0);
-        assert!(!b.dma_unit());
+        assert!(!b.dma_transfer_unit());
         b.write16(0x04000084, 0x80, false);
         assert_eq!(b.dma_ready, 2);
         configure(&mut b, 0, 0x03000000, 0x02000000, 1, 0x8000);
@@ -384,7 +563,7 @@ mod tests {
         assert_eq!(b.dma_active, 0);
         assert_eq!(b.dma_fifo, [0; 2]);
         assert_eq!(b.dma_ready, 0);
-        assert!(!b.dma_unit());
+        assert!(!b.dma_transfer_unit());
     }
     #[test]
     fn dma_derived_masks_track_enable_fifo_thresholds_completion_and_disable() {
@@ -416,7 +595,7 @@ mod tests {
         configure(&mut b, 1, 0x03000000, 0x040000a0, 1, 0xb200);
         configure(&mut b, 2, 0x03000000, 0x040000a4, 1, 0xb200);
         check(&b);
-        while b.dma_unit() {
+        while b.dma_transfer_unit() {
             check(&b);
         }
         assert_eq!(b.dma_active, 0);
@@ -425,7 +604,7 @@ mod tests {
         b.request_fifo_dma();
         assert_eq!(b.dma_active, 2);
         check(&b);
-        while b.dma_unit() {
+        while b.dma_transfer_unit() {
             check(&b);
         }
         assert_eq!(b.apu.fifo[0].len, 32);
@@ -486,7 +665,7 @@ mod tests {
         b.internal(30);
         assert_eq!(b.prefetch.count, 8);
         configure(&mut b, 0, 0x03000000, 0x02000000, 2, 0x8000);
-        while b.dma_unit() {
+        while b.dma_transfer_unit() {
             assert_eq!(b.prefetch, crate::prefetch::Prefetch::default());
         }
         b.take_cycles();
@@ -503,9 +682,9 @@ mod tests {
         for line in 0..162 {
             b.trigger_capture_dma(line);
             if line < 2 {
-                assert!(!b.dma_unit());
+                assert!(!b.dma_transfer_unit());
             } else {
-                assert!(b.dma_unit());
+                assert!(b.dma_transfer_unit());
                 assert!(!b.dma[3].active);
                 assert_eq!(
                     b.peek16(0x06000000 + u32::from(line - 2) * 2),
@@ -522,10 +701,10 @@ mod tests {
         assert_eq!(b.io16(0x202) & 0x800, 0); // No additional completion IRQ.
         for line in 162..228 {
             b.trigger_capture_dma(line);
-            assert!(!b.dma_unit());
+            assert!(!b.dma_transfer_unit());
         }
         b.trigger_capture_dma(2);
-        assert!(!b.dma_unit()); // Software must re-enable capture next frame.
+        assert!(!b.dma_transfer_unit()); // Software must re-enable capture next frame.
     }
     #[test]
     fn capture_obeys_nonrepeat_and_destination_reload() {
@@ -535,15 +714,15 @@ mod tests {
         }
         configure(&mut b, 3, 0x03000000, 0x06000000, 2, 0xb000);
         b.trigger_capture_dma(2);
-        while b.dma_unit() {}
+        while b.dma_transfer_unit() {}
         assert_eq!(b.io16(0xde) & 0x8000, 0);
         b.trigger_capture_dma(3);
-        assert!(!b.dma_unit());
+        assert!(!b.dma_transfer_unit());
         assert_eq!(b.peek16(0x06000004), 0);
         configure(&mut b, 3, 0x03000000, 0x06000000, 2, 0xb260);
         for line in [2, 3] {
             b.trigger_capture_dma(line);
-            while b.dma_unit() {}
+            while b.dma_transfer_unit() {}
             assert_eq!(b.dma[3].destination, 0x06000000);
         }
         assert_eq!(b.peek32(0x06000000), 0x000d000c);
@@ -559,8 +738,8 @@ mod tests {
         assert_eq!(b.dma.map(|d| d.active), [false, false, false, true]);
         b.finish_capture_dma(); // Stop requests, but drain the queued burst.
         assert!(b.dma[3].active);
-        assert!(b.dma_unit());
-        assert!(b.dma_unit());
+        assert!(b.dma_transfer_unit());
+        assert!(b.dma_transfer_unit());
         assert!(b.dma.iter().all(|d| !d.active));
         assert_eq!(b.io16(0xde), 0x3200);
         assert_eq!(b.dma[0].control, 0xb200);
@@ -590,7 +769,7 @@ mod tests {
         b.write8(0x040000ba, 0x40);
         b.write32(0x040000b0, 0x03000100, false); // Programmed, not latched.
         b.trigger_dma(2);
-        while b.dma_unit() {}
+        while b.dma_transfer_unit() {}
         assert_eq!(b.peek16(0x02000000), 0x5678);
         assert_eq!(b.peek16(0x02000002), 0);
         assert_eq!(b.dma[0].source, 0x03000004);
@@ -613,7 +792,7 @@ mod tests {
                     1,
                     if decrement { 0x84a0 } else { 0x8400 },
                 );
-                assert!(b.dma_unit());
+                assert!(b.dma_transfer_unit());
                 assert_eq!(
                     b.dma[n].source,
                     if decrement { source_mask & !3 } else { 0 }
@@ -631,9 +810,9 @@ mod tests {
         b.rom[..4].copy_from_slice(&0xdeadbeefu32.to_le_bytes());
         b.write32(0x070003fc, 0x12345678, false);
         configure(&mut b, 0, 0x07fffffc, 0x02000000, 2, 0x8400);
-        assert!(b.dma_unit());
+        assert!(b.dma_transfer_unit());
         assert_eq!(b.dma[0].source, 0);
-        assert!(b.dma_unit());
+        assert!(b.dma_transfer_unit());
         assert_eq!(b.peek32(0x02000000), 0x12345678);
         assert_eq!(b.peek32(0x02000004), 0x12345678); // Wrapped source retains DMA data; it cannot read BIOS or ROM.
     }
@@ -657,16 +836,16 @@ mod tests {
         configure(&mut b, 2, 0x04000016, 0x04000012, 1, 0xa340);
         for expected in [9, 31] {
             b.trigger_dma(2);
-            assert!(b.dma_unit());
+            assert!(b.dma_transfer_unit());
             assert_eq!(b.io16(0x16), expected);
-            assert!(b.dma_unit());
+            assert!(b.dma_transfer_unit());
             assert_eq!(
                 b.io16(0x12),
                 expected,
                 "DMA2 must observe DMA1's value, not zero or CPU prefetch"
             );
             assert_eq!(b.dma_latch, u32::from(expected) * 0x10001);
-            assert!(!b.dma_unit());
+            assert!(!b.dma_transfer_unit());
         }
         assert_eq!(
             b.peek16(0x04000016),
@@ -679,28 +858,28 @@ mod tests {
         let mut b = bus();
         b.write32(0x02000000, 0x12345678, false);
         configure(&mut b, 3, 0x02000000, 0x03000000, 1, 0x8400);
-        assert!(b.dma_unit());
+        assert!(b.dma_transfer_unit());
         assert_eq!(b.dma_latch, 0x12345678);
         b.read32(0x03000004, false); // CPU/debug read must not change DMA's register.
         for source in [
             0, 0x00003ffc, 0x04000010, 0x040003fc, 0x01000000, 0x10000000,
         ] {
             configure(&mut b, 0, source, 0x03000004, 2, 0x8500);
-            assert!(b.dma_unit());
-            assert!(b.dma_unit());
+            assert!(b.dma_transfer_unit());
+            assert!(b.dma_transfer_unit());
             assert_eq!(b.peek32(0x03000004), 0x12345678);
             assert_eq!(b.peek32(0x03000008), 0x12345678);
             assert_eq!(b.dma_latch, 0x12345678);
         }
         b.write16(0x02000000, 0x9abc, false);
         configure(&mut b, 1, 0x02000000, 0x03000000, 1, 0x8000);
-        assert!(b.dma_unit());
+        assert!(b.dma_transfer_unit());
         configure(&mut b, 2, 0, 0x03000004, 1, 0x8500);
-        assert!(b.dma_unit());
+        assert!(b.dma_transfer_unit());
         assert_eq!(b.peek32(0x03000004), 0x9abc9abc);
         // A driven mixed I/O word retains zero in its write-only halfword.
         configure(&mut b, 3, 0x040000dc, 0x03000004, 1, 0x8400);
-        assert!(b.dma_unit());
+        assert!(b.dma_transfer_unit());
         assert_eq!(b.peek32(0x03000004), 0x84000000);
     }
     #[test]
@@ -712,18 +891,18 @@ mod tests {
         }
         configure(&mut b, 1, 0x02000000, 0x040000a0, 1, 0xb200);
         for _ in 0..8 {
-            assert!(b.dma_unit());
+            assert!(b.dma_transfer_unit());
         }
-        assert!(!b.dma_unit());
+        assert!(!b.dma_transfer_unit());
         assert_eq!(b.apu.fifo[0].len, 32);
         assert_eq!(b.apu.fifo[0].data, std::array::from_fn(|i| i as i8));
         assert_eq!(b.dma[1].source, 0x02000020);
         assert_eq!(b.dma[1].destination, 0x040000a0);
         b.clock_direct_sound([16, 0, 0, 0]);
         for _ in 0..4 {
-            assert!(b.dma_unit());
+            assert!(b.dma_transfer_unit());
         }
-        assert!(!b.dma_unit());
+        assert!(!b.dma_transfer_unit());
         assert_eq!(b.apu.fifo[0].len, 32);
         assert_eq!(b.dma[1].source, 0x02000030);
     }
@@ -844,11 +1023,11 @@ mod tests {
         b.write32(0x02000004, 0x12345678, false);
         configure(&mut b, 3, 0x02000000, 0x03000000, 2, 0xc400);
         assert_eq!(b.peek32(0x040000d4), 0);
-        assert!(b.dma_unit());
+        assert!(b.dma_transfer_unit());
         assert_eq!(b.take_cycles(), 9);
         assert_eq!(b.peek32(0x03000000), 0xdeadbeef);
-        assert!(b.dma_unit());
-        assert!(!b.dma_unit());
+        assert!(b.dma_transfer_unit());
+        assert!(!b.dma_transfer_unit());
         assert_eq!(b.peek32(0x03000004), 0x12345678);
         assert_eq!(b.io16(0xde) & 0x8000, 0);
         assert_eq!(b.io16(0x202), 1 << 11);
@@ -858,7 +1037,7 @@ mod tests {
         let mut b = bus();
         b.write16(0x03000000, 0xabcd, false);
         configure(&mut b, 0, 0x03000000, 0x02000004, 3, 0x8120);
-        while b.dma_unit() {}
+        while b.dma_transfer_unit() {}
         for address in [0x02000000, 0x02000002, 0x02000004] {
             assert_eq!(b.peek16(address), 0xabcd);
         }
@@ -870,22 +1049,22 @@ mod tests {
             b.write16(0x03000000 + i * 2, (10 + i) as u16, false);
         }
         configure(&mut b, 0, 0x03000000, 0x02000000, 2, 0xa260);
-        assert!(!b.dma_unit());
+        assert!(!b.dma_transfer_unit());
         b.trigger_dma(1);
-        assert!(!b.dma_unit());
+        assert!(!b.dma_transfer_unit());
         b.trigger_dma(2);
-        while b.dma_unit() {}
+        while b.dma_transfer_unit() {}
         assert_eq!(b.peek16(0x02000000), 10);
         assert_eq!(b.peek16(0x02000002), 11);
         b.write32(0x040000b0, 0x03000100, false);
         b.trigger_dma(2);
-        while b.dma_unit() {}
+        while b.dma_transfer_unit() {}
         assert_eq!(b.peek16(0x02000000), 12);
         assert_eq!(b.peek16(0x02000002), 13);
         assert_ne!(b.io16(0xba) & 0x8000, 0);
         b.write16(0x040000ba, 0, false);
         b.trigger_dma(2);
-        assert!(!b.dma_unit());
+        assert!(!b.dma_transfer_unit());
     }
     #[test]
     fn dma_priority_and_zero_count() {
@@ -894,7 +1073,7 @@ mod tests {
         assert_eq!(b.dma[3].remaining, 65536);
         configure(&mut b, 0, 0x03000000, 0x02000000, 0, 0x8000);
         assert_eq!(b.dma[0].remaining, 16384);
-        b.dma_unit();
+        b.dma_transfer_unit();
         assert_eq!(b.dma[0].remaining, 16383);
         assert_eq!(b.dma[3].remaining, 65536);
     }

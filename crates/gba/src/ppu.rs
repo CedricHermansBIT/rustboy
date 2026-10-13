@@ -604,6 +604,18 @@ fn compose_line<const TRACK: bool>(
         return;
     }
     let row = &mut pixels[line as usize * 240 * 4..(line as usize + 1) * 240 * 4];
+    compose_row(bus, line, row, affine);
+}
+pub(crate) fn render_row(bus: &Bus, line: u16, row: &mut [u8]) {
+    let graphics = Graphics::<false>::new(bus);
+    compose_row(&graphics, line, row, bus.affine);
+}
+fn compose_row<const TRACK: bool>(
+    bus: &Graphics<'_, TRACK>,
+    line: u16,
+    row: &mut [u8],
+    affine: Affine,
+) {
     let display = bus.io16(0);
     let mode = display & 7;
     if display & 0x80 != 0 {

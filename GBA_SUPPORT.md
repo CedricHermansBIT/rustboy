@@ -1,9 +1,14 @@
 # Game Boy Advance development
 
-SGB optimization work is on hold. The existing GB/CGB/SGB browser backend is
-unchanged. `crates/gba` is a new, independently authored **headless development
-backend**, not a claim of playable GBA support. No other emulator implementation,
-commercial game, or Nintendo firmware is included.
+`crates/gba` is an independently authored development backend, available in the
+browser and headless runners. It is playable for tested scenes but not yet a
+stable or fully cycle-accurate GBA emulator. No other emulator implementation,
+commercial cartridge or Nintendo firmware is included.
+
+See [the current stability gate](GBA_STABILITY.md),
+[BIOS coverage](GBA_BIOS_COMPATIBILITY.md), [timing work](GBA_TIMING_ROADMAP.md)
+and [cross-device link support](GBA_LINK.md). The sections below retain the
+history of earlier implementation milestones and their validation results.
 
 ## First milestone
 

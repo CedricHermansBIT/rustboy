@@ -1,8 +1,10 @@
 //! Original MP2k sequence parser for BIOS music-player services. State uses the
 //! public player/track/channel RAM ABI; commands follow VGMDocs' format reference.
-//! PCM instruments are supported. Cartridge extensions and PSG synthesis hooks
-//! execute on the guest CPU; undocumented jump-list helper slots fail explicitly.
+//! PCM and PSG instruments are supported. Cartridge hooks execute on the guest
+//! CPU; an original MMIO driver supplies PSG output when no cartridge hook exists.
 use super::{area, mode, ram, Bus, Cpu, Memory, IDENT, PLAYER};
+#[path = "bios_psg.rs"]
+mod psg;
 const PAUSED: u32 = 0x80000000;
 
 fn valid(bus: &Bus, p: u32) -> bool {
@@ -21,8 +23,7 @@ fn release(bus: &mut Bus, t: u32, key: Option<u8>) {
     if !ram(bus, a, super::AREA_BYTES) {
         return;
     }
-    for i in 0..12 {
-        let c = a + 0x50 + i * 0x40;
+    for c in channels(bus, a).into_iter().filter(|c| *c != 0) {
         if bus.peek32(c + 0x2c) == t && key.is_none_or(|k| bus.peek8(c + 0x11) == k) {
             let s = bus.peek8(c);
             if s != 0 {
@@ -30,6 +31,21 @@ fn release(bus: &mut Bus, t: u32, key: Option<u8>) {
             }
         }
     }
+}
+// The optional cartridge CgbChannel ABI uses four more channel records. Native
+// HLE without those records shares free software-channel records; all continuation
+// state remains guest RAM and survives snapshots without a host-only extension.
+fn channels(bus: &Bus, a: u32) -> [u32; 16] {
+    let cgb = bus.peek32(a + 0x1c);
+    std::array::from_fn(|i| {
+        if i < 12 {
+            a + 0x50 + i as u32 * 0x40
+        } else if ram(bus, cgb, 0x100) {
+            cgb + (i as u32 - 12) * 0x40
+        } else {
+            0
+        }
+    })
 }
 fn init_track(bus: &mut Bus, t: u32) {
     release(bus, t, None);
@@ -121,6 +137,7 @@ pub(super) fn service(n: u8, cpu: &mut Cpu, bus: &mut Bus) -> Result<(), &'stati
             bus.write16(p + 0x24, cpu.r[1] as u16, false);
             bus.write16(p + 0x26, cpu.r[1] as u16, false);
             bus.write16(p + 0x28, 256, false);
+            cpu.r[1] = 256;
         }
         _ => unreachable!(),
     }
@@ -169,27 +186,9 @@ fn player(bus: &mut Bus, p: u32) -> Result<(), &'static str> {
         return Ok(());
     }
     let (tracks, count) = tracks(bus, p)?;
-    let interval = bus.peek16(p + 0x24);
-    if interval != 0 {
-        let countdown = bus.peek16(p + 0x26).saturating_sub(1);
-        bus.write16(p + 0x26, countdown, false);
-        if countdown == 0 {
-            bus.write16(p + 0x26, interval, false);
-            let fade = bus.peek16(p + 0x28).saturating_sub(16);
-            bus.write16(p + 0x28, fade, false);
-            for i in 0..count {
-                let t = tracks + u32::from(i) * 0x50;
-                bus.write8(t + 0x13, (fade >> 2) as u8);
-                if fade == 0 {
-                    release(bus, t, None);
-                    bus.write8(t, 0);
-                }
-            }
-            if fade == 0 {
-                bus.write32(p + 4, PAUSED, false);
-                return Ok(());
-            }
-        }
+    fade(bus, p)?;
+    if bus.peek32(p + 4) & PAUSED != 0 {
+        return Ok(());
     }
     let accumulated = u32::from(bus.peek16(p + 0x22)) + u32::from(bus.peek16(p + 0x20));
     let ticks = accumulated / 150;
@@ -224,13 +223,41 @@ fn player(bus: &mut Bus, p: u32) -> Result<(), &'static str> {
     bus.write32(p + 4, if status == 0 { PAUSED } else { status }, false);
     Ok(())
 }
+fn fade(bus: &mut Bus, p: u32) -> Result<(), &'static str> {
+    if !valid(bus, p) {
+        return Ok(());
+    }
+    let (tracks, count) = tracks(bus, p)?;
+    let interval = bus.peek16(p + 0x24);
+    if interval != 0 {
+        let countdown = bus.peek16(p + 0x26).saturating_sub(1);
+        bus.write16(p + 0x26, countdown, false);
+        if countdown == 0 {
+            bus.write16(p + 0x26, interval, false);
+            let fade = bus.peek16(p + 0x28).saturating_sub(16);
+            bus.write16(p + 0x28, fade, false);
+            for i in 0..count {
+                let t = tracks + u32::from(i) * 0x50;
+                bus.write8(t + 0x13, (fade >> 2) as u8);
+                if fade == 0 {
+                    release(bus, t, None);
+                    bus.write8(t, 0);
+                }
+            }
+            if fade == 0 {
+                bus.write32(p + 4, PAUSED, false);
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
 fn gate(bus: &mut Bus, t: u32) {
     let a = bus.peek32(super::GLOBAL);
     if !ram(bus, a, super::AREA_BYTES) {
         return;
     }
-    for i in 0..12 {
-        let c = a + 0x50 + i * 0x40;
+    for c in channels(bus, a).into_iter().filter(|c| *c != 0) {
         if bus.peek8(c) != 0 && bus.peek32(c + 0x2c) == t {
             let time = bus.peek8(c + 0x10);
             if time != 0 {
@@ -355,11 +382,17 @@ fn command(bus: &mut Bus, cmd: u8, p: u32, t: u32) -> Result<(), &'static str> {
         }
         0xcd => {
             let sub = take(bus, t);
-            let value = take(bus, t);
             match sub {
-                8 => bus.write8(t + 0x1e, value),
-                9 => bus.write8(t + 0x1f, value),
-                _ => return Err("BIOS music extended command not implemented"),
+                1 => {
+                    let wave = word(bus, t);
+                    bus.write32(t + 0x28, wave, false);
+                }
+                2 => argument(bus, t, 0x24),
+                4..=7 => argument(bus, t, 0x2c + u32::from(sub - 4)),
+                8..=9 => argument(bus, t, 0x1e + u32::from(sub - 8)),
+                10 => argument(bus, t, 0x26),
+                11 => argument(bus, t, 0x27),
+                _ => return Err("BIOS music extended command has no documented ABI"),
             }
         }
         0xce => {
@@ -449,19 +482,44 @@ pub(super) fn note(bus: &mut Bus, index: u8, p: u32, t: u32) -> Result<(), &'sta
             .peek32(tone.wrapping_add(4))
             .wrapping_add(u32::from(mapping) * 12);
     }
-    if bus.peek8(tone) & 7 != 0 {
-        return Err("BIOS sequencer PSG instruments require a cartridge PSG driver");
+    let physical = bus.peek8(tone) & 7;
+    if physical > 4 {
+        return Err("BIOS music PSG channel type is invalid");
     }
     let count = bus.peek8(a + 6).min(12);
     let priority = bus.peek8(p + 9).saturating_add(bus.peek8(t + 0x1d));
     let mut selected = None;
+    if physical != 0 {
+        let cgb = bus.peek32(a + 0x1c);
+        if ram(bus, cgb, 0x100) {
+            let c = cgb + u32::from(physical - 1) * 0x40;
+            if bus.peek8(c) != 0 && bus.peek8(c + 0x13) > priority {
+                return Ok(());
+            }
+            selected = Some(c);
+        } else {
+            for c in channels(bus, a).into_iter().take(12) {
+                if bus.peek8(c) != 0 && bus.peek8(c + 1) & 7 == physical {
+                    if bus.peek8(c + 0x13) > priority {
+                        return Ok(());
+                    }
+                    selected = Some(c);
+                    break;
+                }
+            }
+        }
+    }
     for i in 0..count {
+        if selected.is_some() && physical != 0 {
+            break;
+        }
         let c = a + 0x50 + u32::from(i) * 0x40;
         if bus.peek8(c) == 0 {
             selected = Some(c);
             break;
         }
-        if bus.peek8(c + 0x13) <= priority
+        if bus.peek8(c + 1) & 7 == 0
+            && bus.peek8(c + 0x13) <= priority
             && selected.is_none_or(|old| bus.peek8(c + 0x13) < bus.peek8(old + 0x13))
         {
             selected = Some(c);
@@ -485,11 +543,26 @@ pub(super) fn note(bus: &mut Bus, index: u8, p: u32, t: u32) -> Result<(), &'sta
         },
     );
     bus.write8(c + 0x11, key);
+    if kind & 0x80 != 0 || physical != 0 && bus.peek8(tone) & 8 != 0 {
+        // Rhythm and fixed-pitch PSG tones carry their own translated note key.
+        // MIDI key stays in +11h so EOT can still match the sequence's key.
+        bus.write8(c + 0xe, 1);
+        bus.write8(c + 0xf, bus.peek8(tone + 1));
+    }
+    if kind & 0x80 != 0 {
+        bus.write8(c + 0x14, bus.peek8(tone + 3));
+    }
     bus.write8(c + 0x12, bus.peek8(t + 6));
     bus.write8(c + 0x13, priority);
     bus.write8(c + 12, bus.peek8(t + 0x1e));
     bus.write8(c + 13, bus.peek8(t + 0x1f));
     bus.write32(c + 0x24, bus.peek32(tone.wrapping_add(4)), false);
+    if physical != 0 {
+        bus.write8(c + 0x1c, 0x11 << (physical - 1));
+        bus.write8(c + 0x1d, 3); // cartridge CgbSound volume/pitch modification flags
+        bus.write8(c + 0x1e, bus.peek8(tone + 2));
+        bus.write8(c + 0x1f, bus.peek8(tone + 3));
+    }
     bus.write32(c + 0x2c, t, false);
     // Keep the ABI's doubly linked channel list usable by cartridge extensions.
     let old = bus.peek32(t + 0x20);
@@ -537,36 +610,64 @@ fn update_voices(bus: &mut Bus, p: u32, t: u32) {
             ((triangle * i16::from(bus.peek8(t + 0x17))) >> 6) as u8,
         );
     }
+    refresh_voices(bus, p, t);
+}
+fn refresh_voices(bus: &mut Bus, p: u32, t: u32) {
+    track_parameters(bus, t);
     let Some(a) = sound_area_locked(bus) else {
         return;
     };
-    for i in 0..12 {
-        let c = a + 0x50 + i * 0x40;
+    for c in channels(bus, a).into_iter().filter(|c| *c != 0) {
         if bus.peek8(c) != 0 && bus.peek32(c + 0x2c) == t {
             update_voice(bus, p, t, c);
         }
     }
 }
-fn update_voice(bus: &mut Bus, _p: u32, t: u32, c: u32) {
+fn track_parameters(bus: &mut Bus, t: u32) -> (i32, i32, i32) {
     let modulation = i32::from(bus.peek8(t + 0x16) as i8);
     let mod_type = bus.peek8(t + 0x18);
-    let volume = (i32::from(bus.peek8(t + 0x12)) * (i32::from(bus.peek8(t + 0x13)))).max(0) / 64;
+    let volume = (i32::from(bus.peek8(t + 0x12)) * i32::from(bus.peek8(t + 0x13))) / 64;
     let volume = (volume + if mod_type == 1 { modulation } else { 0 }).clamp(0, 127);
-    let volume = volume * i32::from(bus.peek8(c + 0x12)) / 128;
     let pan = (i32::from(bus.peek8(t + 0x14) as i8)
         + i32::from(bus.peek8(t + 0x15) as i8)
         + if mod_type == 2 { modulation } else { 0 })
     .clamp(-64, 63);
-    bus.write8(c + 2, ((volume * (64 + pan)) >> 6).clamp(0, 255) as u8);
-    bus.write8(c + 3, ((volume * (64 - pan)) >> 6).clamp(0, 255) as u8);
-    let key = i32::from(bus.peek8(c + 0x11))
-        + i32::from(bus.peek8(t + 0xa) as i8)
-        + i32::from(bus.peek8(t + 0xb) as i8);
-    let pitch = i32::from(bus.peek8(t + 0xc) as i8) * 4
+    let pitch = (i32::from(bus.peek8(t + 0xa) as i8) + i32::from(bus.peek8(t + 0xb) as i8)) * 256
+        + i32::from(bus.peek8(t + 0xc) as i8) * 4
+        + i32::from(bus.peek8(t + 0xd))
         + i32::from(bus.peek8(t + 0xe) as i8) * i32::from(bus.peek8(t + 0xf)) * 4
         + if mod_type == 0 { modulation * 16 } else { 0 };
-    let pitch = (key * 256 + pitch).clamp(0, 178 * 256);
+    bus.write8(t + 8, (pitch >> 8) as u8);
+    bus.write8(t + 9, pitch as u8);
+    bus.write8(t + 0x10, ((volume * (64 + pan)) >> 6).clamp(0, 255) as u8);
+    bus.write8(t + 0x11, ((volume * (64 - pan)) >> 6).clamp(0, 255) as u8);
+    (volume, pan, pitch)
+}
+fn update_voice(bus: &mut Bus, _p: u32, t: u32, c: u32) {
+    let (volume, pan, relative_pitch) = track_parameters(bus, t);
+    let volume = volume * i32::from(bus.peek8(c + 0x12)) / 128;
+    let rhythm_pan = bus.peek8(c + 0x14);
+    let pan = (pan
+        + if rhythm_pan & 0x80 != 0 {
+            i32::from(rhythm_pan & 0x7f) - 64
+        } else {
+            0
+        })
+    .clamp(-64, 63);
+    bus.write8(c + 2, ((volume * (64 + pan)) >> 6).clamp(0, 255) as u8);
+    bus.write8(c + 3, ((volume * (64 - pan)) >> 6).clamp(0, 255) as u8);
+    let note_key = if bus.peek8(c + 0xe) != 0 {
+        bus.peek8(c + 0xf)
+    } else {
+        bus.peek8(c + 0x11)
+    };
+    let pitch = (i32::from(note_key) * 256 + relative_pitch).clamp(0, 178 * 256);
     bus.write8(c + 8, (pitch >> 8) as u8);
+    if bus.peek8(c + 1) & 7 != 0 {
+        bus.write32(c + 0x20, psg::frequency(bus.peek8(c + 1) & 7, pitch), false);
+        bus.write8(c + 0x1d, bus.peek8(c + 0x1d) | 3);
+        return;
+    }
     let wave = bus.peek32(c + 0x24);
     let freq = super::super::math::midi_frequency(
         bus.peek32(wave.wrapping_add(4)),
@@ -576,11 +677,43 @@ fn update_voice(bus: &mut Bus, _p: u32, t: u32, c: u32) {
     bus.write32(c + 0x20, freq, false);
 }
 pub(super) fn jump(bus: &mut Bus, index: u8, cpu: &mut Cpu) -> Result<(), &'static str> {
-    if index < 30 {
-        command(bus, 0xb1 + index, cpu.r[0], cpu.r[1])
-    } else {
-        Err("BIOS sound jump-list extension helper not implemented")
+    match index {
+        0..=29 => command(bus, 0xb1 + index, cpu.r[0], cpu.r[1]),
+        30 => {
+            if let Some(a) = area(bus) {
+                // SampleFreqSet receives SOUND_MODE_FREQ's shifted bit field.
+                super::frequency(bus, a, ((cpu.r[0] >> 16) & 15) as u8)?;
+            }
+            Ok(())
+        }
+        31 => {
+            if ram(bus, cpu.r[1], 0x50) {
+                release(bus, cpu.r[1], None);
+                bus.write8(cpu.r[1], 0);
+            }
+            Ok(())
+        }
+        32 => fade(bus, cpu.r[0]),
+        33 => {
+            if valid(bus, cpu.r[0]) && ram(bus, cpu.r[1], 0x50) {
+                refresh_voices(bus, cpu.r[0], cpu.r[1]);
+            }
+            Ok(())
+        }
+        _ => Err("BIOS sound jump-list helper has no documented ABI"),
     }
+}
+pub(super) fn native_psg(bus: &mut Bus, a: u32) {
+    if bus.peek32(a + 0x28) == (super::STUB | 1) {
+        for c in channels(bus, a).into_iter().filter(|c| *c != 0) {
+            if bus.peek8(c) != 0 && bus.peek8(c + 1) & 7 != 0 {
+                psg::update(bus, c);
+            }
+        }
+    }
+}
+pub(super) fn stop_psg(bus: &mut Bus, kind: u8) {
+    psg::stop(bus, kind);
 }
 
 #[cfg(test)]
@@ -744,5 +877,165 @@ mod tests {
         }
         memacc(&mut b, P, T).unwrap();
         assert_eq!(b.peek32(T + 0x40), target);
+    }
+    #[test]
+    fn native_psg_instruments_sound_and_gate_off_without_a_cartridge_driver() {
+        for kind in 1..=4u8 {
+            let (mut cpu, mut b) = setup(&[0xbd, 0, 0xbe, 127, 0xd0, 69, 127, 0x84, 0xb1]);
+            b.write8(TONES, kind);
+            b.write32(TONES + 4, if kind == 3 { WAVE } else { 2 }, false);
+            for (i, value) in [0, 0, 15, 0].into_iter().enumerate() {
+                b.write8(TONES + 8 + i as u32, value);
+            }
+            for i in 0..16 {
+                b.write8(WAVE + i, if i < 8 { 0xff } else { 0 });
+            }
+            pass(&mut b);
+            let c = A + 0x50;
+            assert_eq!(b.peek8(c + 1) & 7, kind);
+            assert_ne!(b.peek8(0x04000084) & (1 << (kind - 1)), 0);
+            assert_ne!(b.io16(0x80) & (0x1100 << (kind - 1)), 0);
+            let mut clocks = 65536;
+            while clocks != 0 {
+                let tick = clocks.min(b.apu.deadline());
+                b.clock_audio(tick);
+                clocks -= tick;
+            }
+            assert!(b.apu.samples.iter().flatten().all(|v| v.is_finite()));
+            assert!(b.apu.samples.iter().flatten().any(|v| v.abs() > 0.001));
+            pass(&mut b);
+            assert_eq!(b.peek8(c), 0, "gate releases PSG type {kind}");
+            assert_eq!(b.peek8(0x04000084) & (1 << (kind - 1)), 0);
+            cpu.r[0] = A;
+            super::super::service(0x1e, &mut cpu, &mut b).unwrap();
+        }
+    }
+    #[test]
+    fn psg_priority_preemption_and_guest_hook_abi_preserve_pcm_capacity() {
+        let (_, mut b) = setup(&[0xbd, 0, 0xbe, 127, 0xcf, 69, 127, 0xb0]);
+        let cgb = 0x0200a000;
+        b.write32(A + 0x1c, cgb, false);
+        b.write32(A + 0x28, 0x08001235, false); // guest handles PSG updates
+        b.write8(TONES, 2);
+        b.write32(TONES + 4, 3, false);
+        pass(&mut b);
+        let c = cgb + 0x40;
+        assert_eq!(b.peek8(c), 0x80);
+        assert_eq!(b.peek8(c + 0x1d), 3);
+        assert_eq!(b.peek32(T + 0x20), c);
+        assert_eq!(
+            b.peek8(A + 0x50),
+            0,
+            "dedicated PSG record preserves PCM slots"
+        );
+        assert_eq!(
+            b.peek8(0x04000084) & 2,
+            0,
+            "guest hook owns hardware writes"
+        );
+        b.write8(c + 0x13, 100);
+        b.write32(T + 0x40, STREAM + 6, false);
+        b.write8(T + 0x1d, 10);
+        let old_key = b.peek8(c + 0x11);
+        note(&mut b, 1, P, T).unwrap();
+        assert_eq!(b.peek8(c + 0x11), old_key);
+        assert_eq!(
+            b.peek8(c + 0x13),
+            100,
+            "lower-priority note cannot steal PSG"
+        );
+        release(&mut b, T, Some(old_key));
+        assert_ne!(b.peek8(c) & 0x40, 0);
+    }
+    #[test]
+    fn extended_instrument_commands_consume_their_exact_widths() {
+        let (_, mut b) = setup(&[0x80]);
+        let wave = 0x02001234u32;
+        for (sub, payload, expected_offset) in [
+            (1, wave.to_le_bytes().to_vec(), 0x28),
+            (2, vec![8], 0x24),
+            (4, vec![24], 0x2c),
+            (5, vec![25], 0x2d),
+            (6, vec![26], 0x2e),
+            (7, vec![27], 0x2f),
+            (8, vec![32], 0x1e),
+            (9, vec![33], 0x1f),
+            (10, vec![41], 0x26),
+            (11, vec![42], 0x27),
+        ] {
+            b.write32(T + 0x40, STREAM, false);
+            b.write8(STREAM, sub);
+            for (i, value) in payload.iter().copied().enumerate() {
+                b.write8(STREAM + 1 + i as u32, value);
+            }
+            command(&mut b, 0xcd, P, T).unwrap();
+            assert_eq!(b.peek32(T + 0x40), STREAM + 1 + payload.len() as u32);
+            if sub == 1 {
+                assert_eq!(b.peek32(T + expected_offset), wave);
+            } else {
+                assert_eq!(b.peek8(T + expected_offset), payload[0]);
+            }
+        }
+        b.write32(T + 0x40, STREAM, false);
+        b.write8(STREAM, 0x7f);
+        assert!(command(&mut b, 0xcd, P, T).is_err());
+    }
+    #[test]
+    fn documented_jump_helpers_configure_rate_stop_fade_and_refresh_without_lfo_tick() {
+        let (mut cpu, mut b) = setup(&[0xbd, 0, 0xbe, 127, 0xcf, 60, 127, 0xb0]);
+        pass(&mut b);
+        cpu.r[0] = 0x00030000;
+        jump(&mut b, 30, &mut cpu).unwrap();
+        assert_eq!(b.peek32(A + 0x10), 176);
+        cpu.r[0] = P;
+        cpu.r[1] = T;
+        let phase = b.peek8(T + 0x1a);
+        jump(&mut b, 33, &mut cpu).unwrap();
+        assert_eq!(b.peek8(T + 0x1a), phase);
+        jump(&mut b, 31, &mut cpu).unwrap();
+        assert_eq!(b.peek8(T), 0);
+        assert_ne!(b.peek8(A + 0x50) & 0x40, 0);
+        b.write8(T, 0x80);
+        b.write16(P + 0x24, 2, false);
+        b.write16(P + 0x26, 1, false);
+        jump(&mut b, 32, &mut cpu).unwrap();
+        assert_eq!(b.peek16(P + 0x28), 240);
+        assert_eq!(b.peek8(T + 0x13), 60);
+        assert!(jump(&mut b, 34, &mut cpu).is_err());
+    }
+    #[test]
+    fn native_psg_snapshot_replays_song_envelopes_and_audio_over_many_frames() {
+        use rustboy_emulator_api::Emulator;
+        let (_, mut b) = setup(&[0xbd, 0, 0xbe, 127, 0xcf, 69, 127, 0xb0, 0xb1]);
+        b.write8(TONES, 1);
+        b.write32(TONES + 4, 2, false);
+        for (i, value) in [1, 2, 8, 2].into_iter().enumerate() {
+            b.write8(TONES + 8 + i as u32, value);
+        }
+        let mut original = crate::GameBoyAdvance::new(b.rom.clone(), None).unwrap();
+        original.bus = b;
+        pass(&mut original.bus);
+        original.bus.take_cycles();
+        let saved = original.export_state();
+        let mut restored = crate::GameBoyAdvance::new(original.bus.rom.clone(), None).unwrap();
+        restored.import_state(&saved).unwrap();
+        for _ in 0..120 {
+            for m in [&mut original, &mut restored] {
+                pass(&mut m.bus);
+                let mut clocks = crate::FRAME_CYCLES;
+                while clocks != 0 {
+                    let tick = clocks.min(m.bus.apu.deadline());
+                    m.bus.clock_audio(tick);
+                    clocks -= tick;
+                }
+                m.bus.take_cycles();
+            }
+            assert_eq!(original.bus.apu.samples, restored.bus.apu.samples);
+            original.bus.apu.samples.clear();
+            restored.bus.apu.samples.clear();
+            assert_eq!(original.export_state(), restored.export_state());
+        }
+        assert_eq!(original.bus.peek8(A + 0x50), 0);
+        assert_eq!(original.bus.peek8(0x04000084) & 1, 0);
     }
 }

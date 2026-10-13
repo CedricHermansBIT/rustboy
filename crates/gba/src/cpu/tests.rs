@@ -61,6 +61,98 @@ fn cpu() -> Cpu {
     c
 }
 #[test]
+fn halfword_word_stores_keep_source_byte_lanes_on_the_eight_bit_save_bus() {
+    // GBATEK Game Pak SRAM: STRH/STR place the addressed source byte on its
+    // eight-bit bus. Independent jsmolka SRAM tests exercise the same contract.
+    for (thumb, opcode, width) in [
+        (false, 0xe1c100b0u32, 2u32), // STRH r0,[r1]
+        (false, 0xe5810000, 4),       // STR r0,[r1]
+        (true, 0x8008, 2),            // STRH r0,[r1,#0]
+        (true, 0x6008, 4),            // STR r0,[r1,#0]
+        (true, 0x5288, 2),            // STRH r0,[r1,r2]
+        (true, 0x5088, 4),            // STR r0,[r1,r2]
+    ] {
+        for lane in 0..width {
+            let mut rom = vec![0; 192];
+            rom[..4].copy_from_slice(&opcode.to_le_bytes());
+            rom[0x80..0x89].copy_from_slice(b"SRAM_V000");
+            let mut bus = crate::bus::Bus::new(rom, None).unwrap();
+            bus.backup.data.fill(0x5a);
+            let mut c = cpu();
+            c.set_cpsr(0x1f | if thumb { T } else { 0 }).unwrap();
+            c.r[0] = 0xaabbccdd;
+            c.r[1] = 0x0e000010 + lane;
+            c.r[2] = 0;
+            c.r[15] = 0x08000000;
+            c.step(&mut bus);
+            assert_eq!(
+                bus.backup.data[0x10 + lane as usize],
+                (0xaabbccddu32 >> (lane * 8)) as u8,
+                "{opcode:08x}, lane {lane}"
+            );
+            assert!(bus
+                .backup
+                .data
+                .iter()
+                .enumerate()
+                .all(|(i, v)| i == 0x10 + lane as usize || *v == 0x5a));
+            // SRAM reads repeat its addressed byte on every physical data lane.
+            assert_eq!(
+                bus.read32(0x0e000010 + lane, false),
+                u32::from((0xaabbccddu32 >> (lane * 8)) as u8) * 0x01010101
+            );
+        }
+    }
+}
+#[test]
+fn unaligned_store_helpers_preserve_normal_ram_alignment() {
+    let mut ram = Ram::arm(&[0xe1c100b0, 0xe5820000]);
+    let mut c = cpu();
+    c.r[0] = 0xaabbccdd;
+    c.r[1] = 0x101;
+    c.r[2] = 0x107;
+    c.step(&mut ram);
+    assert_eq!(&ram.data[0x100..0x102], &[0xdd, 0xcc]);
+    c.step(&mut ram);
+    assert_eq!(&ram.data[0x104..0x108], &[0xdd, 0xcc, 0xbb, 0xaa]);
+    assert_eq!(ram.data[0x102], 0);
+    assert_eq!(ram.data[0x108], 0);
+}
+#[test]
+fn save_bus_loads_select_the_logical_byte_before_arm_rotation_and_sign_extension() {
+    for (thumb, opcode, kind) in [
+        (false, 0xe1d100b0u32, 0u8), // LDRH r0,[r1]
+        (false, 0xe5910000, 1),      // LDR r0,[r1]
+        (false, 0xe1d100f0, 2),      // LDRSH r0,[r1]
+        (true, 0x8808, 0),           // LDRH r0,[r1,#0]
+        (true, 0x5a88, 0),           // LDRH r0,[r1,r2]
+        (true, 0x6808, 1),           // LDR r0,[r1,#0]
+        (true, 0x5888, 1),           // LDR r0,[r1,r2]
+        (true, 0x5e88, 2),           // LDRSH r0,[r1,r2]
+    ] {
+        for (lane, byte) in [0x80u8, 0x7f, 0xef, 0x21].into_iter().enumerate() {
+            let mut rom = vec![0; 192];
+            rom[..4].copy_from_slice(&opcode.to_le_bytes());
+            rom[0x80..0x89].copy_from_slice(b"SRAM_V000");
+            let mut bus = crate::bus::Bus::new(rom, None).unwrap();
+            bus.backup.data[0x10..0x14].copy_from_slice(&[0x80, 0x7f, 0xef, 0x21]);
+            let mut c = cpu();
+            c.set_cpsr(0x1f | if thumb { T } else { 0 }).unwrap();
+            c.r[1] = 0x0e000010 + lane as u32;
+            c.r[2] = 0;
+            c.r[15] = 0x08000000;
+            c.step(&mut bus);
+            let expected = match kind {
+                0 => (u32::from(byte) * 0x101).rotate_right((lane as u32 & 1) * 8),
+                1 => u32::from(byte) * 0x01010101,
+                _ if lane & 1 != 0 => byte as i8 as i32 as u32,
+                _ => (u16::from(byte) * 0x101) as i16 as i32 as u32,
+            };
+            assert_eq!(c.r[0], expected, "{opcode:08x}, lane {lane}");
+        }
+    }
+}
+#[test]
 fn conditions_match_boolean_oracle_for_every_condition_and_flag_tuple() {
     let mut c = cpu();
     for flags in 0..16 {

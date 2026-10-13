@@ -411,6 +411,8 @@ fn dma_preserves_video_decode_queue_and_video_region_exit_has_no_stale_state() {
     m.bus.write32(0x040000d8, 0x06000004, false);
     m.bus.write32(0x040000dc, 0x84000001, false);
     m.bus.take_cycles();
+    assert_eq!(m.step(), 2); // Startup does not overwrite the queued opcode.
+    assert_eq!(m.bus.peek32(0x06000004), 0xe3a06011);
     m.step(); // DMA replaces the next opcode with MOV r6,#42.
     assert_eq!(m.bus.peek32(0x06000004), 0xe3a0602a);
     let saved = m.export_state();
@@ -560,7 +562,8 @@ fn arm_and_thumb_angle_services_return_signed_and_wrapped_results() {
             (10, -0x4000, 0x4000, 0x6000),
             (10, -0x4000, -0x4000, 0xa000),
             (10, 0x4000, -0x4000, 0xe000),
-            (10, i32::MIN, i32::MIN, 0xa000),
+            (10, -0x8000, -0x8000, 0xa000), // hardware-verified 16-bit diagonal
+            (10, i32::MIN, i32::MIN, 0xc000), // intermediate x<<14 wraps to zero
         ] {
             let mut rom = vec![0; 192];
             let pool = if thumb {
@@ -716,7 +719,9 @@ fn dma3_cartridge_to_oam_observes_page_restart_and_32bit_destination() {
     m.bus.write32(0x040000d8, 0x07000000, false);
     m.bus.write32(0x040000dc, 0x84000002, false);
     m.bus.take_cycles();
-    assert_eq!(m.step(), 11); // startup 2 + ROM N+S 8 + OAM 1.
+    assert_eq!(m.step(), 2); // Separate DMA startup event.
+    assert_eq!(m.bus.peek32(0x07000000), 0);
+    assert_eq!(m.step(), 9); // ROM N+S 8 + OAM 1; total first unit remains 11.
     assert_eq!(m.step(), 9); // next page ROM N+S 8 + OAM 1.
     assert_eq!(m.bus.peek32(0x07000000), 0x12345678);
     assert_eq!(m.bus.peek32(0x07000004), 0xabcdef01);

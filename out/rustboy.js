@@ -57,7 +57,10 @@ export function clear_breakpoints() {
 }
 
 export function clear_save_data() {
-    wasm.clear_save_data();
+    const ret = wasm.clear_save_data();
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
 }
 
 export function clear_sgb_sound_firmware() {
@@ -80,6 +83,16 @@ export function clear_trace() {
  */
 export function configure_gba_jit(imports) {
     wasm.configure_gba_jit(imports);
+}
+
+/**
+ * @returns {Uint8Array}
+ */
+export function export_gba_rom() {
+    const ret = wasm.export_gba_rom();
+    var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v1;
 }
 
 /**
@@ -281,6 +294,155 @@ export function gba_jit_write_full(bus, address, value, kind, sequential) {
 }
 
 /**
+ * @param {number} id
+ */
+export function gba_link_absent(id) {
+    const ret = wasm.gba_link_absent(id);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @param {number} player
+ */
+export function gba_link_attach(player) {
+    const ret = wasm.gba_link_attach(player);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+export function gba_link_detach() {
+    wasm.gba_link_detach();
+}
+
+/**
+ * @param {number} id
+ * @param {number} mode
+ * @param {number} baud
+ * @returns {number}
+ */
+export function gba_link_receive(id, mode, baud) {
+    const ret = wasm.gba_link_receive(id, mode, baud);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return ret[0] >>> 0;
+}
+
+/**
+ * @param {number} clock
+ */
+export function gba_link_set_limit(clock) {
+    const ret = wasm.gba_link_set_limit(clock);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @param {number} mode
+ * @param {boolean} ready
+ * @param {boolean} so
+ */
+export function gba_link_set_peer(mode, ready, so) {
+    const ret = wasm.gba_link_set_peer(mode, ready, so);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @returns {string}
+ */
+export function gba_link_status() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const ret = wasm.gba_link_status();
+        deferred1_0 = ret[0];
+        deferred1_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
+ * @param {number} id
+ * @param {number} parent
+ * @param {number} child
+ */
+export function gba_link_supply(id, parent, child) {
+    const ret = wasm.gba_link_supply(id, parent, child);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @returns {string}
+ */
+export function gba_local_link_identity() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const ret = wasm.gba_local_link_identity();
+        deferred1_0 = ret[0];
+        deferred1_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
+ * @param {number} frame
+ * @param {number} parent
+ * @param {number} child
+ */
+export function gba_local_link_input(frame, parent, child) {
+    const ret = wasm.gba_local_link_input(frame, parent, child);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @param {Uint8Array} peer_rom
+ * @param {Uint8Array} peer_state
+ * @param {boolean} peer_download
+ * @param {number} player
+ */
+export function gba_local_link_start(peer_rom, peer_state, peer_download, player) {
+    const ptr0 = passArray8ToWasm0(peer_rom, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(peer_state, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.gba_local_link_start(ptr0, len0, ptr1, len1, peer_download, player);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @returns {string}
+ */
+export function gba_local_link_status() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const ret = wasm.gba_local_link_status();
+        deferred1_0 = ret[0];
+        deferred1_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
  * @returns {number}
  */
 export function get_actual_speed() {
@@ -379,6 +541,47 @@ export function get_gba_render_statistics() {
     let deferred1_1;
     try {
         const ret = wasm.get_gba_render_statistics();
+        deferred1_0 = ret[0];
+        deferred1_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
+ * @param {Uint8Array} rom
+ * @returns {string}
+ */
+export function get_gba_rom_save_key(rom) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passArray8ToWasm0(rom, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.get_gba_rom_save_key(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * @returns {string}
+ */
+export function get_gba_save_type() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const ret = wasm.get_gba_save_type();
         deferred1_0 = ret[0];
         deferred1_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
@@ -556,6 +759,31 @@ export function load_gba_data(rom, bios) {
 
 /**
  * @param {Uint8Array} rom
+ * @param {Uint8Array} bios
+ * @param {string} kind
+ */
+export function load_gba_data_with_save_type(rom, bios, kind) {
+    const ptr0 = passArray8ToWasm0(rom, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(bios, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.load_gba_data_with_save_type(ptr0, len0, ptr1, len1, ptr2, len2);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+export function load_gba_download_client() {
+    const ret = wasm.load_gba_download_client();
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @param {Uint8Array} rom
  * @param {Uint8Array} boot_rom
  */
 export function load_rom_data(rom, boot_rom) {
@@ -708,6 +936,18 @@ export function set_gba_jit_enabled(enabled) {
  */
 export function set_gba_jit_ram_enabled(enabled) {
     wasm.set_gba_jit_ram_enabled(enabled);
+}
+
+/**
+ * @param {string} kind
+ */
+export function set_gba_save_type(kind) {
+    const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.set_gba_save_type(ptr0, len0);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
 }
 
 /**

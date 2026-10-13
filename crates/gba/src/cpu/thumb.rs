@@ -128,14 +128,14 @@ impl Cpu {
                         self.r[(rd & 7) as usize] = if byte {
                             u32::from(bus.read8(address))
                         } else {
-                            bus.read32(address & !3, false)
+                            bus.read32_unaligned(address, false)
                                 .rotate_right((address & 3) * 8)
                         };
                         bus.internal(1);
                     } else if byte {
                         bus.write8(address, self.r[(rd & 7) as usize] as u8);
                     } else {
-                        bus.write32(address & !3, self.r[(rd & 7) as usize], false);
+                        bus.write32_unaligned(address, self.r[(rd & 7) as usize], false);
                     }
                 }
                 Operation::Halfword {
@@ -146,11 +146,11 @@ impl Cpu {
                 } => {
                     let address = self.r[(rs & 7) as usize].wrapping_add(u32::from(offset));
                     if load {
-                        self.r[(rd & 7) as usize] = u32::from(bus.read16(address & !1, false))
+                        self.r[(rd & 7) as usize] = u32::from(bus.read16_unaligned(address, false))
                             .rotate_right((address & 1) * 8);
                         bus.internal(1);
                     } else {
-                        bus.write16(address & !1, self.r[(rd & 7) as usize] as u16, false);
+                        bus.write16_unaligned(address, self.r[(rd & 7) as usize] as u16, false);
                     }
                 }
                 Operation::Conditional { condition, offset } => {
@@ -297,16 +297,16 @@ impl Cpu {
                     let address = self.r[rs].wrapping_add(self.r[(op >> 6 & 7) as usize]);
                     let kind = op >> 9 & 7;
                     match kind {
-                        0 => bus.write32(address & !3, self.r[rd], false),
-                        1 => bus.write16(address & !1, self.r[rd] as u16, false),
+                        0 => bus.write32_unaligned(address, self.r[rd], false),
+                        1 => bus.write16_unaligned(address, self.r[rd] as u16, false),
                         2 => bus.write8(address, self.r[rd] as u8),
                         kind => {
                             self.r[rd] = match kind {
                                 3 => bus.read8(address) as i8 as i32 as u32,
                                 4 => bus
-                                    .read32(address & !3, false)
+                                    .read32_unaligned(address, false)
                                     .rotate_right((address & 3) * 8),
-                                5 => u32::from(bus.read16(address & !1, false))
+                                5 => u32::from(bus.read16_unaligned(address, false))
                                     .rotate_right((address & 1) * 8),
                                 6 => u32::from(bus.read8(address)),
                                 _ => {
@@ -329,36 +329,36 @@ impl Cpu {
                     self.r[rd] = if byte {
                         u32::from(bus.read8(address))
                     } else {
-                        bus.read32(address & !3, false)
+                        bus.read32_unaligned(address, false)
                             .rotate_right((address & 3) * 8)
                     };
                     bus.internal(1);
                 } else if byte {
                     bus.write8(address, self.r[rd] as u8);
                 } else {
-                    bus.write32(address & !3, self.r[rd], false);
+                    bus.write32_unaligned(address, self.r[rd], false);
                 }
             }
             4 => {
                 if op & 0x1000 == 0 {
                     let address = self.r[rs].wrapping_add((op >> 6 & 31) * 2);
                     if op & 0x800 != 0 {
-                        self.r[rd] = u32::from(bus.read16(address & !1, false))
+                        self.r[rd] = u32::from(bus.read16_unaligned(address, false))
                             .rotate_right((address & 1) * 8);
                         bus.internal(1);
                     } else {
-                        bus.write16(address & !1, self.r[rd] as u16, false);
+                        bus.write16_unaligned(address, self.r[rd] as u16, false);
                     }
                 } else {
                     let reg = (op >> 8 & 7) as usize;
                     let address = self.r[13].wrapping_add((op & 255) * 4);
                     if op & 0x800 != 0 {
                         self.r[reg] = bus
-                            .read32(address & !3, false)
+                            .read32_unaligned(address, false)
                             .rotate_right((address & 3) * 8);
                         bus.internal(1);
                     } else {
-                        bus.write32(address & !3, self.r[reg], false);
+                        bus.write32_unaligned(address, self.r[reg], false);
                     }
                 }
             }
@@ -397,18 +397,18 @@ impl Cpu {
                             continue;
                         }
                         if pop {
-                            self.r[reg] = bus.read32(address & !3, sequential);
+                            self.r[reg] = bus.read32_unaligned(address, sequential);
                         } else {
-                            bus.write32(address & !3, self.r[reg], sequential);
+                            bus.write32_unaligned(address, self.r[reg], sequential);
                         }
                         sequential = true;
                         address = address.wrapping_add(4);
                     }
                     let pc = if extra && pop {
-                        Some(bus.read32(address & !3, sequential))
+                        Some(bus.read32_unaligned(address, sequential))
                     } else {
                         if extra {
-                            bus.write32(address & !3, self.r[14], sequential);
+                            bus.write32_unaligned(address, self.r[14], sequential);
                         }
                         None
                     };
@@ -437,13 +437,13 @@ impl Cpu {
                     let final_base = base.wrapping_add(count * 4);
                     if list == 0 {
                         if load {
-                            let pc = bus.read32(base & !3, false);
+                            let pc = bus.read32_unaligned(base, false);
                             self.branch(bus, pc, false);
                             bus.internal(1);
                         } else {
                             // Empty-list STM transfers PC with the store
                             // pipeline offset (instruction address + 6).
-                            bus.write32(base & !3, self.operand(15, 2), false);
+                            bus.write32_unaligned(base, self.operand(15, 2), false);
                         }
                         self.r[base_reg] = final_base;
                         return;
@@ -455,10 +455,10 @@ impl Cpu {
                             continue;
                         }
                         if load {
-                            self.r[reg] = bus.read32(address & !3, sequential);
+                            self.r[reg] = bus.read32_unaligned(address, sequential);
                         } else {
-                            bus.write32(
-                                address & !3,
+                            bus.write32_unaligned(
+                                address,
                                 if reg == base_reg && sequential {
                                     final_base
                                 } else {

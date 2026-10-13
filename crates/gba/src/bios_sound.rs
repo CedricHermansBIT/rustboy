@@ -181,7 +181,11 @@ fn mode(bus: &mut Bus, a: u32, value: u32) -> Result<(), &'static str> {
     if channels != 0 {
         bus.write8(a + 6, channels.min(12));
         for i in 0..12 {
-            bus.write8(a + 0x50 + i * 0x40, 0);
+            let c = a + 0x50 + i * 0x40;
+            if bus.peek8(c) != 0 && bus.peek8(c + 1) & 7 != 0 {
+                music::stop_psg(bus, bus.peek8(c + 1) & 7);
+            }
+            bus.write8(c, 0);
         }
     }
     let volume = ((value >> 12) & 15) as u8;
@@ -276,6 +280,10 @@ fn sound_area_for_vsync(bus: &Bus) -> Option<u32> {
 }
 fn clear(bus: &mut Bus, a: u32) {
     for i in 0..12 {
+        let c = a + 0x50 + i * 0x40;
+        if bus.peek8(c) != 0 && bus.peek8(c + 1) & 7 != 0 {
+            music::stop_psg(bus, bus.peek8(c + 1) & 7);
+        }
         bus.write8(a + 0x50 + i * 0x40, 0);
     }
     let psg = bus.peek32(a + 0x1c);
@@ -410,9 +418,13 @@ fn mix(bus: &mut Bus, a: u32) -> Result<(), &'static str> {
     let rate = bus.peek32(a + 0x14).max(1);
     let master = bus.peek8(a + 7);
     let channels = bus.peek8(a + 6).min(12);
+    music::native_psg(bus, a);
     let mut active = 0u32;
     for i in 0..channels {
         let c = a + 0x50 + u32::from(i) * 0x40;
+        if bus.peek8(c + 1) & 7 != 0 {
+            continue;
+        }
         let Some((right, left)) = envelope(bus, c, master) else {
             continue;
         };

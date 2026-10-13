@@ -28,6 +28,8 @@ export function clear_trace(): void;
 
 export function configure_gba_jit(imports: object): void;
 
+export function export_gba_rom(): Uint8Array;
+
 export function export_save_data(): Uint8Array;
 
 export function export_state(): Uint8Array;
@@ -66,6 +68,30 @@ export function gba_jit_write(bus: number, address: number, value: number, kind:
 
 export function gba_jit_write_full(bus: number, address: number, value: number, kind: number, sequential: number): void;
 
+export function gba_link_absent(id: number): void;
+
+export function gba_link_attach(player: number): void;
+
+export function gba_link_detach(): void;
+
+export function gba_link_receive(id: number, mode: number, baud: number): number;
+
+export function gba_link_set_limit(clock: number): void;
+
+export function gba_link_set_peer(mode: number, ready: boolean, so: boolean): void;
+
+export function gba_link_status(): string;
+
+export function gba_link_supply(id: number, parent: number, child: number): void;
+
+export function gba_local_link_identity(): string;
+
+export function gba_local_link_input(frame: number, parent: number, child: number): void;
+
+export function gba_local_link_start(peer_rom: Uint8Array, peer_state: Uint8Array, peer_download: boolean, player: number): void;
+
+export function gba_local_link_status(): string;
+
 export function get_actual_speed(): number;
 
 export function get_backend_status(): string;
@@ -84,6 +110,10 @@ export function get_debug_state(): string;
 export function get_gba_jit_statistics(): string;
 
 export function get_gba_render_statistics(): string;
+
+export function get_gba_rom_save_key(rom: Uint8Array): string;
+
+export function get_gba_save_type(): string;
 
 export function get_is_cgb(): boolean;
 
@@ -110,6 +140,10 @@ export function is_tracing(): boolean;
 export function list_breakpoints(): string;
 
 export function load_gba_data(rom: Uint8Array, bios: Uint8Array): void;
+
+export function load_gba_data_with_save_type(rom: Uint8Array, bios: Uint8Array, kind: string): void;
+
+export function load_gba_download_client(): void;
 
 export function load_rom_data(rom: Uint8Array, boot_rom: Uint8Array): void;
 
@@ -148,6 +182,8 @@ export function set_gba_jit_enabled(enabled: boolean): void;
 
 export function set_gba_jit_ram_enabled(enabled: boolean): void;
 
+export function set_gba_save_type(kind: string): void;
+
 export function set_gba_video_stride(stride: number): void;
 
 export function set_key_state(key_code: number, pressed: boolean): void;
@@ -180,12 +216,26 @@ export interface InitOutput {
     readonly add_breakpoint_reg: (a: number, b: number, c: number) => void;
     readonly benchmark_gba_clocks: (a: number) => [number, number, number];
     readonly clear_breakpoints: () => void;
+    readonly clear_save_data: () => [number, number];
     readonly clear_sgb_sound_firmware: () => void;
     readonly clear_sgb_user_palette: () => [number, number];
     readonly clear_trace: () => void;
+    readonly export_gba_rom: () => [number, number];
     readonly export_save_data: () => [number, number];
     readonly export_state: () => [number, number];
     readonly gba_jit_finish: (a: number, b: number) => number;
+    readonly gba_link_absent: (a: number) => [number, number];
+    readonly gba_link_attach: (a: number) => [number, number];
+    readonly gba_link_detach: () => void;
+    readonly gba_link_receive: (a: number, b: number, c: number) => [number, number, number];
+    readonly gba_link_set_limit: (a: number) => [number, number];
+    readonly gba_link_set_peer: (a: number, b: number, c: number) => [number, number];
+    readonly gba_link_status: () => [number, number];
+    readonly gba_link_supply: (a: number, b: number, c: number) => [number, number];
+    readonly gba_local_link_identity: () => [number, number];
+    readonly gba_local_link_input: (a: number, b: number, c: number) => [number, number];
+    readonly gba_local_link_start: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly gba_local_link_status: () => [number, number];
     readonly get_actual_speed: () => number;
     readonly get_backend_status: () => [number, number];
     readonly get_boot_rom_license: () => [number, number];
@@ -194,6 +244,8 @@ export interface InitOutput {
     readonly get_debug_state: () => [number, number];
     readonly get_gba_jit_statistics: () => [number, number];
     readonly get_gba_render_statistics: () => [number, number];
+    readonly get_gba_rom_save_key: (a: number, b: number) => [number, number, number, number];
+    readonly get_gba_save_type: () => [number, number];
     readonly get_is_cgb: () => number;
     readonly get_rom_title: () => [number, number];
     readonly get_save_key: () => [number, number];
@@ -206,6 +258,8 @@ export interface InitOutput {
     readonly is_tracing: () => number;
     readonly list_breakpoints: () => [number, number];
     readonly load_gba_data: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly load_gba_data_with_save_type: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly load_gba_download_client: () => [number, number];
     readonly load_rom_data: (a: number, b: number, c: number, d: number) => [number, number];
     readonly load_rom_data_with_model: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly main_js: () => void;
@@ -223,14 +277,15 @@ export interface InitOutput {
     readonly set_gba_full_jit_enabled: (a: number) => void;
     readonly set_gba_jit_enabled: (a: number) => void;
     readonly set_gba_jit_ram_enabled: (a: number) => void;
+    readonly set_gba_save_type: (a: number, b: number) => [number, number];
     readonly set_key_state: (a: number, b: number) => void;
     readonly set_paused: (a: number) => void;
     readonly set_sgb_sound_firmware: (a: number, b: number) => [number, number, number];
     readonly set_sgb_user_palette: (a: number, b: number) => [number, number];
+    readonly set_speed: (a: number) => void;
     readonly set_vram_view: (a: number, b: number) => [number, number];
     readonly toggle_trace: () => void;
     readonly trace_len: () => number;
-    readonly set_speed: (a: number) => void;
     readonly gba_jit_fetch_span: (a: number, b: number, c: number, d: number, e: number, f: number) => bigint;
     readonly gba_jit_fetch_run: (a: number, b: number, c: number, d: number, e: number) => bigint;
     readonly gba_jit_status: (a: number, b: number, c: number, d: number, e: number) => number;
@@ -250,7 +305,6 @@ export interface InitOutput {
     readonly gba_jit_write: (a: number, b: number, c: number, d: number) => void;
     readonly configure_gba_jit: (a: any) => void;
     readonly get_speed: () => number;
-    readonly clear_save_data: () => void;
     readonly wasm_bindgen_a3ec65c79b425d3b___convert__closures_____invoke___f64______true_: (a: number, b: number, c: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
