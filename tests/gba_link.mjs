@@ -210,6 +210,31 @@ class FakePc {
   const unsupported = new RtcCable({ adapter: endpoint(0).adapter, PeerConnection: null });
   await assert.rejects(() => unsupported.createOffer(), /does not support WebRTC/);
 }
+{
+  const statuses = [];
+  const cable = new RtcCable({ adapter: endpoint(0).adapter, PeerConnection: FakePc,
+    disconnectGraceMs: 20, onStatus: message => statuses.push(message) });
+  await cable.createOffer();
+  const pc = cable.pc;
+  pc.connectionState = 'disconnected'; pc.onconnectionstatechange();
+  assert.equal(cable.pc, pc, 'temporary ICE disconnect retains the connection');
+  pc.connectionState = 'connected'; pc.onconnectionstatechange();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(cable.pc, pc, 'recovery cancels the disconnect deadline');
+  assert.match(statuses.at(-1), /recovered/);
+  pc.localDescription.sdp += 'a=candidate:1 1 UDP 1 phone.local 49152 typ host\r\n';
+  pc.remoteDescription = { sdp: 'v=0\r\na=candidate:2 1 UDP 1 203.0.113.1 49152 typ srflx\r\n' };
+  pc.onicecandidateerror({ errorCode: 701 });
+  pc.connectionState = 'failed'; pc.onconnectionstatechange();
+  assert.equal(cable.pc, null);
+  assert.match(statuses.at(-1), /this device: local 1, public 0, relay 0; peer: local 0, public 1, relay 0/);
+  assert.match(statuses.at(-1), /Discovery errors: 701/);
+  assert.doesNotMatch(statuses.at(-1), /phone.local|203\.0\.113/);
+  await cable.createOffer();
+  cable.pc.connectionState = 'disconnected'; cable.pc.onconnectionstatechange();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(cable.pc, null, 'persistent disconnect eventually closes');
+}
 
 console.log('GBA link: pairing, relay validation, mutual clock barriers, capture/commit exchange, readiness, disconnect and malformed-packet protection passed');
 

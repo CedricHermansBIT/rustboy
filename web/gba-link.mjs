@@ -483,10 +483,11 @@ export class RomTransfer {
 
 export class RtcCable {
   constructor({ adapter, onStatus = () => {}, onRom = () => {}, loadRom,
-    PeerConnection = globalThis.RTCPeerConnection, iceServers = DEFAULT_ICE }) {
+    PeerConnection = globalThis.RTCPeerConnection, iceServers = DEFAULT_ICE, disconnectGraceMs = 15000 }) {
     this.adapter = adapter; this.onStatus = onStatus; this.PeerConnection = PeerConnection;
     this.iceServers = iceServers; this.pc = null; this.coordinator = null; this.timer = null;
     this.onRom = onRom; this.loadRom = loadRom;
+    this.disconnectGraceMs = disconnectGraceMs;
     this.connected = false; this.localReady = false; this.peerReady = false; this.epoch = 0;
   }
   setup(player) {
@@ -494,11 +495,32 @@ export class RtcCable {
     if (!this.PeerConnection) throw new Error('This browser does not support WebRTC data channels');
     const pc = new this.PeerConnection({ iceServers: this.iceServers });
     this.pc = pc; this.player = player;
+    this.discoveryErrors = [];
+    pc.onicecandidateerror = event => {
+      if (this.pc === pc && this.discoveryErrors.length < 8 && Number.isInteger(event.errorCode)) {
+        this.discoveryErrors.push(event.errorCode);
+      }
+    };
     this.connected = false; this.localReady = false; this.peerReady = false; this.epoch = 0;
     pc.onconnectionstatechange = () => {
       if (this.pc !== pc) return;
-      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-        this.close('Connection lost. Restrictive networks may need a TURN relay.', true);
+      if (pc.connectionState === 'failed') {
+        this.close(`WebRTC connection failed. ${this.connectionDetails(pc)} Check browser WebRTC policy or Wi-Fi client isolation; a TURN relay may be needed.`, true);
+      } else if (pc.connectionState === 'disconnected') {
+        // ICE disconnected is recoverable; closing here prevents recovery.
+        if (!this.disconnectTimer) {
+          this.onStatus('Connection interrupted; waiting for WebRTC to recover…');
+          this.disconnectTimer = setTimeout(() => {
+            this.disconnectTimer = null;
+            if (this.pc === pc && pc.connectionState === 'disconnected') {
+              this.close(`Connection did not recover. ${this.connectionDetails(pc)}`, true);
+            }
+          }, this.disconnectGraceMs);
+        }
+      } else {
+        const recovering = !!this.disconnectTimer;
+        clearTimeout(this.disconnectTimer); this.disconnectTimer = null;
+        if (recovering && pc.connectionState === 'connected') this.onStatus('Device connection recovered');
       }
     };
     pc.ondatachannel = event => this.channel(event.channel, pc);
@@ -506,6 +528,15 @@ export class RtcCable {
       if (this.pc === pc && !this.connected) this.close('Pairing timed out. Check both codes, or configure a TURN relay.', true);
     }, 90000);
     return pc;
+  }
+  connectionDetails(pc = this.pc) {
+    const counts = description => {
+      const sdp = description?.sdp || '';
+      const types = [...sdp.matchAll(/^a=candidate:.*?\btyp (host|srflx|prflx|relay)\b/gm)].map(match => match[1]);
+      return `local ${types.filter(type => type === 'host').length}, public ${types.filter(type => type === 'srflx' || type === 'prflx').length}, relay ${types.filter(type => type === 'relay').length}`;
+    };
+    // Counts/error codes only: never expose IPs, pairing SDP or relay credentials.
+    return `Addresses — this device: ${counts(pc?.localDescription)}; peer: ${counts(pc?.remoteDescription)}.${this.discoveryErrors?.length ? ` Discovery errors: ${[...new Set(this.discoveryErrors)].join(', ')}.` : ''}`;
   }
   channel(channel, pc) {
     if (this.pc !== pc || channel.label !== 'rustboy-gba-cable-v1' || channel.ordered === false
@@ -685,6 +716,7 @@ export class RtcCable {
   }
   close(reason = 'Link disconnected', pause = false) {
     clearInterval(this.timer); clearTimeout(this.connectionTimeout);
+    clearTimeout(this.disconnectTimer); this.disconnectTimer = null;
     this.timer = null;
     const pc = this.pc; const channel = this.dataChannel;
     this.pc = null; this.dataChannel = null;
