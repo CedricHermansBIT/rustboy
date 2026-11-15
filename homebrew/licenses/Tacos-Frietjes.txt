@@ -1,0 +1,5 @@
+Tacos & Frietjes
+Created by Cedric Hermans.
+
+Included in the RustBoy playable library at the author's request.
+The RustBoy emulator's MIT license does not relicense the game or its assets.

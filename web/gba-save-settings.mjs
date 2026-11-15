@@ -44,11 +44,13 @@ export function installGbaSaveSettings(api, document, notify) {
   });
   refresh();
   return {
-    load(rom, bios) {
+    load(rom, bios, defaultType = 'auto') {
+      if (!TYPES.has(defaultType)) throw new Error('Unknown catalog save hardware');
       if (!supported) return api.load_gba_data(rom, bios);
       // Native integer hashing avoids a slow JavaScript BigInt pass over ROMs.
       attemptedKey = api.get_gba_rom_save_key(rom);
-      const type = next !== 'auto' ? next : read(attemptedKey);
+      const stored = read(attemptedKey);
+      const type = next !== 'auto' ? next : stored !== 'auto' ? stored : defaultType;
       try {
         const result = api.load_gba_data_with_save_type(rom, bios, type);
         loadedKey = attemptedKey; failed = false; next = 'auto';

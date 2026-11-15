@@ -28,5 +28,7 @@ assert.equal(requested, 'roms/Advance/Fire%20Red%20(USA).GBA');
 for (const name of ['../game.gba', '/game.gba', 'a/../game.gba', 'a//game.gba', 'a/./game.gba', 'a\\game.gba', 'game.gba\0']) {
   await assert.rejects(fetchLibraryRom({name}, 'roms', fetchFile), /filename/);
 }
-await assert.rejects(fetchLibraryRom({name: 'game.gba'}, 'homebrew', fetchFile), /filename/);
+assert.deepEqual(await fetchLibraryRom({...entry, name: 'tacos-frietjes.gba'}, 'homebrew', fetchFile, webcrypto.subtle), bytes);
+assert.equal(requested, 'homebrew/tacos-frietjes.gba');
+await assert.rejects(fetchLibraryRom({...entry, name: '../game.gba'}, 'homebrew', fetchFile), /filename/);
 console.log('Library ROM loader: pinned size/hash validation, download failures, safe names, and local-library compatibility passed');

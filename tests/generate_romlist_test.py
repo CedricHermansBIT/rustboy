@@ -11,6 +11,15 @@ spec.loader.exec_module(generator)
 
 
 class ManifestTests(unittest.TestCase):
+    def test_catalog_save_hardware_requires_matching_rom_bytes(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);rom=root/'Tacos & Frietjes.gba';rom.write_bytes(b'owned game')
+            catalog=[{'title':'Tacos & Frietjes','saveType':'sram','rom':{'name':'tacos-frietjes.gba','sha256':hashlib.sha256(rom.read_bytes()).hexdigest()}}]
+            self.assertEqual(generator.collect_roms(root,catalog),[{'name':rom.name,'title':'Tacos & Frietjes','saveType':'sram'}])
+            rom.write_bytes(b'different game')
+            self.assertEqual(generator.collect_roms(root,catalog),[{'name':rom.name}])
+
     def test_all_formats_nested_paths_artwork_and_sorting(self):
         with tempfile.TemporaryDirectory(prefix='rustboy-romlist-test-') as temporary:
             root = Path(temporary)

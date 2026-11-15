@@ -879,7 +879,7 @@
       </div>
       <hr id="recent-divider" class="hidden" />
       <div id="rom-tabs" class="hidden">
-        <button class="rom-tab" data-tab="homebrew">🌱 Free homebrew</button>
+        <button class="rom-tab" data-tab="homebrew">🌱 Homebrew</button>
         <button class="rom-tab hidden" data-tab="gb">🎮 Game Boy</button>
         <button class="rom-tab hidden" data-tab="gbc">🌈 Game Boy Color</button>
         <button class="rom-tab hidden" data-tab="gba">🎮 Game Boy Advance</button>
@@ -892,7 +892,7 @@
         <button id="clear-recents" type="button">Clear recent</button>
       </div>
       <div id="rom-count"></div>
-      <p id="homebrew-info" class="hint hidden">Freely redistributable games, credited to their creators.
+      <p id="homebrew-info" class="hint hidden">Homebrew shared by their creators or under free licenses.
         <a href="homebrew/credits.html" target="_blank" rel="noopener">Credits, licenses &amp; source</a>
       </p>
       <ul id="rom-list"></ul>
@@ -1431,7 +1431,7 @@
           allRoms: [],
           folder: 'homebrew',
           listPath: 'homebrew/romlist.json',
-          accepts: (name) => /\.(gb|gbc)$/i.test(name),
+          accepts: (name) => /\.(gb|gbc|gba)$/i.test(name),
           available: false,
         },
         gb: {
@@ -2167,7 +2167,7 @@
           const romInfo = { name: rom.name, folder: tab.folder, tab: activeTab };
           const data = await Module._fetch_library_rom(rom, tab.folder);
           await saveState('auto', true);
-          await Module._load_rom_data(data, rom.name);
+          await Module._load_rom_data(data, rom.name, {saveType: rom.saveType || 'auto'});
           currentRomInfo = romInfo;
           addToRecent(romInfo);
           romLoaded = true;
@@ -2789,7 +2789,7 @@
             if (settingsDialog.open || linkDialog.open) Rustboy.set_paused(true);
           }),
           _validate_upload_size: validateUploadSize,
-          _load_rom_data: (data, name = '', { preserveLink = false } = {}) => {
+          _load_rom_data: (data, name = '', { preserveLink = false, saveType = 'auto' } = {}) => {
             if (preserveLink) gbaLink?.stopLink('ROM loaded; choose Start cable again');
             else gbaLink?.disconnect('ROM changed; reconnect both players');
             const model = hardware.value;
@@ -2797,7 +2797,7 @@
               throw new Error('Hardware selection needs the updated WASM bundle; refresh the page');
             }
             return loadCartridge((rom, boot) => Rustboy.load_rom_data_with_model
-              ? Rustboy.load_rom_data_with_model(rom, boot, model) : Rustboy.load_rom_data(rom, boot), gbaSaves.load, data, name, fetch, model)
+              ? Rustboy.load_rom_data_with_model(rom, boot, model) : Rustboy.load_rom_data(rom, boot), (rom, boot) => gbaSaves.load(rom, boot, saveType), data, name, fetch, model)
               .then(result => { clearControllerInputs(); applySgbUserPalette(); updateBackendStatus(); gbaSaves.refresh(); return result; });
           },
           _get_debug_state: Rustboy.get_debug_state,

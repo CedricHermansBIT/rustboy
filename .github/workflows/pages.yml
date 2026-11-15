@@ -39,9 +39,10 @@ jobs:
         run: python3 scripts/build_web.py
       - name: Download pinned public games and corresponding source into artifact
         run: python3 scripts/prepare_pages.py --output dist
-      - name: Smoke-test all three games without external firmware
+      - name: Smoke-test public games without external firmware
         run: |
           cargo run --locked --release --no-default-features --example homebrew_smoke -- dist/homebrew/2048.gb dist/homebrew/tobudx.gb dist/homebrew/ucity.gbc
+          GBA_SAVE_TYPE=sram cargo run --locked --release -p rustboy-gba --example gameplay_regression -- dist/homebrew/tacos-frietjes.gba 360 "60:1,72:0,150:1,162:0,240:10,270:0"
           RUSTBOY_SITE_DIR=dist RUSTBOY_BASE_PATH=/rustboy RUSTBOY_HOMEBREW=1 RUSTBOY_NO_BOOT=1 node tests/browser_smoke.mjs
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5

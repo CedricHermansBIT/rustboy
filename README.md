@@ -84,7 +84,7 @@ Open `http://localhost:8000`, then upload or drag-and-drop your own `.gb` or
 Game Boy, Game Boy Color and Game Boy Advance picker tabs. Optional library lists are read from `roms/romlist.json` and
 `testroms/romlist.json`; uploading works without those lists. No commercial game
 ROMs or Nintendo boot ROMs are committed to this repository. The public deployment downloads
-three licensed homebrew games into its deployment artifact (see below).
+licensed and author-shared homebrew games into its deployment artifact (see below).
 Pages uses a homebrew-only picker and automatic hardware detection; the local
 GB/GBC/GBA/test categories and hardware overrides are not shown there. ROM uploads
 remain available. Locally served checkouts retain the full picker.
@@ -101,16 +101,15 @@ On HTTPS/localhost, audio playback uses a dedicated AudioWorklet with a bounded
 stereo buffer and short fades on underrun/recovery, so UI work does not run the
 playback callback. Older/insecure contexts retain the buffered fallback.
 
-## GitHub Pages and free homebrew
+## GitHub Pages and homebrew
 
-The public site includes **2048 — Game Boy Edition**, **Tobu Tobu Girl Deluxe**
-and **µCity 1.3**, in a separate **Free homebrew** picker tab. Games remain
+The public site includes **2048 — Game Boy Edition**, **Tobu Tobu Girl Deluxe**,
+**µCity 1.3** and **Tacos & Frietjes**, in the **Homebrew** picker tab. Games remain
 unmodified and credited to their creators. Full license notices and µCity's
 matching source archive are downloadable from the credits page.
 
 The [catalog](homebrew/catalog.json) pins download URLs, byte counts and SHA-256
-hashes. ROMs/source archives are downloaded during deployment, not committed to
-Git. Each homebrew ROM's size and hash are checked again before browser loading.
+hashes. Third-party ROMs/source archives are downloaded during deployment. The author-provided Tacos & Frietjes ROM is bundled at `homebrew/bundled/tacos-frietjes.gba`, with a stable name and pinned hash. Its catalog selects SRAM for saves because this homebrew has no SDK save-chip tag. Each homebrew ROM's size and hash are checked again before browser loading.
 See [the provenance and license notes](homebrew/README.md).
 
 To enable the included [Pages workflow](.github/workflows/pages.yml), set

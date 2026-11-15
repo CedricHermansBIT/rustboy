@@ -73,6 +73,16 @@ fn run() -> Result<(), Box<dyn Error>> {
     if checkpoint != "-" {
         m.import_state(&fs::read(checkpoint)?)?;
     }
+    if let Ok(kind) = std::env::var("GBA_SAVE_TYPE") {
+        m.set_save_type(match kind.as_str() {
+            "sram" => rustboy_gba::SaveType::Sram,
+            "flash64" => rustboy_gba::SaveType::Flash64,
+            "flash128" => rustboy_gba::SaveType::Flash128,
+            "eeprom" => rustboy_gba::SaveType::Eeprom,
+            "none" => rustboy_gba::SaveType::None,
+            _ => return Err("Unknown GBA_SAVE_TYPE".into()),
+        })?;
+    }
     m.mark_save_clean();
     let original = m.export_state();
     exercise(&mut m, frames, &inputs)?;

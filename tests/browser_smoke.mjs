@@ -1100,26 +1100,31 @@ try {
   }
   if (process.env.RUSTBOY_HOMEBREW) {
     const entries = JSON.parse(await fs.readFile(path.join(site, 'homebrew/romlist.json'), 'utf8'));
-    assert.equal(entries.length, 3);
+    assert.equal(entries.length, 4);
     // These pinned cartridges exercise all automatic hardware choices. Tobu
     // supports both CGB and SGB; Auto deliberately prefers its SGB enhancements.
-    const homebrewHardware = {'2048':'dmg','tobu-tobu-girl-deluxe':'sgb','ucity':'cgb'};
+    const homebrewHardware = {'2048':'dmg','tobu-tobu-girl-deluxe':'sgb','ucity':'cgb','tacos-frietjes':'gba'};
     for (const entry of entries) {
       await evaluate("openPicker(); searchQuery = ''; document.querySelector('#rom-search').value = ''; document.querySelector('[data-tab=homebrew]').click(); filterRoms()");
-      await until("document.querySelectorAll('#rom-list li .rom-name').length === 3");
+      await until("document.querySelectorAll('#rom-list li .rom-name').length === 4");
       assert.ok(await evaluate("!document.querySelector('#homebrew-info').classList.contains('hidden')"));
       const title = JSON.stringify(entry.title);
       await evaluate(`Array.from(document.querySelectorAll('#rom-list li')).find(li => li.querySelector('.rom-name')?.textContent === ${title}).click()`);
       await until(`currentRomInfo?.name === ${JSON.stringify(entry.name)} && document.querySelector('#rom-picker').classList.contains('hidden')`);
-      await until("Module._get_debug_state().includes('Boot:0')");
+      if (entry.platform !== 'GBA') await until("Module._get_debug_state().includes('Boot:0')");
       // Tobu has non-skippable publisher/music logos before its intro/menu.
       await new Promise(resolve => setTimeout(resolve, entry.id === 'tobu-tobu-girl-deluxe' ? 14000 : 3000));
       const colors = await evaluate("new Set(new Uint32Array(document.querySelector('#rustboy-canvas').getContext('2d').getImageData(0,0,160,144).data.buffer)).size");
       assert.ok(colors > 1, `${entry.title} renders a nonblank game screen`);
       const expectedHardware = homebrewHardware[entry.id];
       assert.ok(expectedHardware, `${entry.title}: pinned hardware expectation exists`);
-      assert.equal(await evaluate('Module._get_is_cgb()'), expectedHardware === 'cgb', `${entry.title}: automatic CGB selection`);
-      assert.equal(await evaluate("Module._get_sgb_status().startsWith('SGB HLE: functions enabled')"), expectedHardware === 'sgb', `${entry.title}: automatic SGB selection`);
+      if (expectedHardware === 'gba') {
+        assert.equal(await evaluate("Module._get_state_id().startsWith('gba-')"), true, 'GBA backend selected');
+        assert.equal(await evaluate("document.querySelector('#gba-save-type').value"), 'sram', 'Catalog selects SRAM before loading');
+        assert.deepEqual(await evaluate("[document.querySelector('#rustboy-canvas').width,document.querySelector('#rustboy-canvas').height]"), [240,160]);
+      }
+      if (expectedHardware !== 'gba') assert.equal(await evaluate('Module._get_is_cgb()'), expectedHardware === 'cgb', `${entry.title}: automatic CGB selection`);
+      if (expectedHardware !== 'gba') assert.equal(await evaluate("Module._get_sgb_status().startsWith('SGB HLE: functions enabled')"), expectedHardware === 'sgb', `${entry.title}: automatic SGB selection`);
       for (const [key, code] of [['Enter', 'Enter'], ['a', 'KeyA'], ['ArrowRight', 'ArrowRight']]) {
         await call('Input.dispatchKeyEvent', {type: 'keyDown', key, code});
         await new Promise(resolve => setTimeout(resolve, 120));

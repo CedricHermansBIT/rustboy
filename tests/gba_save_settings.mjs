@@ -35,3 +35,14 @@ assert.equal(kind,'flash128','Remembered override precedes every import');
 kind='';controller.refresh();
 assert.equal(select.value,'auto','A previous cartridge override does not leak into the next game');
 console.log('GBA save settings: failed-load repair, remembered pre-import override and rejected unsafe changes passed');
+
+// Catalog defaults cover signatureless homebrew, while user settings win.
+let chosen;
+const defaults=installGbaSaveSettings({...api,
+  get_gba_rom_save_key:()=> 'signatureless',
+  load_gba_data_with_save_type:(_rom,_bios,type)=>{chosen=type;},
+}, {querySelector:id=>id==='#gba-save-type'?select:status},()=>{});
+defaults.load(rom,new Uint8Array(),'sram');assert.equal(chosen,'sram');
+values.set('signatureless_type','flash128');
+defaults.load(rom,new Uint8Array(),'sram');assert.equal(chosen,'flash128');
+assert.throws(()=>defaults.load(rom,new Uint8Array(),'invalid'),/Unknown catalog/);

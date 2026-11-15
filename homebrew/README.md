@@ -1,9 +1,9 @@
 # Curated public homebrew
 
-Only this catalog's explicitly licensed games are included in the public Pages
+Only this catalog's licensed or explicitly author-shared games are included in the public Pages
 build. "Free to download", a public GitHub repository, or a mirror's license tag
 is not sufficient permission by itself. Code and assets must both be covered.
-No ROM binaries or downloaded source archives are committed here.
+Third-party ROM binaries and downloaded source archives are not committed here. The author-provided Tacos & Frietjes ROM is an explicit bundled exception.
 
 ## Games and provenance
 
@@ -35,6 +35,15 @@ Commons' official legal-code text URLs:
 
 - https://creativecommons.org/licenses/by/4.0/legalcode.txt
 - https://creativecommons.org/licenses/by-sa/4.0/legalcode.txt
+
+## Tacos & Frietjes
+
+Created by Cedric Hermans and included at his request. The unmodified ROM is
+bundled at `bundled/tacos-frietjes.gba`; public and local picker names contain
+no release version. The catalog pins its hash and sets `saveType: sram` so
+signatureless homebrew saves work automatically. Existing user save-hardware
+overrides take precedence. The hosting notice is in
+[licenses/Tacos-Frietjes.txt](licenses/Tacos-Frietjes.txt).
 
 ## Packaging and updates
 

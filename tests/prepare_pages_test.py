@@ -56,6 +56,37 @@ class PackagingTests(unittest.TestCase):
         manifest = json.loads((self.output / "homebrew/romlist.json").read_text())
         self.assertEqual(manifest[0]["sha256"], self.catalog[0]["rom"]["sha256"])
 
+    def test_bundled_gba_is_verified_and_published_without_downloading(self):
+        artifact = self.catalog[0]['rom']
+        artifact.pop('url'); artifact.update(name='demo.gba', bundled='bundled/demo.gba')
+        (self.root / 'homebrew/bundled').mkdir()
+        (self.root / 'homebrew/bundled/demo.gba').write_bytes(self.rom)
+        self.catalog[0].pop('source'); self.catalog[0]['license'] = 'Author permission'
+        self.catalog[0]['platform'] = 'GBA'
+        self.catalog[0]['saveType'] = 'sram'
+        def no_download(_):
+            self.fail('Bundled game must not use the network downloader')
+        self.stage(no_download)
+        self.assertEqual((self.output/'homebrew/demo.gba').read_bytes(), self.rom)
+        self.assertEqual(json.loads((self.output/'homebrew/romlist.json').read_text())[0]['saveType'], 'sram')
+
+    def test_bundled_artifacts_cannot_escape_allowlisted_directory(self):
+        artifact = self.catalog[0]['rom']; artifact.pop('url')
+        for path in ('../roms/private.gba', 'licenses/GPL.txt', '/tmp/private.gba'):
+            artifact['bundled'] = path
+            with self.assertRaises(ValueError):
+                self.stage()
+        self.assertFalse(self.output.exists())
+
+    def test_corrupt_bundled_gba_publishes_nothing(self):
+        artifact = self.catalog[0]['rom']; artifact.pop('url')
+        artifact.update(name='demo.gba', bundled='bundled/demo.gba')
+        (self.root/'homebrew/bundled').mkdir()
+        (self.root/'homebrew/bundled/demo.gba').write_bytes(b'corrupt')
+        with self.assertRaisesRegex(ValueError, 'mismatch'):
+            self.stage()
+        self.assertFalse(self.output.exists())
+
     def test_bad_download_publishes_nothing(self):
         with self.assertRaisesRegex(ValueError, "mismatch"):
             self.stage(lambda a: b"corrupt")

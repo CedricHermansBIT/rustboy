@@ -2,7 +2,7 @@
 """Stage a clean Pages site with hash-pinned, redistributable homebrew.
 
 No commercial/local ROM directories or external boot firmware are copied.
-ROMs and corresponding source archives are downloaded into the deployment
+Pinned downloads and explicitly bundled author-provided ROMs are staged in the deployment
 artifact only. Run after scripts/build_web.py; --output must be empty/new.
 """
 import argparse
@@ -42,6 +42,8 @@ def validate_catalog(catalog, notice_root):
         for field in ("title", "author", "description", "platform", "license"):
             if not isinstance(entry.get(field), str) or not entry[field]:
                 raise ValueError(f"Missing {field} for {entry['id']}")
+        if "saveType" in entry and (entry["platform"] != "GBA" or entry["saveType"] not in ("sram", "flash64", "flash128", "eeprom", "none")):
+            raise ValueError(f"Invalid cartridge save hardware: {entry['id']}")
         for field in ("homepage", "source_page"):
             if urllib.parse.urlparse(entry.get(field, "")).scheme != "https":
                 raise ValueError(f"Invalid {field} for {entry['id']}")
@@ -61,11 +63,18 @@ def validate_catalog(catalog, notice_root):
             if name in names:
                 raise ValueError(f"Duplicate artifact: {name}")
             names.add(name)
-            if kind == "rom" and ("/" in name or not name.endswith((".gb", ".gbc"))):
+            if kind == "rom" and ("/" in name or not name.endswith((".gb", ".gbc", ".gba"))):
                 raise ValueError(f"Invalid ROM filename: {name}")
             if kind == "source" and not name.startswith("sources/"):
                 raise ValueError(f"Invalid source archive path: {name}")
-            if urllib.parse.urlparse(artifact["url"]).scheme != "https":
+            if ("url" in artifact) == ("bundled" in artifact):
+                raise ValueError(f"Exactly one download URL or bundled path is required: {name}")
+            if "bundled" in artifact:
+                bundled = safe_path(artifact["bundled"])
+                target = notice_root / bundled
+                if bundled.parts[0] != "bundled" or not target.is_file() or not target.resolve().is_relative_to(notice_root.resolve() / "bundled"):
+                    raise ValueError(f"Invalid bundled artifact: {name}")
+            elif urllib.parse.urlparse(artifact["url"]).scheme != "https":
                 raise ValueError(f"Downloads must use HTTPS: {name}")
             if not re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"]):
                 raise ValueError(f"Missing/invalid SHA-256: {name}")
@@ -113,8 +122,8 @@ def credits_page(catalog):
 <title>RustBoy homebrew credits and licenses</title>
 <style>body{max-width:850px;margin:2rem auto;padding:0 1rem;font:16px/1.6 system-ui;background:#161c16;color:#e4eee4}a{color:#a8e8a8}code{overflow-wrap:anywhere}section{border-top:1px solid #506050;margin-top:2rem}</style>
 <h1>Homebrew credits and licenses</h1><p><a href="../index.html">Back to RustBoy</a></p>
-<p>These independently authored games are redistributable under their respective
-licenses, not owned by or endorsed by RustBoy. Support their creators through
+<p>These independently authored games are hosted under their respective licenses
+or with permission from their authors. Support their creators through
 the project links below. License terms apply to downloaded ROMs too.</p>
 ''' + "\n".join(sections) + "\n</html>\n"
 
@@ -133,7 +142,11 @@ def prepare(destination, root=ROOT, download=fetch_artifact):
     artifacts = [entry[kind] for entry in catalog for kind in ("rom", "source") if kind in entry]
     # Verify every payload before publishing any part of the site.
     with ThreadPoolExecutor(max_workers=4) as pool:
-        payloads = list(pool.map(download, artifacts))
+        def load(artifact):
+            if "bundled" in artifact:
+                return (root / "homebrew" / artifact["bundled"]).read_bytes()
+            return download(artifact)
+        payloads = list(pool.map(load, artifacts))
     for artifact, data in zip(artifacts, payloads):
         verify_artifact(artifact, data)
     index = (root / "index.html").read_text()
@@ -154,6 +167,7 @@ def prepare(destination, root=ROOT, download=fetch_artifact):
         print(f"Verified {artifact['name']}: {len(data)} bytes", flush=True)
     manifest = [{**{k: entry[k] for k in ("id", "title", "author", "platform", "description", "license")},
                  **{k: entry["rom"][k] for k in ("name", "size", "sha256")},
+                 **({"saveType": entry["saveType"]} if "saveType" in entry else {}),
                  "credits": f"credits.html#{entry['id']}"} for entry in catalog]
     (output / "romlist.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     (output / "credits.html").write_text(credits_page(catalog))

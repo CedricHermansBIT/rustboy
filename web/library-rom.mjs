@@ -4,7 +4,7 @@ export async function fetchLibraryRom(entry, folder, fetchFile = fetch, subtle =
   const parts = typeof entry.name === 'string' ? entry.name.split('/') : [];
   if (!parts.length || parts.some(part => !part || part === '.' || part === '..' || /[\\\u0000-\u001f\u007f]/.test(part))
       || (!local && parts.length !== 1)
-      || !(local ? /\.(gb|gbc|gba)$/i : /\.(gb|gbc)$/i).test(entry.name)) {
+      || !/\.(gb|gbc|gba)$/i.test(entry.name)) {
     throw new Error('Invalid library ROM filename');
   }
   const response = await fetchFile(`${folder}/${parts.map(encodeURIComponent).join('/')}`, {signal: AbortSignal.timeout(15000)});
