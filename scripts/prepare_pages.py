@@ -113,7 +113,7 @@ def credits_page(catalog):
 <h2>{escape(entry['title'])}</h2><p>{escape(entry['author'])}</p>
 <p>{escape(entry['license'])}. Games and assets are unmodified.</p>
 <p><a href="{escape(entry['homepage'])}">Creator / project</a> ·
-<a href="{escape(entry['source_page'])}">Pinned upstream source</a></p>
+<a href="{escape(entry['source_page'])}">Project files</a></p>
 {source_download}<p>Full license notices: {links}</p>
 <p>{escape(entry.get('provenance', 'Unmodified upstream ROM at the pinned commit.'))}</p>
 <p>ROM SHA-256: <code>{entry['rom']['sha256']}</code></p></section>''')
