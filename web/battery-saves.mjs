@@ -66,4 +66,25 @@ export class BatterySaveStore {
       return false;
     }
   }
+
+  /* An updated homebrew build has a new ROM hash, so its battery key changes.
+   * Copy the newest previous build's save once, only when the new key is
+   * empty and the old value decodes. The previous key is left untouched as a
+   * backup. Returns the key copied from, or '' when nothing was migrated. */
+  migrate(key, legacyKeys = []) {
+    try {
+      if (!key || this.storage.getItem(key) !== null) return '';
+      for (const legacy of legacyKeys) {
+        if (!legacy || legacy === key) continue;
+        const encoded = this.storage.getItem(legacy);
+        if (encoded === null) continue;
+        this.decode(encoded);
+        this.storage.setItem(key, encoded);
+        return legacy;
+      }
+    } catch (_) {
+      // Leave every value as it was; the old save stays available for export.
+    }
+    return '';
+  }
 }

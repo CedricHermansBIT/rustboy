@@ -29,6 +29,14 @@ def safe_path(name):
     return path
 
 
+def gba_save_key(data):
+    """Same FNV-1a key as rustboy_gba::cartridge_save_key."""
+    value = 0xcbf29ce484222325
+    for byte in data:
+        value = ((value ^ byte) * 0x100000001b3) & 0xffffffffffffffff
+    return f"rustboy_save_gba_{value:016x}"
+
+
 def validate_catalog(catalog, notice_root):
     if not isinstance(catalog, list) or not catalog:
         raise ValueError("Homebrew catalog must be a nonempty array")
@@ -44,6 +52,9 @@ def validate_catalog(catalog, notice_root):
                 raise ValueError(f"Missing {field} for {entry['id']}")
         if "saveType" in entry and (entry["platform"] != "GBA" or entry["saveType"] not in ("sram", "flash64", "flash128", "eeprom", "none")):
             raise ValueError(f"Invalid cartridge save hardware: {entry['id']}")
+        if "legacySaveKeys" in entry and (entry["platform"] != "GBA" or not isinstance(entry["legacySaveKeys"], list)
+                or not all(isinstance(k, str) and re.fullmatch(r"rustboy_save_gba_[0-9a-f]{16}", k) for k in entry["legacySaveKeys"])):
+            raise ValueError(f"Invalid legacy save keys: {entry['id']}")
         for field in ("homepage", "source_page"):
             if urllib.parse.urlparse(entry.get(field, "")).scheme != "https":
                 raise ValueError(f"Invalid {field} for {entry['id']}")
@@ -165,9 +176,12 @@ def prepare(destination, root=ROOT, download=fetch_artifact):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         print(f"Verified {artifact['name']}: {len(data)} bytes", flush=True)
+    roms = {artifact["name"]: data for artifact, data in zip(artifacts, payloads)}
     manifest = [{**{k: entry[k] for k in ("id", "title", "author", "platform", "description", "license")},
                  **{k: entry["rom"][k] for k in ("name", "size", "sha256")},
                  **({"saveType": entry["saveType"]} if "saveType" in entry else {}),
+                 **({"saveKey": gba_save_key(roms[entry["rom"]["name"]]), "legacySaveKeys": entry["legacySaveKeys"]}
+                    if entry.get("legacySaveKeys") else {}),
                  "credits": f"credits.html#{entry['id']}"} for entry in catalog]
     (output / "romlist.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     (output / "credits.html").write_text(credits_page(catalog))

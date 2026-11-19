@@ -57,3 +57,20 @@ for (const corrupt of ['!', 'AA=', 'AB==', '', 'AA==\n']) {
   assert.equal(f.values.get(key), original);
 }
 console.log('Battery saves: legacy roundtrip, quota recovery, privacy errors and corruption preservation passed');
+{
+  // Updated homebrew: copy the previous build's save once, keep the original.
+  const f = fixture(), oldKey = 'rustboy_save_gba_2d501d4c39a65eb1', newKey = 'rustboy_save_gba_e8d25e889676b780';
+  f.values.set(oldKey, btoa('chapter 5 progress'));
+  assert.equal(f.store.migrate(newKey, [oldKey]), oldKey);
+  assert.equal(f.values.get(newKey), f.values.get(oldKey));
+  assert.equal(f.values.has(oldKey), true, 'Previous save is kept as a backup');
+  // Never overwrite progress already made in the new build.
+  f.values.set(newKey, btoa('newer progress'));
+  assert.equal(f.store.migrate(newKey, [oldKey]), '');
+  assert.equal(atob(f.values.get(newKey)), 'newer progress');
+  // Corrupt legacy data is not copied.
+  const g = fixture(); g.values.set(oldKey, '%%%');
+  assert.equal(g.store.migrate(newKey, [oldKey]), '');
+  assert.equal(g.values.has(newKey), false);
+  assert.equal(fixture().store.migrate(newKey, [oldKey]), '');
+}

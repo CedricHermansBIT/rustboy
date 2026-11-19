@@ -85,8 +85,11 @@
       "name": "tacos-frietjes.gba",
       "bundled": "bundled/tacos-frietjes.gba",
       "size": 8388608,
-      "sha256": "659f34a98508911cc23fc0af2a63143a5954676af586cbff0938038b319b500c"
+      "sha256": "3722f4e6ba99d06df669c4134a39411000da067762302864d33031c403ecd065"
     },
-    "saveType": "sram"
+    "saveType": "sram",
+    "legacySaveKeys": [
+      "rustboy_save_gba_2d501d4c39a65eb1"
+    ]
   }
 ]

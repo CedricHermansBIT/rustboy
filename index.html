@@ -2167,7 +2167,10 @@
           const romInfo = { name: rom.name, folder: tab.folder, tab: activeTab };
           const data = await Module._fetch_library_rom(rom, tab.folder);
           await saveState('auto', true);
+          const migratedFrom = rom.saveKey && rom.legacySaveKeys?.length
+            ? cartridgeSaveStore().migrate(rom.saveKey, rom.legacySaveKeys) : '';
           await Module._load_rom_data(data, rom.name, {saveType: rom.saveType || 'auto'});
+          if (migratedFrom) toast('Your save from the previous version was kept.');
           currentRomInfo = romInfo;
           addToRecent(romInfo);
           romLoaded = true;

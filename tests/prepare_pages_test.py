@@ -70,6 +70,27 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual((self.output/'homebrew/demo.gba').read_bytes(), self.rom)
         self.assertEqual(json.loads((self.output/'homebrew/romlist.json').read_text())[0]['saveType'], 'sram')
 
+    def test_updated_gba_build_lists_previous_save_key(self):
+        artifact = self.catalog[0]['rom']
+        artifact.pop('url'); artifact.update(name='demo.gba', bundled='bundled/demo.gba')
+        (self.root / 'homebrew/bundled').mkdir()
+        (self.root / 'homebrew/bundled/demo.gba').write_bytes(self.rom)
+        self.catalog[0].pop('source'); self.catalog[0]['license'] = 'Author permission'
+        self.catalog[0]['platform'] = 'GBA'
+        self.catalog[0]['legacySaveKeys'] = ['rustboy_save_gba_2d501d4c39a65eb1']
+        self.stage(lambda _: self.fail('Bundled game must not use the network downloader'))
+        entry = json.loads((self.output/'homebrew/romlist.json').read_text())[0]
+        self.assertEqual(entry['legacySaveKeys'], ['rustboy_save_gba_2d501d4c39a65eb1'])
+        self.assertEqual(entry['saveKey'], pages.gba_save_key(self.rom))
+        # Known FNV-1a vector shared with rustboy_gba::backend::hash.
+        self.assertEqual(pages.gba_save_key(b''), 'rustboy_save_gba_cbf29ce484222325')
+
+    def test_invalid_legacy_save_keys_are_rejected(self):
+        self.catalog[0]['platform'] = 'GBA'
+        self.catalog[0]['legacySaveKeys'] = ['rustboy_save_other']
+        with self.assertRaisesRegex(ValueError, 'legacy save keys'):
+            pages.validate_catalog(self.catalog, self.root / 'homebrew')
+
     def test_bundled_artifacts_cannot_escape_allowlisted_directory(self):
         artifact = self.catalog[0]['rom']; artifact.pop('url')
         for path in ('../roms/private.gba', 'licenses/GPL.txt', '/tmp/private.gba'):

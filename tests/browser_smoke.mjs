@@ -1109,6 +1109,14 @@ try {
       await until("document.querySelectorAll('#rom-list li .rom-name').length === 4");
       assert.ok(await evaluate("!document.querySelector('#homebrew-info').classList.contains('hidden')"));
       const title = JSON.stringify(entry.title);
+      let seededSave = '';
+      if (entry.legacySaveKeys?.length) {
+        // An updated homebrew ROM has a new hash/battery key: the previous
+        // build's in-game save must carry over (and stay as a backup).
+        const save = new Uint8Array(32768); save.set([0x54,0x46,0x53,25,5]);
+        seededSave = Buffer.from(save).toString('base64');
+        await evaluate(`localStorage.removeItem(${JSON.stringify(entry.saveKey)}); localStorage.setItem(${JSON.stringify(entry.legacySaveKeys[0])}, ${JSON.stringify(seededSave)})`);
+      }
       await evaluate(`Array.from(document.querySelectorAll('#rom-list li')).find(li => li.querySelector('.rom-name')?.textContent === ${title}).click()`);
       await until(`currentRomInfo?.name === ${JSON.stringify(entry.name)} && document.querySelector('#rom-picker').classList.contains('hidden')`);
       if (entry.platform !== 'GBA') await until("Module._get_debug_state().includes('Boot:0')");
@@ -1121,6 +1129,11 @@ try {
       if (expectedHardware === 'gba') {
         assert.equal(await evaluate("Module._get_state_id().startsWith('gba-')"), true, 'GBA backend selected');
         assert.equal(await evaluate("document.querySelector('#gba-save-type').value"), 'sram', 'Catalog selects SRAM before loading');
+        if (seededSave) {
+          assert.equal(await evaluate('Module._get_save_key()'), entry.saveKey, 'Manifest save key matches the emulator');
+          assert.equal(await evaluate(`localStorage.getItem(${JSON.stringify(entry.saveKey)})`), seededSave, 'Previous build save migrated');
+          assert.equal(await evaluate(`localStorage.getItem(${JSON.stringify(entry.legacySaveKeys[0])})`), seededSave, 'Previous build save kept');
+        }
         assert.deepEqual(await evaluate("[document.querySelector('#rustboy-canvas').width,document.querySelector('#rustboy-canvas').height]"), [240,160]);
       }
       if (expectedHardware !== 'gba') assert.equal(await evaluate('Module._get_is_cgb()'), expectedHardware === 'cgb', `${entry.title}: automatic CGB selection`);

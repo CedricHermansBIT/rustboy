@@ -45,6 +45,12 @@ signatureless homebrew saves work automatically. Existing user save-hardware
 overrides take precedence. The hosting notice is in
 [licenses/Tacos-Frietjes.txt](licenses/Tacos-Frietjes.txt).
 
+Battery saves are keyed by the ROM hash, so each new build gets a new key. When
+updating the ROM, append the previous build's key to `legacySaveKeys` (newest
+first). The staged romlist adds the new build's computed `saveKey`; on load, the
+browser copies the newest previous save only when the new key is still empty,
+and leaves the old save in place as a backup.
+
 ## Packaging and updates
 
 Run `python3 scripts/prepare_pages.py --output <empty-directory>` after building
