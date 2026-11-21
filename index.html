@@ -9,10 +9,21 @@
         color-scheme: dark;
         --app-vw: 100vw;
         --app-vh: 100vh;
+        /* Shared palette: change these to re-theme the whole interface. */
+        --bg: #111;
+        --surface: #141814;
+        --surface-2: #1b201b;
+        --border: #394539;
+        --border-strong: #465446;
+        --divider: #2d382d;
+        --accent: #9be89b;
+        --text: #ccc;
+        --text-muted: #9aa59a;
+        --text-subtle: #8a998a;
       }
       * { margin: 0; padding: 0; box-sizing: border-box; }
       body {
-        background: #111;
+        background: var(--bg);
         display: flex;
         justify-content: center;
         align-items: center;
@@ -21,7 +32,7 @@
         min-height: var(--app-vh);
         overflow: hidden;
         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        color: #ccc;
+        color: var(--text);
         user-select: none;
         touch-action: manipulation;
         -webkit-tap-highlight-color: transparent;
@@ -111,7 +122,7 @@
       .side-panel.panels-hidden { opacity: 0; pointer-events: none; visibility: hidden; }
 
       .side-panel h3 {
-        color: #9be89b; font-size: 0.85rem;
+        color: var(--accent); font-size: 0.85rem;
         text-transform: uppercase; letter-spacing: 0.08em;
         margin-bottom: 10px; font-weight: 600;
       }
@@ -131,7 +142,7 @@
         text-align: center; white-space: nowrap;
         cursor: pointer; transition: background 0.12s, border-color 0.12s;
       }
-      .side-panel .key-row kbd:hover { background: #333; border-color: #9be89b; }
+      .side-panel .key-row kbd:hover { background: #333; border-color: var(--accent); }
       .side-panel .key-row kbd.listening {
         background: #420; border-color: #f92;
         color: #fa0; animation: pulse 0.8s infinite alternate;
@@ -140,51 +151,52 @@
       @keyframes pulse { from { opacity: 0.7; } to { opacity: 1; } }
       .side-panel .key-row kbd.no-rebind { cursor: default; }
       .side-panel .key-row kbd.no-rebind:hover { background: #222; border-color: #444; }
-      .side-panel .key-row .desc { color: #999; padding: 0 8px; }
+      .side-panel .key-row .desc { color: var(--text-muted); padding: 0 8px; }
       .debug-tools.hidden { display: none; }
       [hidden] { display: none !important; }
-      .key-row kbd:focus-visible { outline: 2px solid #9be89b; outline-offset: 3px; }
+      .key-row kbd:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
       .settings-panel kbd.listening { color: #fa0; border-color: #f92; }
       .ui-button {
-        background: #1b201b; color: #b8c7b8; border: 1px solid #394539;
+        background: var(--surface-2); color: #b8c7b8; border: 1px solid var(--border);
         border-radius: 6px; padding: 8px 12px; font: inherit;
         font-size: .8rem; cursor: pointer; transition: background .15s, border-color .15s;
       }
-      .ui-button:hover { background: #242d24; color: #9be89b; border-color: #719071; }
+      .ui-button:hover:not(:disabled) { background: #242d24; color: var(--accent); border-color: #719071; }
+      .ui-button:disabled { opacity: .45; cursor: default; }
       .ui-button:focus-visible, .settings-panel select:focus-visible, .settings-section summary:focus-visible {
-        outline: 2px solid #9be89b; outline-offset: 3px;
+        outline: 2px solid var(--accent); outline-offset: 3px;
       }
       .side-panel .ui-button { width: 100%; margin: 7px 0; text-align: left; }
       .settings-panel {
         margin: auto; width: min(520px, calc(100vw - 28px)); max-height: calc(100dvh - 40px);
-        padding: 22px; overflow-y: auto; background: #141814; color: #ccc;
-        border: 1px solid #465446; border-radius: 12px; box-shadow: 0 24px 80px #0009;
+        padding: 22px; overflow-y: auto; background: var(--surface); color: #ccc;
+        border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: 0 24px 80px #0009;
         user-select: text;
       }
       .settings-panel::backdrop { background: #000b; }
       .settings-panel header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
-      .settings-panel h2 { font-size: 1.15rem; font-weight: 600; color: #9be89b; }
+      .settings-panel h2 { font-size: 1.15rem; font-weight: 600; color: var(--accent); }
       .settings-panel kbd { color: #c9d7c9; background: #232a23; border: 1px solid #455045; border-radius: 4px; padding: 3px 8px; font-size: .76rem; cursor: pointer; }
-      .settings-section { border-top: 1px solid #2d382d; padding: 13px 0; }
+      .settings-section { border-top: 1px solid var(--divider); padding: 13px 0; }
       .settings-section:last-child { padding-bottom: 0; }
       .settings-section > summary { cursor: pointer; color: #b8d2b8; font-size: .85rem; font-weight: 600; }
-      .settings-section > summary:hover { color: #9be89b; }
+      .settings-section > summary:hover { color: var(--accent); }
       .settings-section[open] > summary { margin-bottom: 15px; }
       .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 12px 0; font-size: .82rem; }
       .settings-row select, #vram-view {
-        min-width: 0; max-width: 100%; background: #1b201b; color: #c9d7c9;
-        border: 1px solid #394539; border-radius: 6px; padding: 8px 10px; font: inherit; font-size: .8rem;
+        min-width: 0; max-width: 100%; background: var(--surface-2); color: #c9d7c9;
+        border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font: inherit; font-size: .8rem;
       }
       .settings-row select { width: 55%; }
-      .settings-panel input[type="checkbox"] { accent-color: #9be89b; width: 16px; height: 16px; }
-      .settings-panel .hint { color: #869586; font-size: .74rem; line-height: 1.55; margin: 8px 0; overflow-wrap: anywhere; }
+      .settings-panel input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+      .settings-panel .hint { color: var(--text-subtle); font-size: .74rem; line-height: 1.55; margin: 8px 0; overflow-wrap: anywhere; }
       #gba-link-settings input:not([type="checkbox"]) { width: 100%; box-sizing: border-box; margin: 6px 0 10px; padding: 8px; color: #d6e4d6; background: #111811; border: 1px solid #455045; border-radius: 5px; }
-      #gba-link-settings .link-step { margin: 14px 0; padding-bottom: 10px; border-bottom: 1px solid #2d382d; }
+      #gba-link-settings .link-step { margin: 14px 0; padding-bottom: 10px; border-bottom: 1px solid var(--divider); }
       #gba-link-settings .link-step h3 { font-size: .85rem; color: #b8d2b8; }
       #gba-link-settings textarea { width: 100%; box-sizing: border-box; min-height: 76px; padding: 8px; margin: 6px 0 10px; color: #d6e4d6; background: #111811; border: 1px solid #455045; border-radius: 5px; font: .72rem monospace; resize: vertical; }
       #gba-link-settings label { display: block; margin-top: 8px; font-size: .8rem; color: #b8d2b8; }
       .settings-panel .button-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
-      #sgb-audio-settings { margin-top: 16px; padding-top: 15px; border-top: 1px solid #2d382d; }
+      #sgb-audio-settings { margin-top: 16px; padding-top: 15px; border-top: 1px solid var(--divider); }
       #sgb-audio-settings summary { font-size: .82rem; color: #b8c7b8; cursor: pointer; }
       #sgb-firmware-status { border-left: 2px solid #587258; padding-left: 10px; }
       #vram-view { width: 100%; margin: 6px 0 10px; }
@@ -192,11 +204,11 @@
 
       .reset-bindings {
         display: inline-block; margin-top: 4px;
-        font-size: 0.7rem; color: #666; cursor: pointer;
+        font-size: 0.7rem; color: var(--text-subtle); cursor: pointer;
         border: none; background: none; font-family: inherit;
         text-decoration: underline;
       }
-      .reset-bindings:hover { color: #9be89b; }
+      .reset-bindings:hover { color: var(--accent); }
 
       /* Mobile touch controls */
       #touch-controls {
@@ -217,9 +229,11 @@
         position: absolute;
         display: flex;
         gap: 10px;
+        width: max-content;
         pointer-events: auto;
         transform-origin: top left;
-        transform: scale(var(--touch-scale));
+        /* --touch-fit shrinks a cluster that would not fit the screen at the chosen scale. */
+        transform: scale(calc(var(--touch-scale) * var(--touch-fit, 1)));
       }
       .touch-cluster.dpad {
         display: grid;
@@ -244,7 +258,8 @@
       .touch-cluster.shoulder,
       .touch-cluster.utility {
         gap: 8px;
-        flex-wrap: wrap;
+        /* No wrapping: otherwise the cluster changes shape as it nears the right edge. */
+        flex-wrap: nowrap;
         justify-content: center;
       }
       .touch-btn {
@@ -305,11 +320,42 @@
       }
       #touch-controls.edit-mode .touch-drag-handle { display: inline-block; }
       #touch-controls.edit-mode .touch-cluster {
+        cursor: grab;
         outline: 1px dashed rgba(155, 232, 155, 0.35);
         outline-offset: 6px;
         border-radius: 22px;
       }
-      .touch-cluster.dragging { filter: brightness(1.1); }
+      .touch-cluster.dragging { filter: brightness(1.1); cursor: grabbing; }
+      #touch-edit-done {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        z-index: 5;
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        min-height: 48px;
+        padding: 8px 20px;
+        border-radius: 999px;
+        border: 1px solid rgba(155, 232, 155, 0.7);
+        background: rgba(8, 16, 8, 0.9);
+        color: var(--accent);
+        font: inherit;
+        font-size: 0.95rem;
+        font-weight: 700;
+        cursor: pointer;
+        pointer-events: auto;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+      }
+      #touch-edit-done small { font-size: 0.7rem; font-weight: 400; color: #b9cfb9; }
+      #touch-controls.edit-mode #touch-edit-done { display: flex; }
+      #touch-controls.edit-mode.settings-open #touch-edit-done { display: none; }
+      #touch-safe-probe {
+        position: absolute; visibility: hidden; pointer-events: none;
+        padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+      }
 
       #touch-settings-toggle {
         position: absolute;
@@ -327,7 +373,8 @@
         font-weight: 800;
         cursor: pointer;
         pointer-events: auto;
-        z-index: 2;
+        /* Above every cluster, so a dragged button can never cover the menu. */
+        z-index: 4;
         box-shadow: 0 8px 22px rgba(0,0,0,0.24);
       }
       #touch-settings {
@@ -341,6 +388,11 @@
         border: 1px solid rgba(120, 180, 120, 0.38);
         color: #d6e7d6;
         pointer-events: auto;
+        z-index: 4;
+        max-height: calc(var(--app-vh) - 68px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        touch-action: pan-y;
         backdrop-filter: blur(10px);
         box-shadow: 0 16px 30px rgba(0, 0, 0, 0.28);
       }
@@ -350,7 +402,7 @@
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0.08em;
-        color: #9be89b;
+        color: var(--accent);
         margin-bottom: 10px;
       }
       .touch-setting {
@@ -365,7 +417,7 @@
       .touch-setting strong {
         font-family: 'Consolas', 'Courier New', monospace;
         font-size: 0.76rem;
-        color: #9be89b;
+        color: var(--accent);
       }
       .touch-check {
         display: flex;
@@ -386,8 +438,9 @@
         background: rgba(18, 28, 18, 0.85);
         color: #d8f5d8;
         font: inherit;
-        font-size: 0.76rem;
-        padding: 6px 10px;
+        font-size: 0.78rem;
+        min-height: 36px;
+        padding: 6px 12px;
         cursor: pointer;
       }
       .touch-settings-hint {
@@ -404,12 +457,16 @@
         display: flex; flex-direction: column;
         align-items: center;
         z-index: 100; color: #eee;
-        padding-top: 3vh;
+        padding: calc(3vh + env(safe-area-inset-top, 0px)) calc(12px + env(safe-area-inset-right, 0px)) calc(16px + env(safe-area-inset-bottom, 0px)) calc(12px + env(safe-area-inset-left, 0px));
+        /* Scroll the picker as a whole: on short screens the flex column used to squeeze the game list to a few pixels. */
+        overflow-y: auto;
+        overscroll-behavior: contain;
       }
+      #rom-picker > * { flex-shrink: 0; }
       #rom-picker.hidden { display: none; }
       #rom-picker h2 {
         font-size: 1.4rem; margin-bottom: 0.8rem;
-        color: #9be89b; text-shadow: 0 0 6px #4a4;
+        color: var(--accent); text-shadow: 0 0 6px #4a4;
       }
 
       /* Search bar */
@@ -421,8 +478,8 @@
         font-size: 0.95rem; font-family: inherit;
         outline: none; transition: border-color 0.2s;
       }
-      #rom-search:focus { border-color: #9be89b; }
-      #rom-search::placeholder { color: #666; }
+      #rom-search:focus { border-color: var(--accent); }
+      #rom-search::placeholder { color: #8a8a8a; }
 
       #rom-list {
         list-style: none; max-height: 65vh;
@@ -443,7 +500,7 @@
         line-height: 1.3;
       }
       #rom-list li:hover { background: rgba(120,220,120,0.15); transform: scale(1.03); }
-      #rom-list li.selected { background: rgba(120,220,120,0.2); border-color: #9be89b; }
+      #rom-list li.selected { background: rgba(120,220,120,0.2); border-color: var(--accent); }
       #rom-list li .rom-img {
         width: 120px; height: 120px; object-fit: contain;
         border-radius: 4px; background: #0a0a0a;
@@ -458,11 +515,19 @@
         word-break: break-word; color: #ccc;
       }
       #rom-list li .rom-credit { font-size: .68rem; color: #8fa58f; }
-      #homebrew-info a { color: #9be89b; }
+      #homebrew-info a { color: var(--accent); }
       #rom-count {
-        font-size: 0.7rem; color: #555; margin-bottom: 0.4rem;
+        font-size: 0.7rem; color: var(--text-muted); margin-bottom: 0.4rem;
       }
-      #rom-picker .hint { margin-top: 0.8rem; font-size: 0.75rem; color: #888; text-align: center; max-width: 90vw; }
+      #rom-picker .hint { margin-top: 0.8rem; font-size: 0.75rem; color: var(--text-muted); text-align: center; max-width: 90vw; }
+      @media (max-height: 560px) {
+        /* Short (landscape phone) screens: one scroll area instead of a tiny nested list. */
+        #rom-list { max-height: none; overflow: visible; order: 2; }
+        #picker-keys-hint { order: 3; }
+        /* Keep Upload / Link / Settings above the (now unbounded) list. */
+        #upload-area { order: 1; margin: 0 0 0.6rem; }
+        #rom-picker h2 { margin-bottom: 0.4rem; }
+      }
 
       /* ROM picker tabs */
       #rom-tabs {
@@ -483,19 +548,19 @@
       }
       .rom-tab:hover { background: rgba(120,220,120,0.1); color: #aaa; border-color: #555; }
       .rom-tab.active {
-        background: rgba(120,220,120,0.15); color: #9be89b;
-        border-color: #9be89b;
+        background: rgba(120,220,120,0.15); color: var(--accent);
+        border-color: var(--accent);
       }
 
       #upload-area { margin-top: 0.6rem; width: 540px; max-width: 90vw; display: flex; gap: 8px; }
       #upload-btn {
         flex: 1; min-width: 0; padding: 0.65rem 1rem;
-        background: transparent; color: #9be89b;
+        background: transparent; color: var(--accent);
         border: 1px dashed #4a4; border-radius: 6px;
         font-size: 0.95rem; cursor: pointer; font-family: inherit;
         transition: background 0.15s, border-color 0.15s;
       }
-      #upload-btn:hover { background: rgba(120,220,120,0.12); border-color: #9be89b; }
+      #upload-btn:hover { background: rgba(120,220,120,0.12); border-color: var(--accent); }
 
       /* Recent games section */
       #recent-section {
@@ -574,40 +639,38 @@
       .rom-status { font-size: .62rem; color: #78a878; min-height: .8rem; }
 
       #quick-toolbar {
-        position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
-        display: flex; flex-wrap: wrap; justify-content: center; max-width: calc(100vw - 24px);
-        gap: 5px; z-index: 45; opacity: .8; transition: opacity .18s;
+        /* left/right + auto margins (not left:50% + translate) so the bar can use the full width before wrapping. */
+        position: fixed; top: 12px; left: 12px; right: 12px; margin: 0 auto; width: fit-content;
+        display: flex; flex-wrap: wrap; justify-content: center;
+        gap: 5px; z-index: 45; opacity: .9; transition: opacity .3s;
       }
       #quick-toolbar:hover, #quick-toolbar:focus-within { opacity: 1; }
+      /* Fades out during play after a few seconds without mouse movement. */
+      #quick-toolbar.idle:not(:hover):not(:focus-within) { opacity: 0; pointer-events: none; }
       #quick-toolbar button {
-        white-space: nowrap;
-        background: rgba(10,10,10,.86); color: #aaa; border: 1px solid #3a3a3a;
-        border-radius: 5px; padding: 5px 8px; cursor: pointer; font: 12px inherit;
+        white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; min-height: 28px;
+        background: rgba(10,10,10,.86); color: #b5b5b5; border: 1px solid #3a3a3a;
+        border-radius: 6px; padding: 4px 10px; cursor: pointer; font: inherit; font-size: 12px;
       }
-      #quick-toolbar button:hover, #quick-toolbar button.active { color: #9be89b; border-color: #6a9; }
+      #quick-toolbar button:hover, #quick-toolbar button.active { color: var(--accent); border-color: #6a9; }
+      #quick-toolbar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      #quick-toolbar .qt-icon { font-size: 13px; line-height: 1; }
       #toast-stack { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 300; pointer-events: none; }
       .toast { background: rgba(15,20,15,.94); color: #d8ead8; border: 1px solid #587058; border-radius: 6px; padding: 9px 14px; margin-top: 6px; font-size: .8rem; box-shadow: 0 4px 18px #0008; animation: toast-in .18s ease-out; }
       .toast.error { border-color: #a55; color: #f3baba; }
       @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
 
-      #save-manager {
-        position: fixed; inset: 0; z-index: 250; background: rgba(0,0,0,.82);
-        display: flex; align-items: center; justify-content: center;
-      }
-      #save-manager.hidden { display: none; }
-      .save-panel { width: 620px; max-width: 92vw; max-height: 82vh; overflow: auto; background: #131513; border: 1px solid #465446; border-radius: 9px; padding: 18px; color: #ccc; }
-      .save-panel header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 13px; }
-      .save-panel h2 { color: #9be89b; font-size: 1.15rem; }
-      .save-panel button { background: #202420; color: #bbb; border: 1px solid #465046; border-radius: 5px; padding: 6px 9px; cursor: pointer; }
-      .save-panel button:hover { color: #9be89b; border-color: #6a8; }
-      #state-slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin: 12px 0 17px; }
-      .state-slot { border: 1px solid #333; border-radius: 6px; padding: 8px; min-width: 0; }
+      #save-manager.settings-panel { width: min(640px, calc(100vw - 28px)); }
+      #save-manager .settings-row { justify-content: flex-start; }
+      #state-slots { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 9px; margin: 12px 0 17px; }
+      .state-slot { border: 1px solid var(--divider); border-radius: 6px; padding: 8px; min-width: 0; }
+      .state-actions .ui-button { padding: 5px 9px; font-size: .74rem; }
       .state-slot img { width: 100%; height: auto; object-fit: contain; image-rendering: pixelated; background: #090909; border-radius: 3px; }
       .state-slot strong, .state-slot small { display: block; margin: 5px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .state-slot small { color: #777; font-size: .66rem; }
+      .state-slot small { color: var(--text-muted); font-size: .66rem; }
       .state-actions { display: flex; gap: 4px; flex-wrap: wrap; }
-      .save-data-actions { border-top: 1px solid #303530; padding-top: 13px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
-      .save-data-actions label { margin-right: auto; font-size: .78rem; color: #999; }
+      .save-data-actions { border-top: 1px solid var(--divider); padding-top: 13px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+      .save-data-actions .hint { margin: 0 auto 0 0; flex-basis: 100%; }
 
       /* Volume control */
       #volume-control {
@@ -619,10 +682,12 @@
       }
       #volume-control:hover { border-color: #555; }
       #volume-control .vol-icon {
-        font-size: 14px; cursor: pointer; color: #999;
+        font: inherit; font-size: 14px; cursor: pointer; color: #999;
+        background: none; border: 0; padding: 0; line-height: 1;
         user-select: none; width: 18px; text-align: center;
       }
-      #volume-control .vol-icon:hover { color: #9be89b; }
+      #volume-control .vol-icon:hover { color: var(--accent); }
+      #volume-control .vol-icon:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
       #volume-slider {
         -webkit-appearance: none; appearance: none;
         width: 90px; height: 4px; border-radius: 2px;
@@ -631,12 +696,12 @@
       #volume-slider::-webkit-slider-thumb {
         -webkit-appearance: none; appearance: none;
         width: 14px; height: 14px; border-radius: 50%;
-        background: #9be89b; cursor: pointer;
+        background: var(--accent); cursor: pointer;
         border: none; box-shadow: 0 0 4px rgba(155,232,155,0.4);
       }
       #volume-slider::-moz-range-thumb {
         width: 14px; height: 14px; border-radius: 50%;
-        background: #9be89b; cursor: pointer;
+        background: var(--accent); cursor: pointer;
         border: none; box-shadow: 0 0 4px rgba(155,232,155,0.4);
       }
       #volume-slider::-webkit-slider-runnable-track {
@@ -681,10 +746,11 @@
         height: auto;
         max-height: var(--app-vh);
       }
-      body.mobile-ui-touch #volume-control {
-        bottom: calc(12px + env(safe-area-inset-bottom, 0px));
-        right: calc(12px + env(safe-area-inset-right, 0px));
-      }
+      /* Touch mode: the toolbar and volume pill overlapped the touch buttons.
+         Their controls live in the touch menu instead. */
+      body.mobile-ui-touch #quick-toolbar,
+      body.mobile-ui-touch #volume-control,
+      body.mobile-ui-touch #picker-keys-hint { display: none; }
       body.mobile-ui-touch #debug-hud { display: none !important; }
       body.mobile-ui-wide #rustboy-canvas,
       body.mobile-ui-wide #vram-canvas {
@@ -752,7 +818,9 @@
         <p id="backend-status" class="hint" role="status" hidden></p>
         <div id="trace-badge" class="hidden">⏺ REC</div>
         <div id="touch-controls" class="hidden" aria-hidden="true">
-          <button id="touch-settings-toggle" type="button" aria-label="Touch control settings">☰</button>
+          <span id="touch-safe-probe" aria-hidden="true"></span>
+          <button id="touch-settings-toggle" type="button" aria-label="Touch control settings" aria-expanded="false" aria-controls="touch-settings">☰</button>
+          <button id="touch-edit-done" type="button">Done moving<small>Drag any button group</small></button>
           <div id="touch-settings" class="hidden">
             <div class="touch-settings-title">Touch controls</div>
             <label class="touch-setting">
@@ -765,15 +833,23 @@
               <input type="range" id="touch-scale-slider" min="70" max="160" value="100" />
               <strong id="touch-scale-value">100%</strong>
             </label>
+            <label class="touch-setting">
+              <span>Volume</span>
+              <input type="range" id="touch-volume-slider" min="0" max="100" value="30" aria-label="Volume" />
+              <strong id="touch-volume-value">30%</strong>
+            </label>
             <label class="touch-check"><input type="checkbox" id="touch-move-toggle" /> Move buttons</label>
             <label class="touch-check"><input type="checkbox" id="touch-sgb-border" data-sgb-border checked /> Show SGB decorations</label>
             <div class="touch-settings-actions">
+              <button id="touch-saves-btn" type="button" data-closes-touch-menu aria-haspopup="dialog">Saves</button>
+              <button type="button" data-open-link data-closes-touch-menu aria-haspopup="dialog">Link</button>
+              <button id="touch-fullscreen-btn" type="button" data-closes-touch-menu>Fullscreen</button>
               <button id="touch-color-btn" data-gb-only type="button">Color</button>
               <button id="touch-reset-btn" type="button">Reset ROM</button>
               <button id="touch-reset-layout" type="button">Reset layout</button>
-              <button type="button" data-open-settings aria-haspopup="dialog">All settings</button>
+              <button type="button" data-open-settings data-closes-touch-menu aria-haspopup="dialog">All settings</button>
             </div>
-            <p class="touch-settings-hint">Turn on Move buttons, then drag a dotted handle. Opacity 0 hides the play buttons but keeps this menu button available.</p>
+            <p class="touch-settings-hint">Turn on Move buttons, then drag any button group. Opacity 0 hides the play buttons but keeps this menu button available.</p>
           </div>
 
           <div class="touch-cluster dpad" data-group="dpad" aria-label="Touch D-pad">
@@ -854,19 +930,19 @@
     <div id="debug-hud" class="hidden"></div>
 
     <div id="quick-toolbar" aria-label="Quick emulator controls">
-      <button id="quick-pause" title="Pause / resume">⏸ Pause</button>
-      <button id="quick-ff" title="Hold for 4× speed">⏩</button>
-      <button id="quick-reset" title="Reset game">↻</button>
-      <button id="quick-mute" title="Mute audio">🔊</button>
-      <button id="quick-fullscreen" title="Fullscreen">⛶</button>
-      <button id="quick-saves" title="Save states and save data">Saves</button>
-      <button type="button" data-open-link aria-haspopup="dialog">Link</button>
+      <button id="quick-pause" type="button" title="Pause / resume">⏸ Pause</button>
+      <button id="quick-ff" type="button" title="Hold for 4× speed"><span class="qt-icon" aria-hidden="true">⏩</span>Fast</button>
+      <button id="quick-reset" type="button" title="Reset game"><span class="qt-icon" aria-hidden="true">↻</span>Reset</button>
+      <button id="quick-mute" type="button" title="Mute audio" aria-pressed="false">Mute</button>
+      <button id="quick-fullscreen" type="button" title="Fullscreen"><span class="qt-icon" aria-hidden="true">⛶</span>Fullscreen</button>
+      <button id="quick-saves" type="button" title="Save states and save data" aria-haspopup="dialog">Saves</button>
+      <button type="button" data-open-link aria-haspopup="dialog" title="Multiplayer link">Link</button>
       <button type="button" data-open-settings aria-haspopup="dialog">Settings</button>
     </div>
     <div id="toast-stack" aria-live="polite"></div>
 
     <div id="volume-control">
-      <span class="vol-icon" id="vol-mute-btn" role="button" tabindex="0" aria-label="Mute or unmute audio">🔊</span>
+      <button class="vol-icon" id="vol-mute-btn" type="button" aria-label="Mute or unmute audio">🔊</button>
       <input type="range" id="volume-slider" min="0" max="100" value="30" aria-label="Volume" />
       <span id="volume-pct">30%</span>
     </div>
@@ -902,7 +978,7 @@
         <button class="ui-button" type="button" data-open-settings aria-haspopup="dialog">Settings</button>
         <input type="file" id="rom-file-input" accept=".gb,.gbc,.gba,.bin" style="display:none" />
       </div>
-      <p class="hint">Type to search · ←→↑↓ navigate · Enter load · Esc back · Drop .gb/.gbc/.gba files · GBA up to 32 MiB (development)</p>
+      <p class="hint" id="picker-keys-hint">Type to search · ←→↑↓ navigate · Enter load · Esc back · Drop .gb/.gbc/.gba files · GBA up to 32 MiB (development)</p>
     </div>
 
     <dialog id="emulator-settings" class="settings-panel" aria-labelledby="settings-title">
@@ -1002,21 +1078,19 @@
       </div>
     </dialog>
 
-    <div id="save-manager" class="hidden" role="dialog" aria-modal="true" aria-labelledby="save-manager-title">
-      <div class="save-panel">
-        <header><h2 id="save-manager-title">Saves</h2><button id="save-manager-close" type="button">Close</button></header>
-        <label><input id="auto-resume" type="checkbox" checked /> Automatically resume the latest autosave</label>
-        <p id="battery-save-status" class="hint" role="status"></p>
-        <div id="state-slots"></div>
-        <div class="save-data-actions">
-          <label>Battery save (.sav) and save-state backups</label>
-          <button id="export-saves" type="button">Export backup</button>
-          <button id="import-saves" type="button">Import backup</button>
-          <button id="delete-saves" type="button">Delete game saves</button>
-          <input id="save-import-file" type="file" accept=".json,application/json" hidden />
-        </div>
+    <dialog id="save-manager" class="settings-panel" aria-labelledby="save-manager-title">
+      <header><h2 id="save-manager-title">Saves</h2><button class="ui-button" id="save-manager-close" type="button">Done</button></header>
+      <label class="settings-row" for="auto-resume"><input id="auto-resume" type="checkbox" checked /><span>Automatically resume the latest autosave</span></label>
+      <p id="battery-save-status" class="hint" role="status"></p>
+      <div id="state-slots"></div>
+      <div class="save-data-actions">
+        <p class="hint">Battery save (.sav) and save-state backups</p>
+        <button class="ui-button" id="export-saves" type="button">Export backup</button>
+        <button class="ui-button" id="import-saves" type="button">Import backup</button>
+        <button class="ui-button" id="delete-saves" type="button">Delete game saves</button>
+        <input id="save-import-file" type="file" accept=".json,application/json" hidden />
       </div>
-    </div>
+    </dialog>
 
     <script>
       /* ═══════════════════════════════════════════════════════════════
@@ -1221,6 +1295,10 @@
         panelsVisible = !panelsVisible;
         document.getElementById('panel-left').classList.toggle('panels-hidden', !panelsVisible);
         document.getElementById('panel-right').classList.toggle('panels-hidden', !panelsVisible);
+        // The side panels are not shown on narrow or touch layouts, so say where the bindings live.
+        if (getComputedStyle(document.getElementById('panel-left')).display === 'none') {
+          toast('Control panels need a wider window. Key bindings are in Settings › Controls.');
+        }
       }
 
       /* ═══════════════════════════════════════════════════════════════
@@ -1319,7 +1397,8 @@
         if (!raw || typeof raw !== 'object') return merged;
         if (typeof raw.opacity === 'number') merged.opacity = clamp(raw.opacity, 0, 1);
         if (typeof raw.scale === 'number') merged.scale = clamp(raw.scale, 0.7, 1.6);
-        merged.editMode = !!raw.editMode;
+        // Move mode is never restored: if a reload left it on, every game button would stay disabled.
+        merged.editMode = false;
         for (const profile of Object.keys(merged.positions)) {
           if (!raw.positions || typeof raw.positions[profile] !== 'object') continue;
           for (const group of TOUCH_GROUPS) {
@@ -1341,7 +1420,8 @@
         }
       }
       function saveTouchControlsState() {
-        try { localStorage.setItem(TOUCH_STORAGE_KEY, JSON.stringify(touchControlsState)); } catch(e) {}
+        const { editMode, ...persisted } = touchControlsState;
+        try { localStorage.setItem(TOUCH_STORAGE_KEY, JSON.stringify(persisted)); } catch(e) {}
       }
       function getTouchPositionsForProfile(profile = getTouchProfile()) {
         if (!touchControlsState.positions[profile]) {
@@ -1354,6 +1434,14 @@
         touchPointerActions.clear();
         touchActionEls.forEach(btn => btn.classList.remove('pressed'));
       }
+      const touchSafeProbeEl = document.getElementById('touch-safe-probe');
+      function getSafeAreaInsets() {
+        const style = getComputedStyle(touchSafeProbeEl);
+        return {
+          top: parseFloat(style.paddingTop) || 0, right: parseFloat(style.paddingRight) || 0,
+          bottom: parseFloat(style.paddingBottom) || 0, left: parseFloat(style.paddingLeft) || 0,
+        };
+      }
       function setTouchGroupPosition(group, leftPx, topPx, persist = true) {
         const el = touchClusterMap[group];
         if (!el) return;
@@ -1361,10 +1449,22 @@
         const rect = el.getBoundingClientRect();
         if (!bounds.width || !bounds.height || !rect.width || !rect.height) return;
         const margin = 8;
-        const maxLeft = Math.max(margin, bounds.width - rect.width - margin);
-        const maxTop = Math.max(margin, bounds.height - rect.height - margin);
-        const clampedLeft = clamp(leftPx, margin, maxLeft);
-        const clampedTop = clamp(topPx, margin, maxTop);
+        const insets = getSafeAreaInsets();
+        // Shrink a cluster that cannot fit at the chosen scale, so no button ends up off-screen.
+        const currentFit = parseFloat(el.style.getPropertyValue('--touch-fit')) || 1;
+        const naturalWidth = rect.width / currentFit, naturalHeight = rect.height / currentFit;
+        const handleSpace = 22 * touchControlsState.scale; // drag handle sits above the cluster
+        const availWidth = bounds.width - insets.left - insets.right - margin * 2;
+        const availHeight = bounds.height - insets.top - insets.bottom - margin * 2 - handleSpace;
+        const fit = clamp(Math.min(1, availWidth / naturalWidth, availHeight / naturalHeight), 0.3, 1);
+        if (Math.abs(fit - currentFit) > 0.001) el.style.setProperty('--touch-fit', fit.toFixed(3));
+        const width = naturalWidth * fit, height = naturalHeight * fit;
+        const minLeft = margin + insets.left;
+        const minTop = margin + insets.top + handleSpace * fit;
+        const maxLeft = Math.max(minLeft, bounds.width - width - margin - insets.right);
+        const maxTop = Math.max(minTop, bounds.height - height - margin - insets.bottom);
+        const clampedLeft = clamp(leftPx, minLeft, maxLeft);
+        const clampedTop = clamp(topPx, minTop, maxTop);
         el.style.left = `${clampedLeft}px`;
         el.style.top = `${clampedTop}px`;
         const positions = getTouchPositionsForProfile();
@@ -1404,7 +1504,9 @@
         touchControlsEl.style.setProperty('--touch-opacity', touchControlsState.opacity.toFixed(2));
         touchControlsEl.style.setProperty('--touch-scale', touchControlsState.scale.toFixed(2));
         touchControlsEl.classList.toggle('edit-mode', !!touchControlsState.editMode);
+        touchControlsEl.classList.toggle('settings-open', touchSettingsOpen);
         touchSettingsToggleEl.textContent = touchSettingsOpen ? '✕' : '☰';
+        touchSettingsToggleEl.setAttribute('aria-expanded', touchSettingsOpen ? 'true' : 'false');
         touchSettingsEl.classList.toggle('hidden', !touchSettingsOpen);
         touchOpacitySliderEl.value = Math.round(touchControlsState.opacity * 100);
         touchOpacityValueEl.textContent = `${Math.round(touchControlsState.opacity * 100)}%`;
@@ -1764,6 +1866,18 @@
         audioPreviousRight = right[right.length - 1];
         flushAudioToWorklet();
       }
+      // The touch menu and the toolbar mirror the volume pill, which touch layouts hide.
+      function syncVolumeMirrors() {
+        const pct = Math.round(audioVolume * 100);
+        const touchSlider = document.getElementById('touch-volume-slider');
+        if (touchSlider) { touchSlider.value = pct; document.getElementById('touch-volume-value').textContent = pct + '%'; }
+        const mute = document.getElementById('quick-mute');
+        if (mute) {
+          mute.textContent = audioVolume === 0 ? 'Unmute' : 'Mute';
+          mute.setAttribute('aria-pressed', audioVolume === 0 ? 'true' : 'false');
+          mute.classList.toggle('active', audioVolume === 0);
+        }
+      }
       function setVolume(v) {
         audioVolume = Math.max(0, Math.min(1, v));
         if (gainNode) gainNode.gain.value = audioVolume;
@@ -1775,6 +1889,7 @@
         slider.value = Math.round(audioVolume * 100);
         pct.textContent = Math.round(audioVolume * 100) + '%';
         icon.textContent = audioVolume === 0 ? '🔇' : audioVolume < 0.3 ? '🔈' : audioVolume < 0.7 ? '🔉' : '🔊';
+        syncVolumeMirrors();
       }
       function bindAudioUnlock() {
         if (audioUnlockBound) return;
@@ -2337,11 +2452,8 @@
         if (audioVolume > 0) { audioMutedBefore = audioVolume; setVolume(0); }
         else { setVolume(audioMutedBefore || 0.3); }
       });
-      volMuteBtn.addEventListener('keydown', (e) => {
-        if (e.key !== 'Enter' && e.key !== ' ') return;
-        e.preventDefault();
-        volMuteBtn.click();
-      });
+      syncVolumeMirrors();
+      document.getElementById('touch-volume-slider').addEventListener('input', (e) => { setVolume(parseInt(e.target.value, 10) / 100); });
 
       /* ── Quick controls, notifications, and save manager ── */
       function toast(message, error = false) {
@@ -2389,14 +2501,18 @@
       let saveManagerWasPaused = false;
       async function openSaveManager() {
         if (!romLoaded) { toast('Load a game first'); return; }
+        if (saveManager.open || settingsDialog.open || linkDialog.open) return;
         saveManagerWasPaused = Module?._is_paused?.() || false;
-        Module?._set_paused?.(true); updatePauseButton(); saveManager.classList.remove('hidden'); await refreshSaveManager();
+        Module?._set_paused?.(true); updatePauseButton(); saveManager.showModal(); await refreshSaveManager();
       }
       function closeSaveManager() {
-        saveManager.classList.add('hidden');
+        if (saveManager.open) saveManager.close();
+      }
+      // Runs for Done, Escape and backdrop clicks alike.
+      saveManager.addEventListener('close', () => {
         if (!saveManagerWasPaused) Module?._set_paused?.(false);
         updatePauseButton(); resumeAudioContext();
-      }
+      });
       async function refreshSaveManager() {
         const battery = loadSaveData(Module?._get_save_key?.() || '');
         document.getElementById('battery-save-status').textContent = battery?.length
@@ -2414,15 +2530,33 @@
           const title = document.createElement('strong'); title.textContent = slot === 'auto' ? 'Autosave' : `Slot ${slot}`;
           const date = document.createElement('small'); date.textContent = storageError ? 'Save storage unavailable' : record ? new Date(record.timestamp).toLocaleString() : 'Empty';
           const actions = document.createElement('div'); actions.className = 'state-actions';
-          const save = document.createElement('button'); save.textContent = 'Save'; save.onclick = async () => { await saveState(slot); await refreshSaveManager(); };
-          const load = document.createElement('button'); load.textContent = 'Load'; load.disabled = !record; load.onclick = async () => { if (await loadState(slot)) closeSaveManager(); };
-          const del = document.createElement('button'); del.textContent = 'Delete'; del.disabled = !record; del.onclick = () => deleteState(slot);
+          const save = document.createElement('button'); save.className = 'ui-button'; save.type = 'button'; save.textContent = 'Save'; save.onclick = async () => { await saveState(slot); await refreshSaveManager(); };
+          const load = document.createElement('button'); load.className = 'ui-button'; load.type = 'button'; load.textContent = 'Load'; load.disabled = !record; load.onclick = async () => { if (await loadState(slot)) closeSaveManager(); };
+          const del = document.createElement('button'); del.className = 'ui-button'; del.type = 'button'; del.textContent = 'Delete'; del.disabled = !record; del.onclick = () => deleteState(slot);
           actions.append(save, load, del); card.append(image, title, date, actions); container.appendChild(card);
         }
       }
       document.getElementById('quick-saves').addEventListener('click', openSaveManager);
       document.getElementById('save-manager-close').addEventListener('click', closeSaveManager);
-      saveManager.addEventListener('click', e => { if (e.target === saveManager) closeSaveManager(); });
+      saveManager.addEventListener('click', event => {
+        const rect = saveManager.getBoundingClientRect();
+        if (event.target === saveManager && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) closeSaveManager();
+      });
+
+      // Fade the toolbar out during play after a few seconds without mouse movement.
+      const quickToolbar = document.getElementById('quick-toolbar');
+      let quickToolbarIdleTimer = 0;
+      function wakeQuickToolbar() {
+        quickToolbar.classList.remove('idle');
+        clearTimeout(quickToolbarIdleTimer);
+        quickToolbarIdleTimer = setTimeout(() => {
+          if (romLoaded && !pickerOpen && !Module?._is_paused?.()) quickToolbar.classList.add('idle');
+          else wakeQuickToolbar();
+        }, 3000);
+      }
+      ['pointermove', 'pointerdown'].forEach(type => window.addEventListener(type, e => { if (e.pointerType !== 'touch') wakeQuickToolbar(); }, { passive: true }));
+      quickToolbar.addEventListener('focusin', wakeQuickToolbar);
+      wakeQuickToolbar();
 
       document.getElementById('export-saves').addEventListener('click', async () => {
         try {
@@ -2563,11 +2697,17 @@
         renderTouchControls();
       });
       touchMoveToggleEl.addEventListener('change', () => {
-        touchControlsState.editMode = touchMoveToggleEl.checked;
-        releaseAllTouchActions();
-        saveTouchControlsState();
+        setTouchEditMode(touchMoveToggleEl.checked);
+        // Close the menu so it does not cover the buttons being moved; "Done moving" ends the mode.
+        if (touchMoveToggleEl.checked) { touchSettingsOpen = false; renderTouchControls(); }
+      });
+      touchSettingsEl.addEventListener('click', (e) => {
+        if (!e.target.closest('[data-closes-touch-menu]')) return;
+        touchSettingsOpen = false;
         renderTouchControls();
       });
+      document.getElementById('touch-saves-btn').addEventListener('click', () => openSaveManager());
+      document.getElementById('touch-fullscreen-btn').addEventListener('click', () => document.getElementById('quick-fullscreen').click());
       touchColorBtnEl.addEventListener('click', () => tapTouchAction('color_mode'));
       touchResetBtnEl.addEventListener('click', () => tapTouchAction('reset'));
       touchResetLayoutEl.addEventListener('click', () => resetTouchLayout());
@@ -2601,12 +2741,13 @@
         btn.addEventListener('pointercancel', release);
         btn.addEventListener('lostpointercapture', release);
       });
-      document.querySelectorAll('.touch-drag-handle').forEach(handle => {
-        handle.addEventListener('pointerdown', (e) => {
+      // In move mode the whole cluster is the drag target. The small handle is only a visual cue,
+      // and it can sit partly off-screen near the top edge.
+      touchClusterEls.forEach(cluster => {
+        cluster.addEventListener('pointerdown', (e) => {
           if (!shouldUseTouchControls() || !touchControlsState.editMode) return;
           e.preventDefault();
           e.stopPropagation();
-          const cluster = handle.closest('.touch-cluster');
           const rect = cluster.getBoundingClientRect();
           activeTouchDrag = {
             pointerId: e.pointerId,
@@ -2616,8 +2757,18 @@
             offsetY: e.clientY - rect.top,
           };
           cluster.classList.add('dragging');
-          if (handle.setPointerCapture) handle.setPointerCapture(e.pointerId);
+          try { cluster.setPointerCapture?.(e.pointerId); } catch (_) {}
         });
+      });
+      function setTouchEditMode(enabled) {
+        touchControlsState.editMode = enabled;
+        releaseAllTouchActions();
+        saveTouchControlsState();
+        renderTouchControls();
+      }
+      document.getElementById('touch-edit-done').addEventListener('click', (e) => {
+        e.stopPropagation();
+        setTouchEditMode(false);
       });
       window.addEventListener('pointermove', (e) => {
         if (!activeTouchDrag || activeTouchDrag.pointerId !== e.pointerId) return;
@@ -2672,7 +2823,7 @@
 
       window.addEventListener('keydown', (e) => {
         if (e.code === 'F5' || (e.ctrlKey || e.metaKey) && e.code === 'KeyR') return;
-        if ((settingsDialog.open || linkDialog.open) && !rebindAction) return;
+        if ((settingsDialog.open || linkDialog.open || saveManager.open) && !rebindAction) return;
         if (e.repeat && !['up','down','left','right','btn_a','btn_b'].includes(codeToAction[e.code])) return;
         // Rebind mode: capture next key
         if (rebindAction) {
@@ -2720,7 +2871,7 @@
 
       window.addEventListener('keyup', (e) => {
         if (e.code === 'F5') return;
-        if (settingsDialog.open || linkDialog.open) return;
+        if (settingsDialog.open || linkDialog.open || saveManager.open) return;
         if (rebindAction) { e.preventDefault(); return; }
         const action = codeToAction[e.code];
         if (!action) return;
